@@ -131,7 +131,7 @@ const CATEGORIES: CategoryCardInfo[] = [
   {
     id: 'profile',
     title: 'Profile & Identity',
-    subtitle: 'User profile, nicknames, language & greeting preferences',
+    subtitle: 'User profile, assistant nickname & language preferences',
     icon: User,
     badge: 'User',
     colorTheme: {
@@ -146,7 +146,7 @@ const CATEGORIES: CategoryCardInfo[] = [
   {
     id: 'zuzu_ai',
     title: 'Zuzu AI',
-    subtitle: 'Permanent branding, core intelligence & long-term memory',
+    subtitle: 'Google Gemini, xAI Grok & persistent memory',
     icon: Brain,
     badge: 'Core AI',
     colorTheme: {
@@ -173,11 +173,10 @@ const CATEGORIES: CategoryCardInfo[] = [
       pillColor: 'text-emerald-700'
     }
   },
-
   {
     id: 'personality',
     title: 'Personality & Mode',
-    subtitle: '10 AI personalities, custom tone & response modes',
+    subtitle: '10 AI personalities, greeting style, timing & GF Mode',
     icon: Smile,
     badge: '10 Modes',
     colorTheme: {
@@ -269,12 +268,12 @@ const ORB_STYLES: Array<{
   desc: string;
   icon: string;
 }> = [
-  { id: 'pixel', name: 'Pixel Orb', desc: 'Digital voxel matrix with retro-futuristic pixel blocks', icon: '👾' },
-  { id: 'particle', name: 'Particle Orb', desc: 'Organic 3D Fibonacci sphere with glowing depth particles', icon: '✨' },
-  { id: 'galaxy', name: 'Galaxy Orb', desc: 'Cosmic spiral arms with celestial star-dust core', icon: '🌌' },
-  { id: 'neon', name: 'Neon Orb', desc: 'Concentric laser rings with pulsing cyberpunk beams', icon: '⚡' },
-  { id: 'crystal', name: 'Crystal Orb', desc: 'Prismatic faceted polyhedron with refractive geometry', icon: '💎' },
-  { id: 'energy', name: 'Energy Orb', desc: 'Turbulent plasma sphere with crackling electric arcs', icon: '🔮' }
+  { id: 'human', name: 'AI Silhouette Bust', desc: 'Dot-matrix 3D neural human silhouette bust with expressive facial contours', icon: '👤' },
+  { id: 'galaxy', name: 'Galaxy Spiral', desc: 'Cosmic 3-arm logarithmic spiral with celestial stardust & galactic core', icon: '🌌' },
+  { id: 'neon', name: 'Cyberpunk Gyroscope', desc: '4-axis gimbal laser rings with synchronized particle orbits', icon: '⚡' },
+  { id: 'crystal', name: 'Prismatic Polyhedron', desc: 'Faceted 3D polyhedral crystal mesh with refractive geometric vertices', icon: '💎' },
+  { id: 'energy', name: 'Plasma Arc Sphere', desc: 'Turbulent energy plasma field with crackling electrical particle discharges', icon: '🔮' },
+  { id: 'quantum', name: 'Quantum Torus', desc: 'Harmonic toroidal particle ring with multidimensional phase oscillations', icon: '⚛️' }
 ];
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSettings }) => {
@@ -294,11 +293,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [testingGemini, setTestingGemini] = useState(false);
   const [geminiTestStatus, setGeminiTestStatus] = useState<string | null>(null);
+  const [geminiValidation, setGeminiValidation] = useState<'idle' | 'validating' | 'valid' | 'failed'>('idle');
 
   const [grokKeyInput, setGrokKeyInput] = useState(settings.customGrokApiKey || '');
   const [showGrokKey, setShowGrokKey] = useState(false);
   const [testingGrok, setTestingGrok] = useState(false);
   const [grokTestStatus, setGrokTestStatus] = useState<string | null>(null);
+  const [grokValidation, setGrokValidation] = useState<'idle' | 'validating' | 'valid' | 'failed'>('idle');
 
   // Voice Preview State for Selected Style
   const [previewingStyleId, setPreviewingStyleId] = useState<string | null>(null);
@@ -483,14 +484,53 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     }
   };
 
+  const handleSaveAndValidateGemini = async () => {
+    const keyToTest = geminiKeyInput.trim();
+    onUpdateSettings({ customGeminiApiKey: keyToTest });
+    playHapticSound('message_sent');
+    if (!keyToTest) {
+      setGeminiTestStatus('Gemini API key cleared.');
+      setGeminiValidation('idle');
+      return;
+    }
+    setTestingGemini(true);
+    setGeminiValidation('validating');
+    setGeminiTestStatus('Validating with Google Gemini...');
+    try {
+      const res = await fetch('/api/test-provider', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'gemini', apiKey: keyToTest })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setGeminiValidation('valid');
+        setGeminiTestStatus(`Valid ✓ Connected (${data.latencyMs}ms) • ${data.model}`);
+        playHapticSound('listen_start');
+      } else {
+        setGeminiValidation('failed');
+        setGeminiTestStatus(`Failed ✕ ${data.error || 'Invalid API Key'}`);
+        playHapticSound('listen_stop');
+      }
+    } catch (err: any) {
+      setGeminiValidation('failed');
+      setGeminiTestStatus(`Failed ✕ Network error: ${err.message}`);
+      playHapticSound('listen_stop');
+    } finally {
+      setTestingGemini(false);
+    }
+  };
+
   const handleTestGemini = async () => {
     const keyToTest = geminiKeyInput.trim() || settings.customGeminiApiKey.trim();
     if (!keyToTest) {
       setGeminiTestStatus('Please enter an API Key first.');
+      setGeminiValidation('idle');
       return;
     }
     setTestingGemini(true);
-    setGeminiTestStatus(null);
+    setGeminiValidation('validating');
+    setGeminiTestStatus('Validating connection...');
     playHapticSound('message_sent');
     try {
       const res = await fetch('/api/test-provider', {
@@ -500,17 +540,57 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
       });
       const data = await res.json();
       if (data.success) {
-        setGeminiTestStatus(`Connected (${data.latencyMs}ms) • ${data.model}`);
+        setGeminiValidation('valid');
+        setGeminiTestStatus(`Valid ✓ Connected (${data.latencyMs}ms) • ${data.model}`);
         playHapticSound('listen_start');
       } else {
-        setGeminiTestStatus(`Error: ${data.error}`);
+        setGeminiValidation('failed');
+        setGeminiTestStatus(`Failed ✕ ${data.error || 'Invalid API Key'}`);
         playHapticSound('listen_stop');
       }
     } catch (err: any) {
-      setGeminiTestStatus(`Failed: ${err.message}`);
+      setGeminiValidation('failed');
+      setGeminiTestStatus(`Failed ✕ ${err.message}`);
       playHapticSound('listen_stop');
     } finally {
       setTestingGemini(false);
+    }
+  };
+
+  const handleSaveAndValidateGrok = async () => {
+    const keyToTest = grokKeyInput.trim();
+    onUpdateSettings({ customGrokApiKey: keyToTest });
+    playHapticSound('message_sent');
+    if (!keyToTest) {
+      setGrokTestStatus('Grok API key cleared.');
+      setGrokValidation('idle');
+      return;
+    }
+    setTestingGrok(true);
+    setGrokValidation('validating');
+    setGrokTestStatus('Validating with xAI Grok...');
+    try {
+      const res = await fetch('/api/test-provider', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'grok', apiKey: keyToTest })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setGrokValidation('valid');
+        setGrokTestStatus(`Valid ✓ Connected (${data.latencyMs}ms) • ${data.model}`);
+        playHapticSound('listen_start');
+      } else {
+        setGrokValidation('failed');
+        setGrokTestStatus(`Failed ✕ ${data.error || 'Invalid API Key'}`);
+        playHapticSound('listen_stop');
+      }
+    } catch (err: any) {
+      setGrokValidation('failed');
+      setGrokTestStatus(`Failed ✕ Network error: ${err.message}`);
+      playHapticSound('listen_stop');
+    } finally {
+      setTestingGrok(false);
     }
   };
 
@@ -518,10 +598,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     const keyToTest = grokKeyInput.trim() || settings.customGrokApiKey.trim();
     if (!keyToTest) {
       setGrokTestStatus('Please enter an API Key first.');
+      setGrokValidation('idle');
       return;
     }
     setTestingGrok(true);
-    setGrokTestStatus(null);
+    setGrokValidation('validating');
+    setGrokTestStatus('Validating connection...');
     playHapticSound('message_sent');
     try {
       const res = await fetch('/api/test-provider', {
@@ -531,14 +613,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
       });
       const data = await res.json();
       if (data.success) {
-        setGrokTestStatus(`Connected (${data.latencyMs}ms) • ${data.model}`);
+        setGrokValidation('valid');
+        setGrokTestStatus(`Valid ✓ Connected (${data.latencyMs}ms) • ${data.model}`);
         playHapticSound('listen_start');
       } else {
-        setGrokTestStatus(`Error: ${data.error}`);
+        setGrokValidation('failed');
+        setGrokTestStatus(`Failed ✕ ${data.error || 'Invalid API Key'}`);
         playHapticSound('listen_stop');
       }
     } catch (err: any) {
-      setGrokTestStatus(`Failed: ${err.message}`);
+      setGrokValidation('failed');
+      setGrokTestStatus(`Failed ✕ ${err.message}`);
       playHapticSound('listen_stop');
     } finally {
       setTestingGrok(false);
@@ -938,145 +1023,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   </div>
                 </div>
 
-                {/* Permanent Zuzu AI Name */}
-                <div className="p-4 bg-white/90 border border-purple-100 rounded-2xl shadow-xs space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
-                      <Bot className="w-3.5 h-3.5 text-purple-600" />
-                      <span>Official Application Name:</span>
-                    </label>
-                    <span className="text-[9px] font-mono font-bold bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full">
-                      PERMANENTLY LOCKED
-                    </span>
-                  </div>
-                  <div className="p-2.5 rounded-xl bg-purple-50/70 border border-purple-200/70 flex items-center justify-between">
-                    <span className="text-xs font-black text-purple-900 tracking-wide">
-                      Zuzu AI
-                    </span>
-                    <Lock className="w-3.5 h-3.5 text-purple-600" />
-                  </div>
-                  <p className="text-[10px] text-slate-500 italic">
-                    The official name of this application is permanently fixed to <strong>Zuzu AI</strong> and cannot be renamed in Android package branding.
-                  </p>
-                </div>
 
-                {/* Greeting Preferences & GF Mode (Requirement 5) */}
-                <div className="p-4 bg-white/90 border border-purple-100 rounded-2xl shadow-xs space-y-3">
-                  <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-purple-600" />
-                    <span>Greeting Style &amp; Timing</span>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-500">Standard Greeting Style:</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'friendly', label: 'Friendly ✨' },
-                        { id: 'formal', label: 'Formal 💼' },
-                        { id: 'cheerful', label: 'Cheerful 🌟' }
-                      ].map(g => (
-                        <button
-                          key={g.id}
-                          onClick={() => {
-                            setGreetingStyle(g.id as any);
-                            onUpdateSettings({ greetingStyle: g.id as any });
-                            playHapticSound('switch');
-                          }}
-                          className={`py-2 px-1 text-[11px] font-semibold rounded-xl border text-center transition-all ${
-                            (settings.greetingStyle || greetingStyle) === g.id
-                              ? 'bg-purple-100/90 border-purple-300 text-purple-800 font-bold shadow-xs'
-                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          {g.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* GF Mode Greeting Toggle & Intensity */}
-                  <div className="p-3 bg-pink-50/80 border border-pink-200 rounded-xl space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-xs font-extrabold text-pink-900 flex items-center gap-1.5">
-                          <Heart className="w-3.5 h-3.5 text-pink-600 fill-current" />
-                          <span>Girlfriend Mode (GF Mode) Greetings</span>
-                        </div>
-                        <p className="text-[10px] text-pink-700 mt-0.5">
-                          Personalized affectionate greetings replacing formal "Sir"
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => {
-                          const next = !settings.gfGreetingEnabled;
-                          onUpdateSettings({ gfGreetingEnabled: next });
-                          playHapticSound('switch');
-                        }}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
-                          settings.gfGreetingEnabled
-                            ? 'bg-pink-600 text-white border-pink-600 shadow-xs'
-                            : 'bg-white text-slate-600 border-pink-200 hover:bg-pink-100'
-                        }`}
-                      >
-                        {settings.gfGreetingEnabled ? 'Active ❤️' : 'Inactive'}
-                      </button>
-                    </div>
-
-                    {/* GF Intensity Selector */}
-                    <div className="space-y-1 pt-1 border-t border-pink-200/60">
-                      <div className="text-[10px] font-bold text-pink-900 uppercase">GF Mode Intensity:</div>
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {[
-                          { id: 'sweet', label: 'Gentle', desc: 'Sweet' },
-                          { id: 'romantic', label: 'Romantic', desc: 'Heartfelt' },
-                          { id: 'playful', label: 'Playful', desc: 'Cute teasing' },
-                          { id: 'flirty', label: 'Flirty', desc: 'Advanced charm' }
-                        ].map(it => (
-                          <button
-                            key={it.id}
-                            onClick={() => {
-                              onUpdateSettings({ gfIntensity: it.id as any });
-                              playHapticSound('switch');
-                            }}
-                            className={`py-1.5 px-1 rounded-xl text-[10px] font-bold border text-center transition-all ${
-                              (settings.gfIntensity || 'sweet') === it.id
-                                ? 'bg-pink-600 text-white border-pink-600 shadow-xs'
-                                : 'bg-white text-pink-900 border-pink-200 hover:bg-pink-100'
-                            }`}
-                          >
-                            <div>{it.label}</div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="text-[10px] text-pink-800 italic bg-white/70 p-2 rounded-lg border border-pink-200/50">
-                      "Good afternoon, {settings.userNickname || 'বাবুসোনা'} ❤️ তোমার দিনটা কেমন যাচ্ছে?"
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-semibold text-slate-700">Time-based Greetings</div>
-                      <div className="text-[10px] text-slate-500">Good Morning / Afternoon / Evening</div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        const next = !settings.timeBasedGreetings;
-                        setTimeBasedGreetings(next);
-                        onUpdateSettings({ timeBasedGreetings: next });
-                        playHapticSound('switch');
-                      }}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
-                        settings.timeBasedGreetings !== false
-                          ? 'bg-purple-100 text-purple-800 border-purple-300'
-                          : 'bg-slate-100 text-slate-600 border-slate-200'
-                      }`}
-                    >
-                      {settings.timeBasedGreetings !== false ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </div>
-                </div>
 
 
                 {/* Language Preference */}
@@ -1113,24 +1060,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             {/* ----------------------------------------------------------- */}
             {activeCategory === 'zuzu_ai' && (
               <div className="space-y-3.5 animate-fade-in text-slate-800">
-                {/* Official Brand Identity Card */}
-                <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-2xl shadow-xs space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-blue-900">
-                      Official Brand Identity
-                    </span>
-                    <span className="text-[9px] font-mono text-blue-700 font-bold bg-white px-2 py-0.5 rounded-full border border-blue-200">
-                      Permanent
-                    </span>
-                  </div>
-                  <div className="text-lg font-black text-slate-800 flex items-center gap-2">
-                    <span>Zuzu AI</span>
-                    <Sparkles className="w-4 h-4 text-blue-600" />
-                  </div>
-                  <p className="text-[11px] text-slate-600 leading-relaxed">
-                    Zuzu AI is your native Android AI assistant with bilingual reasoning, dual voices, multi-provider intelligence, and persistent long-term memory.
-                  </p>
-                </div>
 
                 {/* Google Gemini Card */}
                 <div className="p-4 bg-white/95 border border-blue-200 rounded-2xl shadow-xs space-y-3">
@@ -1202,14 +1131,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       </div>
 
                       <button
-                        onClick={() => {
-                          onUpdateSettings({ customGeminiApiKey: geminiKeyInput.trim() });
-                          playHapticSound('message_sent');
-                          setGeminiTestStatus('Gemini API key saved locally.');
-                        }}
-                        className="px-3 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition-colors shadow-xs"
+                        onClick={handleSaveAndValidateGemini}
+                        disabled={testingGemini}
+                        className="px-3 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition-colors shadow-xs flex items-center gap-1"
                       >
-                        Save
+                        <span>{testingGemini ? 'Validating...' : 'Save & Validate'}</span>
                       </button>
 
                       {settings.customGeminiApiKey && (
@@ -1219,6 +1145,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                             onUpdateSettings({ customGeminiApiKey: '' });
                             playHapticSound('listen_stop');
                             setGeminiTestStatus('Gemini key removed.');
+                            setGeminiValidation('idle');
                           }}
                           className="p-2 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 transition-colors"
                           title="Remove Key"
@@ -1235,13 +1162,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         className="py-1 px-2.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 text-[10px] font-bold flex items-center gap-1 border border-blue-200 transition-colors"
                       >
                         <Sparkles className="w-3 h-3" />
-                        <span>{testingGemini ? 'Testing Connection...' : 'Test Gemini Connection'}</span>
+                        <span>{testingGemini ? 'Testing...' : 'Test Connection'}</span>
                       </button>
-                      {geminiTestStatus && (
-                        <span className="text-[10px] text-blue-700 font-mono truncate max-w-[200px]">
-                          {geminiTestStatus}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5 overflow-hidden">
+                        {geminiValidation === 'valid' && (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-0.5 flex-shrink-0">
+                            <Check className="w-2.5 h-2.5" />
+                            <span>Valid</span>
+                          </span>
+                        )}
+                        {geminiValidation === 'failed' && (
+                          <span className="text-[10px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-full border border-rose-300 flex-shrink-0">
+                            Failed ✕
+                          </span>
+                        )}
+                        {geminiTestStatus && (
+                          <span className="text-[10px] text-blue-800 font-mono truncate max-w-[190px]">
+                            {geminiTestStatus}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1316,14 +1256,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       </div>
 
                       <button
-                        onClick={() => {
-                          onUpdateSettings({ customGrokApiKey: grokKeyInput.trim() });
-                          playHapticSound('message_sent');
-                          setGrokTestStatus('xAI Grok API key saved locally.');
-                        }}
-                        className="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-black transition-colors shadow-xs"
+                        onClick={handleSaveAndValidateGrok}
+                        disabled={testingGrok}
+                        className="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-black transition-colors shadow-xs flex items-center gap-1"
                       >
-                        Save
+                        <span>{testingGrok ? 'Validating...' : 'Save & Validate'}</span>
                       </button>
 
                       {settings.customGrokApiKey && (
@@ -1333,6 +1270,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                             onUpdateSettings({ customGrokApiKey: '' });
                             playHapticSound('listen_stop');
                             setGrokTestStatus('Grok key removed.');
+                            setGrokValidation('idle');
                           }}
                           className="p-2 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 transition-colors"
                           title="Remove Key"
@@ -1349,13 +1287,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         className="py-1 px-2.5 rounded-lg bg-slate-100 text-slate-800 hover:bg-slate-200 text-[10px] font-bold flex items-center gap-1 border border-slate-300 transition-colors"
                       >
                         <Zap className="w-3 h-3" />
-                        <span>{testingGrok ? 'Testing Connection...' : 'Test Grok Connection'}</span>
+                        <span>{testingGrok ? 'Testing...' : 'Test Connection'}</span>
                       </button>
-                      {grokTestStatus && (
-                        <span className="text-[10px] text-slate-700 font-mono truncate max-w-[200px]">
-                          {grokTestStatus}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5 overflow-hidden">
+                        {grokValidation === 'valid' && (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-0.5 flex-shrink-0">
+                            <Check className="w-2.5 h-2.5" />
+                            <span>Valid</span>
+                          </span>
+                        )}
+                        {grokValidation === 'failed' && (
+                          <span className="text-[10px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-full border border-rose-300 flex-shrink-0">
+                            Failed ✕
+                          </span>
+                        )}
+                        {grokTestStatus && (
+                          <span className="text-[10px] text-slate-700 font-mono truncate max-w-[190px]">
+                            {grokTestStatus}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1682,6 +1633,63 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         </button>
                       );
                     })}
+                  </div>
+                </div>
+
+                {/* Greeting Style & Timing (Requirement 6) */}
+                <div className="p-4 bg-white/90 border border-fuchsia-100 rounded-2xl shadow-xs space-y-3">
+                  <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-fuchsia-600" />
+                    <span>Greeting Style &amp; Timing</span>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold text-slate-500">Standard Greeting Style:</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'friendly', label: 'Friendly ✨' },
+                        { id: 'formal', label: 'Formal 💼' },
+                        { id: 'cheerful', label: 'Cheerful 🌟' }
+                      ].map(g => (
+                        <button
+                          key={g.id}
+                          onClick={() => {
+                            setGreetingStyle(g.id as any);
+                            onUpdateSettings({ greetingStyle: g.id as any });
+                            playHapticSound('switch');
+                          }}
+                          className={`py-2 px-1 text-[11px] font-semibold rounded-xl border text-center transition-all ${
+                            (settings.greetingStyle || greetingStyle) === g.id
+                              ? 'bg-fuchsia-100/90 border-fuchsia-300 text-fuchsia-800 font-bold shadow-xs'
+                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          {g.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-semibold text-slate-700">Time-based Greetings</div>
+                      <div className="text-[10px] text-slate-500">Good Morning / Afternoon / Evening</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const next = !settings.timeBasedGreetings;
+                        setTimeBasedGreetings(next);
+                        onUpdateSettings({ timeBasedGreetings: next });
+                        playHapticSound('switch');
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
+                        settings.timeBasedGreetings !== false
+                          ? 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-300'
+                          : 'bg-slate-100 text-slate-600 border-slate-200'
+                      }`}
+                    >
+                      {settings.timeBasedGreetings !== false ? 'Enabled' : 'Disabled'}
+                    </button>
                   </div>
                 </div>
 
@@ -2060,21 +2068,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                     </div>
                   </div>
 
-                  {/* Display View Shell Toggle */}
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-semibold text-slate-700">Display View Shell</div>
-                      <div className="text-[10px] text-slate-500">Android phone frame vs full screen</div>
-                    </div>
-                    <button
-                      onClick={() => onUpdateSettings({
-                        viewMode: settings.viewMode === 'android_frame' ? 'fullscreen' : 'android_frame'
-                      })}
-                      className="px-3 py-1.5 rounded-xl bg-violet-100 text-violet-800 text-xs font-bold border border-violet-200"
-                    >
-                      {settings.viewMode === 'android_frame' ? 'Phone Bezel ON' : 'Fullscreen ON'}
-                    </button>
-                  </div>
                 </div>
               </div>
             )}
@@ -2358,7 +2351,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                             setProfileImgError(true);
                           }
                         }}
-                        className="w-28 h-28 rounded-full object-cover border-4 border-white shadow-xl ring-4 ring-rose-200"
+                        className="w-28 h-28 rounded-full object-cover object-[center_10%] border-4 border-white shadow-xl ring-4 ring-rose-200"
                       />
                     ) : (
                       <div className="w-28 h-28 rounded-full bg-gradient-to-tr from-rose-500 via-purple-600 to-indigo-600 text-white flex items-center justify-center font-black text-2xl shadow-xl border-4 border-white ring-4 ring-rose-200">
@@ -2428,9 +2421,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                     <span>Zuzu AI</span>
                     <span className="text-[10px] font-mono opacity-60">• v3.5.0-android</span>
                   </div>
-                  <p className="text-[11px] text-slate-500">
-                    Package: <code className="font-mono text-[10px] text-purple-800">com.zuzu.ai.assistant</code>
-                  </p>
                 </div>
               </div>
             )}

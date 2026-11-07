@@ -27,18 +27,19 @@ interface Point3D {
   baseRadius: number;
   phase: number;
   colorType: number;
-  arm?: number;
+  type?: 'head' | 'shoulder' | 'eye' | 'mouth' | 'node' | 'ring' | 'crystal' | 'spark';
+  connections?: number[];
 }
 
 export const ParticleOrb: React.FC<ParticleOrbProps> = ({
   state = 'idle',
-  style = 'particle',
+  style = 'human',
   colorScheme = 'purple',
   rotationSpeed = 'normal',
   glowIntensity = 'medium',
   particleDensity = 'standard',
   onClick,
-  size = 280
+  size = 230
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number | null>(null);
@@ -73,378 +74,429 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
     ctx.scale(dpr, dpr);
 
     // Particle count based on density
-    let count = 1400;
-    if (densityRef.current === 'eco') count = 750;
-    else if (densityRef.current === 'ultra') count = 2200;
+    let count = 1200;
+    if (densityRef.current === 'eco') count = 700;
+    else if (densityRef.current === 'ultra') count = 1800;
 
     const points: Point3D[] = [];
-    const baseSphereRadius = size * 0.32;
-    const phi = Math.PI * (3 - Math.sqrt(5)); // Golden angle
-
-    // Generate Points according to Orb Style
+    const baseRadius = size * 0.35;
     const currentStyle = styleRef.current;
-    if (currentStyle === 'galaxy') {
-      // 3 spiral galaxy arms
+
+    // 1. STYLE: 'human' — Abstract AI Human Silhouette/Bust dot-matrix
+    if (currentStyle === 'human') {
+      const headRadius = baseRadius * 0.55;
+      const headCenterY = -baseRadius * 0.25;
+
+      // Head / Cranium 3D ellipsoid shell
+      const headCount = Math.round(count * 0.55);
+      for (let i = 0; i < headCount; i++) {
+        const u = Math.random();
+        const v = Math.random();
+        const theta = u * 2.0 * Math.PI;
+        const phi = Math.acos(2.0 * v - 1.0);
+        const r = headRadius * (0.95 + Math.random() * 0.1);
+        const x = r * Math.sin(phi) * Math.cos(theta) * 0.85;
+        const y = headCenterY + r * Math.cos(phi) * 1.15;
+        const z = r * Math.sin(phi) * Math.sin(theta) * 0.95;
+
+        points.push({
+          x,
+          y,
+          z,
+          baseRadius: r,
+          phase: Math.random() * Math.PI * 2,
+          colorType: i % 4,
+          type: 'head'
+        });
+      }
+
+      // Facial Neural Nodes & Eyes
+      const eyeOffset = headRadius * 0.32;
+      const eyeY = headCenterY - headRadius * 0.05;
+      const eyeZ = headRadius * 0.82;
+      for (let i = 0; i < 24; i++) {
+        // Left eye cluster
+        points.push({
+          x: -eyeOffset + (Math.random() - 0.5) * 8,
+          y: eyeY + (Math.random() - 0.5) * 5,
+          z: eyeZ + (Math.random() - 0.5) * 4,
+          baseRadius: 10,
+          phase: i,
+          colorType: 0,
+          type: 'eye'
+        });
+        // Right eye cluster
+        points.push({
+          x: eyeOffset + (Math.random() - 0.5) * 8,
+          y: eyeY + (Math.random() - 0.5) * 5,
+          z: eyeZ + (Math.random() - 0.5) * 4,
+          baseRadius: 10,
+          phase: i + 1,
+          colorType: 0,
+          type: 'eye'
+        });
+      }
+
+      // Mouth / Speech articulation node line
+      const mouthY = headCenterY + headRadius * 0.48;
+      const mouthZ = headRadius * 0.75;
+      for (let i = 0; i < 28; i++) {
+        const mx = ((i - 14) / 14) * (headRadius * 0.42);
+        points.push({
+          x: mx,
+          y: mouthY + Math.sin((i / 28) * Math.PI) * 3,
+          z: mouthZ,
+          baseRadius: 8,
+          phase: i * 0.3,
+          colorType: 1,
+          type: 'mouth'
+        });
+      }
+
+      // Neck & Shoulder Bust Arch
+      const shoulderCount = Math.round(count * 0.38);
+      for (let i = 0; i < shoulderCount; i++) {
+        const t = (i / shoulderCount) * 2 - 1; // -1 to 1
+        const shoulderWidth = baseRadius * 1.45;
+        const x = t * shoulderWidth * 0.5 + (Math.random() - 0.5) * 12;
+        const curve = Math.cos(t * Math.PI * 0.5);
+        const y = baseRadius * 0.45 + (1 - curve) * baseRadius * 0.4 + (Math.random() - 0.5) * 10;
+        const z = (Math.random() - 0.5) * baseRadius * 0.65;
+
+        points.push({
+          x,
+          y,
+          z,
+          baseRadius: Math.hypot(x, y),
+          phase: Math.random() * Math.PI * 2,
+          colorType: 2,
+          type: 'shoulder'
+        });
+      }
+    } 
+    // 2. STYLE: 'galaxy' — Cosmic 3-Arm Galactic Core
+    else if (currentStyle === 'galaxy') {
       const arms = 3;
       for (let i = 0; i < count; i++) {
         const armIndex = i % arms;
         const armAngle = (armIndex * 2 * Math.PI) / arms;
-        const distNorm = Math.pow(Math.random(), 0.7);
-        const radius = distNorm * baseSphereRadius * 1.35;
-        const spiralAngle = armAngle + distNorm * Math.PI * 2.8;
-        const spread = (Math.random() - 0.5) * (0.35 * baseSphereRadius * (1 - distNorm * 0.4));
-        const zSpread = (Math.random() - 0.5) * (0.4 * baseSphereRadius * (1 - distNorm * 0.5));
+        const distNorm = Math.pow(Math.random(), 0.65);
+        const r = distNorm * baseRadius * 1.35;
+        const spiralAngle = armAngle + distNorm * Math.PI * 3.2;
+        const spread = (Math.random() - 0.5) * (0.35 * baseRadius * (1 - distNorm * 0.5));
+        const zSpread = (Math.random() - 0.5) * (0.3 * baseRadius * (1 - distNorm * 0.6));
 
         points.push({
-          x: Math.cos(spiralAngle) * radius + spread,
-          y: Math.sin(spiralAngle) * radius + spread,
+          x: Math.cos(spiralAngle) * r + spread,
+          y: Math.sin(spiralAngle) * r + spread,
           z: zSpread,
-          baseRadius: Math.max(10, radius),
-          phase: Math.random() * Math.PI * 2,
-          colorType: i % 4,
-          arm: armIndex
-        });
-      }
-    } else if (currentStyle === 'pixel') {
-      // Cubic matrix voxel distribution
-      const gridSize = Math.round(Math.cbrt(count));
-      const step = (baseSphereRadius * 1.8) / gridSize;
-      for (let x = -gridSize / 2; x < gridSize / 2; x++) {
-        for (let y = -gridSize / 2; y < gridSize / 2; y++) {
-          for (let z = -gridSize / 2; z < gridSize / 2; z++) {
-            const dist = Math.sqrt(x * x + y * y + z * z) * step;
-            if (dist <= baseSphereRadius * 1.05 && dist >= baseSphereRadius * 0.3) {
-              points.push({
-                x: x * step,
-                y: y * step,
-                z: z * step,
-                baseRadius: dist,
-                phase: (x + y + z) * 0.5,
-                colorType: (Math.abs(x + y) % 4)
-              });
-            }
-          }
-        }
-      }
-    } else {
-      // Standard Fibonacci distribution for particle, crystal, neon, energy
-      for (let i = 0; i < count; i++) {
-        const y = 1 - (i / (count - 1)) * 2;
-        const radiusAtY = Math.sqrt(Math.max(0, 1 - y * y));
-        const theta = phi * i;
-
-        const x = Math.cos(theta) * radiusAtY;
-        const z = Math.sin(theta) * radiusAtY;
-
-        points.push({
-          x: x * baseSphereRadius,
-          y: y * baseSphereRadius,
-          z: z * baseSphereRadius,
-          baseRadius: baseSphereRadius,
+          baseRadius: Math.max(8, r),
           phase: Math.random() * Math.PI * 2,
           colorType: i % 4
         });
       }
     }
+    // 3. STYLE: 'neon' — Cyberpunk Gyroscope Laser Rings
+    else if (currentStyle === 'neon') {
+      const rings = 4;
+      const ptsPerRing = Math.floor(count / rings);
+      for (let r = 0; r < rings; r++) {
+        const ringRadius = baseRadius * (0.45 + r * 0.24);
+        const ringTiltX = (r * Math.PI) / 3;
+        const ringTiltY = (r * Math.PI) / 4;
 
-    let rotX = 0.2;
-    let rotY = 0;
-    let rotZ = 0;
+        for (let i = 0; i < ptsPerRing; i++) {
+          const theta = (i / ptsPerRing) * Math.PI * 2;
+          const px = Math.cos(theta) * ringRadius;
+          const py = Math.sin(theta) * ringRadius;
+          const pz = (Math.random() - 0.5) * 6;
+
+          // Rotate by ring tilt
+          const x = px * Math.cos(ringTiltY) + pz * Math.sin(ringTiltY);
+          const y = py * Math.cos(ringTiltX) - (pz * Math.cos(ringTiltY) - px * Math.sin(ringTiltY)) * Math.sin(ringTiltX);
+          const z = py * Math.sin(ringTiltX) + (pz * Math.cos(ringTiltY) - px * Math.sin(ringTiltY)) * Math.cos(ringTiltX);
+
+          points.push({
+            x,
+            y,
+            z,
+            baseRadius: ringRadius,
+            phase: theta,
+            colorType: r % 4,
+            type: 'ring'
+          });
+        }
+      }
+    }
+    // 4. STYLE: 'crystal' / 'pixel' — 3D Polyhedral Geometric Crystal
+    else if (currentStyle === 'crystal' || currentStyle === 'pixel') {
+      const phiAngle = Math.PI * (3 - Math.sqrt(5));
+      for (let i = 0; i < count; i++) {
+        const yNorm = 1 - (i / (count - 1)) * 2;
+        const radiusAtY = Math.sqrt(Math.max(0, 1 - yNorm * yNorm));
+        const theta = phiAngle * i;
+
+        // Faceted crystal quantization
+        const facetSteps = 8;
+        const quantizedTheta = Math.round(theta * facetSteps / Math.PI) * (Math.PI / facetSteps);
+        const quantizedY = Math.round(yNorm * facetSteps) / facetSteps;
+        const r = baseRadius * (0.85 + Math.sin(theta * 6) * 0.15);
+
+        const x = Math.cos(quantizedTheta) * radiusAtY * r;
+        const y = quantizedY * r;
+        const z = Math.sin(quantizedTheta) * radiusAtY * r;
+
+        points.push({
+          x,
+          y,
+          z,
+          baseRadius: r,
+          phase: theta,
+          colorType: Math.abs(Math.round(quantizedY * 4)) % 4,
+          type: 'crystal'
+        });
+      }
+    }
+    // 5. STYLE: 'energy' — Turbulent Plasma Electric Arc Sphere
+    else if (currentStyle === 'energy') {
+      for (let i = 0; i < count; i++) {
+        const u = Math.random();
+        const v = Math.random();
+        const theta = u * 2.0 * Math.PI;
+        const phi = Math.acos(2.0 * v - 1.0);
+        const r = baseRadius * (0.6 + Math.random() * 0.5);
+
+        const x = r * Math.sin(phi) * Math.cos(theta);
+        const y = r * Math.sin(phi) * Math.sin(theta);
+        const z = r * Math.cos(phi);
+
+        points.push({
+          x,
+          y,
+          z,
+          baseRadius: r,
+          phase: Math.random() * Math.PI * 2,
+          colorType: i % 3,
+          type: 'spark'
+        });
+      }
+    }
+    // 6. STYLE: 'quantum' / 'particle' — Harmonic Quantum Waveform Torus
+    else {
+      const R = baseRadius * 0.72; // Major radius
+      const rTube = baseRadius * 0.38; // Minor radius
+      for (let i = 0; i < count; i++) {
+        const u = Math.random() * Math.PI * 2;
+        const v = Math.random() * Math.PI * 2;
+        const wave = Math.sin(u * 5 + v * 3) * (rTube * 0.25);
+
+        const x = (R + (rTube + wave) * Math.cos(v)) * Math.cos(u);
+        const y = (rTube + wave) * Math.sin(v);
+        const z = (R + (rTube + wave) * Math.cos(v)) * Math.sin(u);
+
+        points.push({
+          x,
+          y,
+          z,
+          baseRadius: Math.hypot(x, y, z),
+          phase: u,
+          colorType: i % 4
+        });
+      }
+    }
+
+    // Palette Palette definition for Orb Hue only
+    const getColorPalette = (scheme: OrbColorScheme): { primary: string; secondary: string; highlight: string; glow: string } => {
+      switch (scheme) {
+        case 'cyan':
+          return { primary: '#06b6d4', secondary: '#22d3ee', highlight: '#e0f2fe', glow: 'rgba(6, 182, 212, 0.45)' };
+        case 'rose':
+          return { primary: '#f43f5e', secondary: '#fb7185', highlight: '#ffe4e6', glow: 'rgba(244, 63, 94, 0.45)' };
+        case 'mint':
+          return { primary: '#10b981', secondary: '#34d399', highlight: '#d1fae5', glow: 'rgba(16, 185, 129, 0.45)' };
+        case 'amber':
+          return { primary: '#f59e0b', secondary: '#fbbf24', highlight: '#fef3c7', glow: 'rgba(245, 158, 11, 0.45)' };
+        case 'purple':
+        default:
+          return { primary: '#9333ea', secondary: '#c084fc', highlight: '#f3e8ff', glow: 'rgba(147, 51, 234, 0.45)' };
+      }
+    };
+
+    let angleX = 0;
+    let angleY = 0;
     let time = 0;
 
     const render = () => {
-      time += 0.02;
-      const currentState = stateRef.current;
-      const activeStyle = styleRef.current;
-      const activeColor = colorRef.current;
-      const activeSpeed = speedRef.current;
-      const activeGlow = glowRef.current;
+      ctx.clearRect(0, 0, size, size);
 
-      // Speed multiplier
-      let speedMult = 1.0;
-      if (activeSpeed === 'slow') speedMult = 0.55;
-      else if (activeSpeed === 'fast') speedMult = 1.85;
+      const st = stateRef.current;
+      const sp = speedRef.current;
+      const gl = glowRef.current;
+      const palette = getColorPalette(colorRef.current);
+      const isHuman = styleRef.current === 'human';
 
-      // Glow multiplier
-      let glowMult = 1.0;
-      if (activeGlow === 'soft') glowMult = 0.55;
-      else if (activeGlow === 'intense') glowMult = 1.7;
+      // Speed multipliers
+      let baseSpeed = 0.007;
+      if (sp === 'slow') baseSpeed = 0.0035;
+      else if (sp === 'fast') baseSpeed = 0.013;
 
-      // State dynamic speeds
-      let speedY = 0.008 * speedMult;
-      let speedX = 0.004 * speedMult;
-      let pulseAmp = 0.04;
-      let pulseFreq = 2.0;
+      let rotationMultiplier = 1;
+      let waveFrequency = 1;
+      let waveAmplitude = 1;
 
-      if (currentState === 'listening') {
-        speedY = 0.016 * speedMult;
-        speedX = 0.008 * speedMult;
-        pulseAmp = 0.12;
-        pulseFreq = 4.5;
-      } else if (currentState === 'thinking') {
-        speedY = 0.028 * speedMult;
-        speedX = 0.014 * speedMult;
-        pulseAmp = 0.08;
-        pulseFreq = 6.0;
-      } else if (currentState === 'speaking') {
-        speedY = 0.020 * speedMult;
-        speedX = 0.010 * speedMult;
-        pulseAmp = 0.16;
-        pulseFreq = 5.0;
+      if (st === 'listening') {
+        rotationMultiplier = 1.35;
+        waveFrequency = 2.2;
+        waveAmplitude = 1.6;
+      } else if (st === 'thinking') {
+        rotationMultiplier = 2.2;
+        waveFrequency = 3.5;
+        waveAmplitude = 1.2;
+      } else if (st === 'speaking') {
+        rotationMultiplier = 1.5;
+        waveFrequency = 4.2;
+        waveAmplitude = 2.4;
       }
 
-      rotY += speedY;
-      rotX += speedX;
-      rotZ += 0.002 * speedMult;
+      time += 0.025 * waveFrequency;
 
-      ctx.clearRect(0, 0, size, size);
+      if (isHuman) {
+        // Human bust oscillates gently left-to-right rather than spinning uncontrollably
+        angleY = Math.sin(time * 0.4) * 0.45;
+        angleX = Math.sin(time * 0.3) * 0.15;
+      } else {
+        angleY += baseSpeed * rotationMultiplier;
+        angleX += baseSpeed * 0.5 * rotationMultiplier;
+      }
 
       const centerX = size / 2;
       const centerY = size / 2;
+      const fov = size * 1.1;
 
-      // Color Palette Matrix
-      const PALETTES = {
-        purple: {
-          core: 'rgba(147, 51, 234, ',
-          accent1: 'rgba(168, 85, 247, ',
-          accent2: 'rgba(192, 132, 252, ',
-          accent3: 'rgba(126, 34, 206, ',
-          ring: 'rgba(168, 85, 247, '
-        },
-        cyan: {
-          core: 'rgba(6, 182, 212, ',
-          accent1: 'rgba(56, 189, 248, ',
-          accent2: 'rgba(14, 165, 233, ',
-          accent3: 'rgba(2, 132, 199, ',
-          ring: 'rgba(6, 182, 212, '
-        },
-        rose: {
-          core: 'rgba(236, 72, 153, ',
-          accent1: 'rgba(244, 114, 182, ',
-          accent2: 'rgba(219, 39, 119, ',
-          accent3: 'rgba(251, 113, 133, ',
-          ring: 'rgba(236, 72, 153, '
-        },
-        mint: {
-          core: 'rgba(16, 185, 129, ',
-          accent1: 'rgba(52, 211, 153, ',
-          accent2: 'rgba(5, 150, 105, ',
-          accent3: 'rgba(110, 231, 183, ',
-          ring: 'rgba(16, 185, 129, '
-        },
-        amber: {
-          core: 'rgba(245, 158, 11, ',
-          accent1: 'rgba(251, 191, 36, ',
-          accent2: 'rgba(217, 119, 6, ',
-          accent3: 'rgba(252, 211, 77, ',
-          ring: 'rgba(245, 158, 11, '
-        }
-      };
+      // Center Ambient Core Glow
+      let glowRadius = size * 0.28;
+      if (gl === 'soft') glowRadius = size * 0.20;
+      else if (gl === 'intense') glowRadius = size * 0.38;
 
-      const pal = PALETTES[activeColor] || PALETTES.purple;
-
-      // 1. Atmosphere Background Core Glow
-      const bgGrad = ctx.createRadialGradient(
+      const radialGrad = ctx.createRadialGradient(
         centerX,
         centerY,
         0,
         centerX,
         centerY,
-        baseSphereRadius * 1.45
+        glowRadius * (1 + Math.sin(time) * 0.08 * waveAmplitude)
       );
+      radialGrad.addColorStop(0, palette.glow);
+      radialGrad.addColorStop(0.65, palette.glow.replace(/[\d.]+\)$/, '0.12)'));
+      radialGrad.addColorStop(1, 'transparent');
 
-      const baseAlpha = (currentState === 'speaking' ? 0.35 : currentState === 'listening' ? 0.3 : 0.2) * glowMult;
-      bgGrad.addColorStop(0, `${pal.core}${baseAlpha})`);
-      bgGrad.addColorStop(0.5, `${pal.accent1}${baseAlpha * 0.5})`);
-      bgGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-      ctx.fillStyle = bgGrad;
+      ctx.fillStyle = radialGrad;
       ctx.beginPath();
-      ctx.arc(centerX, centerY, baseSphereRadius * 1.45, 0, Math.PI * 2);
+      ctx.arc(centerX, centerY, glowRadius * 1.25, 0, Math.PI * 2);
       ctx.fill();
 
-      // 2. Style-Specific Structural Renderers
-      if (activeStyle === 'neon') {
-        // Neon rings revolving along multiple axes
-        for (let r = 0; r < 3; r++) {
-          ctx.save();
-          ctx.translate(centerX, centerY);
-          ctx.rotate(rotZ * (r + 1) + (r * Math.PI) / 3);
-          ctx.beginPath();
-          ctx.ellipse(0, 0, baseSphereRadius * (1.15 + r * 0.12), baseSphereRadius * (0.35 + r * 0.1), rotX * (r + 1), 0, Math.PI * 2);
-          ctx.strokeStyle = `${pal.ring}${0.35 * glowMult})`;
-          ctx.lineWidth = 2 + (currentState === 'speaking' ? 1.5 : 0);
-          ctx.stroke();
-          ctx.restore();
-        }
-      } else if (activeStyle === 'energy') {
-        // Turbulent electric lightning plasma arcs
-        ctx.save();
-        ctx.translate(centerX, centerY);
-        const arcCount = currentState === 'speaking' ? 6 : 4;
-        for (let a = 0; a < arcCount; a++) {
-          const startAngle = (a * Math.PI * 2) / arcCount + rotZ;
-          const endAngle = startAngle + Math.PI * 0.7;
-          ctx.beginPath();
-          const r = baseSphereRadius * (0.85 + Math.sin(time * 6 + a) * 0.18);
-          ctx.arc(0, 0, r, startAngle, endAngle);
-          ctx.strokeStyle = `${pal.accent1}${0.45 * glowMult})`;
-          ctx.lineWidth = 1.8;
-          ctx.stroke();
-        }
-        ctx.restore();
-      } else {
-        // Standard atmospheric orbital ring
-        ctx.save();
-        ctx.translate(centerX, centerY);
-        ctx.rotate(rotZ * 2);
-        ctx.beginPath();
-        ctx.ellipse(0, 0, baseSphereRadius * 1.25, baseSphereRadius * 0.35, rotX * 0.5, 0, Math.PI * 2);
-        ctx.strokeStyle = `${pal.ring}${0.25 * glowMult})`;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.restore();
-      }
+      // Transform & Project 3D Points
+      const cosY = Math.cos(angleY);
+      const sinY = Math.sin(angleY);
+      const cosX = Math.cos(angleX);
+      const sinX = Math.sin(angleX);
 
-      // 3. 3D Rotation Matrix
-      const cosX = Math.cos(rotX);
-      const sinX = Math.sin(rotX);
-      const cosY = Math.cos(rotY);
-      const sinY = Math.sin(rotY);
-      const pulse = 1 + Math.sin(time * pulseFreq) * pulseAmp;
-
-      // Project points
-      const projectedPoints: Array<{
-        px: number;
-        py: number;
-        pz: number;
-        radius: number;
+      // Render points sorted by depth Z
+      const projectedList: Array<{
+        x2d: number;
+        y2d: number;
+        z: number;
+        size: number;
         alpha: number;
-        colorType: number;
+        color: string;
       }> = [];
 
       for (let i = 0; i < points.length; i++) {
         const pt = points[i];
 
-        let currX = pt.x;
-        let currY = pt.y;
-        let currZ = pt.z;
+        // Dynamic State Modulation
+        let modX = pt.x;
+        let modY = pt.y;
+        let modZ = pt.z;
 
-        if (activeStyle === 'energy') {
-          // Electric turbulence
-          const jitter = (Math.sin(time * 12 + pt.phase) + Math.cos(time * 8 + pt.phase)) * 2.5;
-          currX += jitter;
-          currY += jitter;
+        if (st === 'speaking') {
+          if (pt.type === 'mouth') {
+            // Mouth rhythmically expands with speech volume
+            const speechPulse = Math.sin(time * 6 + pt.phase) * 5 * waveAmplitude;
+            modY += speechPulse;
+            modZ += Math.abs(speechPulse) * 0.8;
+          } else {
+            const ripple = Math.sin(time * 4 + pt.phase) * 3 * waveAmplitude;
+            modX += (pt.x / (pt.baseRadius || 1)) * ripple;
+            modY += (pt.y / (pt.baseRadius || 1)) * ripple;
+            modZ += (pt.z / (pt.baseRadius || 1)) * ripple;
+          }
+        } else if (st === 'thinking') {
+          if (pt.type === 'eye' || pt.type === 'head') {
+            // Neural synapses glow and spark
+            const thinkPulse = Math.sin(time * 8 + pt.phase) * 2;
+            modY += thinkPulse;
+          }
+        } else if (st === 'listening') {
+          const listenWave = Math.sin(time * 3 + pt.phase) * 2;
+          modX += listenWave;
+          modZ += listenWave;
         }
 
-        // Apply pulse
-        currX *= pulse;
-        currY *= pulse;
-        currZ *= pulse;
+        // Rotation around Y axis
+        const x1 = modX * cosY - modZ * sinY;
+        const z1 = modZ * cosY + modX * sinY;
 
-        // Rotate around Y
-        const x1 = currX * cosY - currZ * sinY;
-        const z1 = currX * sinY + currZ * cosY;
+        // Rotation around X axis
+        const y2 = modY * cosX - z1 * sinX;
+        const z2 = z1 * cosX + modY * sinX;
 
-        // Rotate around X
-        const y2 = currY * cosX - z1 * sinX;
-        const z2 = currY * sinX + z1 * cosX;
+        // Perspective projection
+        const scale = fov / (fov + z2 + baseRadius * 1.5);
+        const x2d = centerX + x1 * scale;
+        const y2d = centerY + y2 * scale;
 
-        // Perspective depth projection
-        const fov = 400;
-        const scale = fov / (fov + z2);
+        // Depth alpha and radius
+        const depthNorm = (z2 + baseRadius * 1.5) / (baseRadius * 3);
+        const alpha = Math.max(0.12, Math.min(1.0, 0.25 + (1 - depthNorm) * 0.85));
 
-        const px = centerX + x1 * scale;
-        const py = centerY + y2 * scale;
+        let dotSize = Math.max(0.8, (1 - depthNorm * 0.6) * 2.8);
+        if (pt.type === 'eye') dotSize = 3.6;
+        if (pt.type === 'mouth') dotSize = 2.6;
 
-        // Depth alpha (front particles are brighter)
-        const depthNorm = (z2 + baseSphereRadius) / (baseSphereRadius * 2);
-        const alpha = Math.max(0.12, Math.min(1.0, 0.2 + depthNorm * 0.8)) * glowMult;
-        const pRadius = Math.max(0.7, (1.2 + depthNorm * 1.8) * scale);
+        let dotColor = palette.primary;
+        if (pt.colorType === 1) dotColor = palette.secondary;
+        else if (pt.colorType === 2) dotColor = palette.highlight;
+        if (pt.type === 'eye') dotColor = '#FFFFFF';
 
-        projectedPoints.push({
-          px,
-          py,
-          pz: z2,
-          radius: pRadius,
+        projectedList.push({
+          x2d,
+          y2d,
+          z: z2,
+          size: dotSize,
           alpha,
-          colorType: pt.colorType
+          color: dotColor
         });
       }
 
-      // Sort points by Z (back to front) for depth rendering
-      projectedPoints.sort((a, b) => a.pz - b.pz);
+      // Sort back-to-front
+      projectedList.sort((a, b) => a.z - b.z);
 
-      // 4. Style-Specific Point Drawing
-      if (activeStyle === 'crystal') {
-        // Crystalline connections between nearby front-facing vertices
-        ctx.lineWidth = 0.8;
-        const step = Math.max(1, Math.floor(projectedPoints.length / 180));
-        for (let i = 0; i < projectedPoints.length; i += step) {
-          const p1 = projectedPoints[i];
-          if (p1.pz > 0) {
-            for (let j = i + step; j < Math.min(i + step * 4, projectedPoints.length); j += step) {
-              const p2 = projectedPoints[j];
-              const dx = p1.px - p2.px;
-              const dy = p1.py - p2.py;
-              const dist = Math.sqrt(dx * dx + dy * dy);
-              if (dist < baseSphereRadius * 0.35) {
-                ctx.beginPath();
-                ctx.moveTo(p1.px, p1.py);
-                ctx.lineTo(p2.px, p2.py);
-                ctx.strokeStyle = `${pal.accent2}${p1.alpha * 0.4})`;
-                ctx.stroke();
-              }
-            }
-          }
-        }
+      // Draw Projected Dots
+      for (let i = 0; i < projectedList.length; i++) {
+        const p = projectedList[i];
+        ctx.beginPath();
+        ctx.arc(p.x2d, p.y2d, p.size, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.alpha;
+        ctx.fill();
       }
 
-      // Draw Individual Particles / Voxels / Stars
-      for (let i = 0; i < projectedPoints.length; i++) {
-        const pt = projectedPoints[i];
-
-        let colorStr = `${pal.accent1}${pt.alpha})`;
-        if (pt.colorType === 1) colorStr = `${pal.accent2}${pt.alpha})`;
-        else if (pt.colorType === 2) colorStr = `${pal.accent3}${pt.alpha})`;
-        else if (pt.colorType === 3) colorStr = `rgba(255, 255, 255, ${pt.alpha * 0.95})`;
-
-        ctx.fillStyle = colorStr;
-
-        if (activeStyle === 'pixel') {
-          // Retro Voxel Square Pixels
-          const pSize = pt.radius * 2.2;
-          ctx.fillRect(pt.px - pSize / 2, pt.py - pSize / 2, pSize, pSize);
-        } else {
-          // Round Particles, Stars, or Energy Spark
-          ctx.beginPath();
-          ctx.arc(pt.px, pt.py, pt.radius, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      // 5. Central Holographic Core
-      const coreGrad = ctx.createRadialGradient(
-        centerX,
-        centerY,
-        0,
-        centerX,
-        centerY,
-        baseSphereRadius * 0.45
-      );
-      coreGrad.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
-      coreGrad.addColorStop(0.4, `${pal.core}${0.28 * glowMult})`);
-      coreGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-      ctx.fillStyle = coreGrad;
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, baseSphereRadius * 0.45, 0, Math.PI * 2);
-      ctx.fill();
-
+      ctx.globalAlpha = 1.0;
       animFrameRef.current = requestAnimationFrame(render);
     };
 
-    render();
+    animFrameRef.current = requestAnimationFrame(render);
 
     return () => {
       if (animFrameRef.current) {
@@ -456,14 +508,11 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
   return (
     <div
       onClick={onClick}
-      className="relative flex items-center justify-center cursor-pointer select-none group"
-      style={{ width: `${size}px`, height: `${size}px` }}
-      title="Tap Orb to toggle Voice Assistant"
+      className="relative flex items-center justify-center cursor-pointer select-none active:scale-95 transition-transform duration-200"
+      style={{ width: size, height: size }}
+      title="Tap to interact with Zuzu AI"
     >
-      <canvas
-        ref={canvasRef}
-        className="block transition-transform duration-500 group-hover:scale-102"
-      />
+      <canvas ref={canvasRef} className="block pointer-events-none" />
     </div>
   );
 };

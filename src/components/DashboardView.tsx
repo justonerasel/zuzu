@@ -517,42 +517,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 pb-6 select-none custom-scrollbar">
-      {/* 1. Greeting & Large Digital Clock (Requirement 3) */}
-      <div className="text-center pt-1 pb-1">
-        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-100/80 text-purple-800 text-xs font-bold tracking-wide mb-2 shadow-sm">
+    <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2.5 pb-4 select-none custom-scrollbar">
+      {/* 1. Greeting & Large Digital Clock */}
+      <div className="text-center pt-0.5 pb-0.5">
+        <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-purple-100/90 text-purple-800 text-xs font-bold tracking-wide mb-1.5 shadow-xs">
           <Sparkles className="w-3.5 h-3.5 text-purple-600" />
-          <span>
-            {settings.timeBasedGreetings !== false
-              ? `${greeting}${settings.userNickname ? `, ${settings.userNickname}` : ''}`
-              : (settings.greetingStyle === 'formal'
-                  ? `Greetings${settings.userNickname ? `, ${settings.userNickname}` : ''}`
-                  : settings.greetingStyle === 'cheerful'
-                  ? `Hello & Welcome${settings.userNickname ? `, ${settings.userNickname}` : ''}!`
-                  : `Hello${settings.userNickname ? `, ${settings.userNickname}` : ''}`)}
-          </span>
+          <span>{greeting}</span>
         </div>
 
         {/* Large Digital Clock */}
         <div className="flex items-baseline justify-center gap-1.5">
-          <span className="text-5xl sm:text-6xl font-black text-slate-800 tracking-tight font-sans">
+          <span className="text-4xl sm:text-5xl font-black text-slate-800 tracking-tight font-sans">
             {timeString}
           </span>
-          <span className="text-sm font-extrabold text-purple-700 font-mono">
+          <span className="text-xs sm:text-sm font-extrabold text-purple-700 font-mono">
             {amPmString}
           </span>
         </div>
 
         {/* Day & Date */}
-        <div className="text-xs font-semibold text-slate-500 mt-1">
+        <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
           <span>{dayString}</span>
           <span className="mx-1.5 opacity-40">•</span>
           <span>{dateString}</span>
         </div>
       </div>
 
-      {/* 2. Futuristic 3D Particle AI Orb (Requirement 4) */}
-      <div className="flex flex-col items-center justify-center relative my-1">
+      {/* 2. Futuristic 3D Particle AI Orb */}
+      <div className="flex flex-col items-center justify-center relative my-0.5">
         <ParticleOrb
           state={orbState}
           style={settings.orbStyle}
@@ -561,11 +553,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           glowIntensity={settings.orbGlowIntensity}
           particleDensity={settings.orbParticleDensity}
           onClick={isVoiceActive ? stopVoiceInteraction : startVoiceInteraction}
-          size={270}
+          size={210}
         />
 
-        {/* 3. Compact Voice Status Pill (Requirement 5) */}
-        <div className="mt-2 flex items-center justify-center">
+        {/* 3. Compact Voice Status Pill */}
+        <div className="mt-1 flex items-center justify-center">
           <button
             onClick={isVoiceActive ? stopVoiceInteraction : startVoiceInteraction}
             className={`px-4 py-1.5 rounded-full text-[11px] font-bold font-mono tracking-wider transition-all duration-300 flex items-center gap-2 shadow-sm border ${
@@ -645,12 +637,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         {/* A. Screen Card */}
         <button
           onClick={handleToggleScreenShare}
-          className={`p-3 rounded-2xl bg-white/70 hover:bg-white/90 backdrop-blur-xl border border-white/80 shadow-sm transition-all active:scale-95 text-left flex flex-col justify-between h-24 group ${
+          className={`p-2.5 rounded-2xl bg-white/70 hover:bg-white/90 backdrop-blur-xl border border-white/80 shadow-xs transition-all active:scale-95 text-left flex flex-col justify-between h-20 group ${
             screenStreamActive ? 'ring-2 ring-purple-500 bg-purple-50/80' : ''
           }`}
         >
-          <div className="w-8 h-8 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform">
-            <Monitor className="w-4 h-4" />
+          <div className="w-7 h-7 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform">
+            <Monitor className="w-3.5 h-3.5" />
           </div>
           <div>
             <div className="text-xs font-bold text-slate-800">Screen</div>
@@ -660,17 +652,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </button>
 
-        {/* B. Image Creator Card (Requirement 2: Replaces Memories) */}
+        {/* B. Image Creator Card */}
         <button
           onClick={() => {
             playHapticSound('switch');
             onNavigateTab('image_creator');
           }}
-          className="p-3 rounded-2xl bg-white/70 hover:bg-white/90 backdrop-blur-xl border border-white/80 shadow-sm transition-all active:scale-95 text-left flex flex-col justify-between h-24 group"
+          className="p-2.5 rounded-2xl bg-white/70 hover:bg-white/90 backdrop-blur-xl border border-white/80 shadow-xs transition-all active:scale-95 text-left flex flex-col justify-between h-20 group"
           title="Open AI Image Creator"
         >
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-pink-500 to-purple-600 text-white flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform">
-            <Sparkles className="w-4 h-4 text-amber-200" />
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-pink-500 to-purple-600 text-white flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform">
+            <Sparkles className="w-3.5 h-3.5 text-amber-200" />
           </div>
           <div>
             <div className="text-xs font-bold text-slate-800">Image Creator</div>
@@ -680,15 +672,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </button>
 
-
         {/* C. Language Card */}
         <button
           onClick={handleToggleLanguage}
-          className="p-3 rounded-2xl bg-white/70 hover:bg-white/90 backdrop-blur-xl border border-white/80 shadow-sm transition-all active:scale-95 text-left flex flex-col justify-between h-24 group"
+          className="p-2.5 rounded-2xl bg-white/70 hover:bg-white/90 backdrop-blur-xl border border-white/80 shadow-xs transition-all active:scale-95 text-left flex flex-col justify-between h-20 group"
           title="Tap to toggle language"
         >
-          <div className="w-8 h-8 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform">
-            <Globe2 className="w-4 h-4" />
+          <div className="w-7 h-7 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform">
+            <Globe2 className="w-3.5 h-3.5" />
           </div>
           <div>
             <div className="text-xs font-bold text-slate-800">Language</div>

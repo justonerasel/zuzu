@@ -1,4 +1,4 @@
-import { PersonalityId, VoiceIdentity, UserMemory } from '../types';
+import type { PersonalityId, VoiceIdentity, UserMemory } from '../types/index.ts';
 
 export interface GenerateResponseOptions {
   userQuestion: string;

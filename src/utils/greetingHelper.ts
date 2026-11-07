@@ -3,18 +3,19 @@ import { AppSettings, GfIntensity } from '../types';
 export function getPersonalizedGreeting(settings: AppSettings, localDate: Date = new Date()): string {
   const hour = localDate.getHours();
   const isBengali = settings.recognitionLanguage === 'bn-BD';
-  const name = settings.userNickname?.trim() || (isBengali ? 'বাবুসোনা' : 'sweetheart');
-  const isGfMode = settings.activePersonality === 'GF Mode' || settings.gfGreetingEnabled;
+  const rawNickname = settings.userNickname?.trim();
+  // Restrict romantic/affectionate greetings STRICTLY to GF Mode
+  const isGfMode = settings.activePersonality === 'GF Mode';
   const intensity: GfIntensity = settings.gfIntensity || 'sweet';
 
-  // 1. STANDARD NON-GF GREETINGS
+  // 1. STANDARD NON-GF GREETINGS (Strictly professional, respectful, or time-based)
   if (!isGfMode) {
     let timeGreeting = 'Good Morning';
     let bnTimeGreeting = 'শুভ সকাল';
 
     if (hour >= 12 && hour < 17) {
       timeGreeting = 'Good Afternoon';
-      bnTimeGreeting = 'শুভ অপরাহ্ন';
+      bnTimeGreeting = 'শুভ দুপুর';
     } else if (hour >= 17 && hour < 21) {
       timeGreeting = 'Good Evening';
       bnTimeGreeting = 'শুভ সন্ধ্যা';
@@ -24,24 +25,33 @@ export function getPersonalizedGreeting(settings: AppSettings, localDate: Date =
     }
 
     if (isBengali) {
-      return `${bnTimeGreeting}${settings.userNickname ? `, ${settings.userNickname}` : ''}`;
+      if (settings.timeBasedGreetings !== false) {
+        return rawNickname ? `${bnTimeGreeting}, ${rawNickname}` : bnTimeGreeting;
+      }
+      if (settings.greetingStyle === 'formal') {
+        return rawNickname ? `আসসালামু আলাইকুম, ${rawNickname}` : 'আসসালামু আলাইকুম';
+      }
+      if (settings.greetingStyle === 'cheerful') {
+        return rawNickname ? `স্বাগতম, ${rawNickname}!` : 'স্বাগতম!';
+      }
+      return rawNickname ? `হ্যালো, ${rawNickname}` : 'হ্যালো';
     }
 
     if (settings.timeBasedGreetings !== false) {
-      return `${timeGreeting}${settings.userNickname ? `, ${settings.userNickname}` : ''}`;
+      return rawNickname ? `${timeGreeting}, ${rawNickname}` : timeGreeting;
     }
 
     if (settings.greetingStyle === 'formal') {
-      return `Greetings${settings.userNickname ? `, ${settings.userNickname}` : ''}`;
+      return rawNickname ? `Greetings, ${rawNickname}` : 'Greetings';
     }
     if (settings.greetingStyle === 'cheerful') {
-      return `Hello & Welcome${settings.userNickname ? `, ${settings.userNickname}` : ''}!`;
+      return rawNickname ? `Hello & Welcome, ${rawNickname}!` : 'Hello & Welcome!';
     }
-    return `Hello${settings.userNickname ? `, ${settings.userNickname}` : ''}`;
+    return rawNickname ? `Hello, ${rawNickname}` : 'Hello';
   }
 
   // 2. GF MODE GREETINGS: Varied by Time of Day & Intensity
-  // Seed based on minute/hour to ensure variety across app visits without mechanical repetition
+  const name = rawNickname || (isBengali ? 'বাবুসোনা' : 'sweetheart');
   const seed = (hour * 7 + localDate.getMinutes()) % 4;
 
   // Time segment

@@ -86,14 +86,7 @@ export default function App() {
   return (
     <AndroidFrame
       activeIdentity={settings.activeIdentity}
-      viewMode={settings.viewMode}
-      themePreset={settings.themePreset}
-      customBgColor={settings.customBgColor}
-      onToggleViewMode={() =>
-        handleUpdateSettings({
-          viewMode: settings.viewMode === 'android_frame' ? 'fullscreen' : 'android_frame'
-        })
-      }
+      settings={settings}
     >
       {/* Android Top Action Bar */}
       <TopBar

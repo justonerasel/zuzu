@@ -23,15 +23,6 @@ const DEFAULT_FEMALE_VOICE_ID = process.env.ELEVENLABS_FEMALE_VOICE_ID || 'EXAVI
 const FALLBACK_PREMADE_MALE = 'nPczCjzI2devNBz1zQrb'; // Brian
 const FALLBACK_PREMADE_FEMALE = 'EXAVITQu4vr4xnSDxMaL'; // Sarah
 
-// Initialize GoogleGenAI with recommended aistudio-build User-Agent
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build'
-    }
-  }
-});
 
 // Curated list of premade system voices that work on ElevenLabs Free Tier
 const CURATED_PREMADE_VOICES = [

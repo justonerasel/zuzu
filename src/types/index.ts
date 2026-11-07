@@ -76,13 +76,13 @@ export interface UserMemory {
   source: 'explicit' | 'learned';
 }
 
-export type OrbStyleId = 'pixel' | 'particle' | 'galaxy' | 'neon' | 'crystal' | 'energy';
+export type OrbStyleId = 'human' | 'galaxy' | 'neon' | 'crystal' | 'energy' | 'quantum' | 'particle' | 'pixel';
 export type OrbColorScheme = 'purple' | 'cyan' | 'rose' | 'mint' | 'amber';
 export type OrbRotationSpeed = 'slow' | 'normal' | 'fast';
 export type OrbGlowIntensity = 'soft' | 'medium' | 'intense';
 export type OrbParticleDensity = 'eco' | 'standard' | 'ultra';
 
-export type ThemePresetId = 'lavender' | 'cool_blue' | 'mint' | 'soft_pink' | 'midnight' | 'custom';
+export type ThemePresetId = 'lavender' | 'cool_blue' | 'mint' | 'soft_pink' | 'midnight' | 'emerald' | 'amber' | 'custom';
 
 export interface AppSettings {
   activeIdentity: VoiceIdentity;
