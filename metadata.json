@@ -1,0 +1,11 @@
+{
+  "name": "Remix Zuzu Ai",
+  "description": "Manage separate text and voice histories with dual-gender AI voice identities and intuitive voice-activated switching.",
+  "requestFramePermissions": [
+    "android.permission.RECORD_AUDIO",
+    "android.permission.MODIFY_AUDIO_SETTINGS"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
