@@ -14,12 +14,12 @@
         android:label="Zuzu AI"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:style/Theme.DeviceDefault">
+        android:theme="@android:style/Theme.DeviceDefault">
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
-            android:style/Theme.DeviceDefault">
+            android:theme="@android:style/Theme.DeviceDefault">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
