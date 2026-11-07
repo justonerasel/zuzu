@@ -2,10 +2,6 @@ name: Build Zuzu AI Android APK
 
 on:
   push:
-    branches:
-      - main
-      - master
-  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -16,6 +12,24 @@ jobs:
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
+
+      - name: Unzip project if a ZIP file was uploaded
+        run: |
+          ZIP=$(ls zuzu-fixed.zip 2>/dev/null || ls *.zip 2>/dev/null | head -1 || true)
+          if [ -n "$ZIP" ]; then
+            echo "Found ZIP: $ZIP"
+            rm -rf /tmp/proj && mkdir /tmp/proj
+            unzip -q "$ZIP" -d /tmp/proj
+            PKG=$(find /tmp/proj -name package.json -not -path '*/node_modules/*' | head -1)
+            SRC=$(dirname "$PKG")
+            echo "Project folder inside ZIP: $SRC"
+            cp -a "$SRC"/. "$GITHUB_WORKSPACE"/
+            rm -f "$GITHUB_WORKSPACE"/AndroidManifest.xml
+            rm -rf "$GITHUB_WORKSPACE"/android
+          else
+            echo "No ZIP found, using repository files as they are"
+          fi
+          ls -la
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -28,50 +42,44 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Configure Android SDK & Accept Licenses
-        run: |
-          echo "Using pre-installed Android SDK at $ANDROID_HOME"
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-
       - name: Install Project Dependencies
-        run: |
-          npm install --legacy-peer-deps
+        run: npm install --legacy-peer-deps
 
       - name: Build Web Application
-        run: |
-          npm run build
+        run: npm run build
 
       - name: Install Capacitor Tooling
-        run: |
-          npm install --no-save --legacy-peer-deps @capacitor/core@^6.2.0 @capacitor/cli@^6.2.0 @capacitor/android@^6.2.0
+        run: npm install --no-save --legacy-peer-deps @capacitor/core@^6.2.0 @capacitor/cli@^6.2.0 @capacitor/android@^6.2.0
 
       - name: Setup Android Platform & Permissions
         run: |
-          # Auto-create capacitor.config.json if it was not committed to repository
           if [ ! -f "capacitor.config.json" ]; then
             echo '{"appId":"com.zuzu.ai.assistant","appName":"Zuzu AI","webDir":"dist","server":{"androidScheme":"https"}}' > capacitor.config.json
           fi
-
-          # If android directory is incomplete (missing gradlew), remove and regenerate clean Gradle project
-          if [ ! -f "android/gradlew" ]; then
-            echo "Generating fresh Android platform project..."
-            rm -rf android
-            npx cap add android
-          fi
-
-          # Sync built web assets and plugins to Android
+          rm -rf android
+          npx cap add android
           npx cap sync android
-
-          # Ensure microphone and network permissions are properly applied to the manifest
-          if [ -f "AndroidManifest.xml" ]; then
-            echo "Applying custom AndroidManifest.xml with microphone permissions..."
-            cp AndroidManifest.xml android/app/src/main/AndroidManifest.xml
-          fi
+          python3 - <<'PY'
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p, encoding="utf-8").read()
+          perms = [
+              "android.permission.INTERNET",
+              "android.permission.ACCESS_NETWORK_STATE",
+              "android.permission.RECORD_AUDIO",
+              "android.permission.MODIFY_AUDIO_SETTINGS",
+              "android.permission.VIBRATE",
+          ]
+          add = ""
+          for x in perms:
+              if x not in s:
+                  add += '    <uses-permission android:name="%s" />\n' % x
+          s = s.replace("</manifest>", add + "</manifest>")
+          open(p, "w", encoding="utf-8").write(s)
+          print("Permissions added")
+          PY
 
       - name: Build Debug APK with Gradle
         working-directory: android
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
