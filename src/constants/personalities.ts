@@ -168,54 +168,54 @@ export interface VoiceStyleOption {
 
 export const VOICE_STYLE_OPTIONS: VoiceStyleOption[] = [
   {
-    id: 'warm_friendly',
-    name: 'Warm and Friendly',
-    styleDescription: 'Welcoming, conversational, and uplifting everyday tone.',
-    genderLabel: 'neutral',
-    toneTag: 'Comfortable',
-    previewSample: "Hey there! I'm Zuzu. How's your day going so far? I'm right here whenever you need me.",
-    recommendedPitch: 1.05,
+    id: 'kore_firm',
+    name: 'Kore (Firm & Melodic)',
+    styleDescription: 'Firm, confident, melodic feminine presence with articulate cadence.',
+    genderLabel: 'female',
+    toneTag: 'Firm & Melodic',
+    previewSample: "হুম বস, আপনার কথাই আমি ভাবতেছিলাম! I am Kore, firm and melodic.",
+    recommendedPitch: 1.12,
     recommendedRate: 1.0
   },
   {
-    id: 'soft_sweet',
-    name: 'Soft and Sweet',
-    styleDescription: 'Delicate, soothing, affectionate, and emotionally reassuring.',
+    id: 'sarah_soft',
+    name: 'Sarah (Soft & Sweet)',
+    styleDescription: 'Delicate, soothing, warm and affectionate companion tone.',
     genderLabel: 'female',
-    toneTag: 'Affectionate',
-    previewSample: "Hi sweetheart... I'm so glad to hear your voice. Take a deep breath, everything is going to be wonderful.",
-    recommendedPitch: 1.15,
-    recommendedRate: 0.95
+    toneTag: 'Sweet & Caring',
+    previewSample: "Hi sweetheart... I'm right here with you. Take a deep breath.",
+    recommendedPitch: 1.2,
+    recommendedRate: 0.98
   },
   {
-    id: 'clear_pro',
-    name: 'Clear and Professional',
-    styleDescription: 'Crisp articulation, confident executive pace, and high clarity.',
-    genderLabel: 'male',
-    toneTag: 'Executive',
-    previewSample: "Good day. Systems are operational and ready for your command. How may I direct our next task?",
-    recommendedPitch: 0.95,
+    id: 'aria_expressive',
+    name: 'Aria (Expressive & Radiant)',
+    styleDescription: 'Vibrant, cheerful, playful with animated and radiant inflections.',
+    genderLabel: 'female',
+    toneTag: 'Vibrant & Playful',
+    previewSample: "আরে বস! চলুন আজকে দারুণ কিছু করে দেখাই! Ready for action!",
+    recommendedPitch: 1.25,
     recommendedRate: 1.05
   },
   {
-    id: 'energetic',
-    name: 'Energetic and Expressive',
-    styleDescription: 'Vibrant, enthusiastic, dynamic inflections with high engagement.',
-    genderLabel: 'neutral',
-    toneTag: 'Dynamic',
-    previewSample: "Alright, let's do this! What exciting ideas or questions do you have lined up today?",
-    recommendedPitch: 1.1,
-    recommendedRate: 1.1
+    id: 'brian_deep',
+    name: 'Brian (Deep & Authoritative)',
+    styleDescription: 'Deep, crisp, commanding male resonance with high clarity.',
+    genderLabel: 'male',
+    toneTag: 'Authoritative',
+    previewSample: "Greetings Boss. Systems are fully calibrated and operational.",
+    recommendedPitch: 0.85,
+    recommendedRate: 1.0
   },
   {
-    id: 'calm_natural',
-    name: 'Calm and Natural',
-    styleDescription: 'Mellow, relaxed, unhurried cadence with smooth acoustic balance.',
-    genderLabel: 'neutral',
-    toneTag: 'Peaceful',
-    previewSample: "Take your time. Whenever you're ready, I'm listening peacefully right here with you.",
-    recommendedPitch: 1.0,
-    recommendedRate: 0.92
+    id: 'george_warm',
+    name: 'George (Warm Baritone)',
+    styleDescription: 'Warm, executive British-inspired baritone with calm acoustic depth.',
+    genderLabel: 'male',
+    toneTag: 'Executive Baritone',
+    previewSample: "Good day Boss. How may I direct our next workflow with precision?",
+    recommendedPitch: 0.92,
+    recommendedRate: 1.02
   }
 ];
 

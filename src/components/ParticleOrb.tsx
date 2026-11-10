@@ -25,15 +25,16 @@ interface Point3D {
   y: number;
   z: number;
   baseRadius: number;
+  theta: number;
+  phi: number;
   phase: number;
   colorType: number;
-  type?: 'head' | 'shoulder' | 'eye' | 'mouth' | 'node' | 'ring' | 'crystal' | 'spark';
-  connections?: number[];
+  type?: 'ribbon' | 'shell' | 'matrix' | 'mesh' | 'spiral_dot' | 'orbit_ring';
 }
 
 export const ParticleOrb: React.FC<ParticleOrbProps> = ({
   state = 'idle',
-  style = 'human',
+  style = 'purple_spiral_globe',
   colorScheme = 'purple',
   rotationSpeed = 'normal',
   glowIntensity = 'medium',
@@ -50,9 +51,19 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
   const glowRef = useRef<OrbGlowIntensity>(glowIntensity);
   const densityRef = useRef<OrbParticleDensity>(particleDensity);
 
+  // Map any legacy or alternative ID to the 4 canonical custom styles
+  const resolveStyle = (s?: string): OrbStyleId => {
+    if (!s) return 'purple_spiral_globe';
+    if (s === 'purple_spiral_globe' || s === 'glowing_globe' || s === 'crystal' || s === 'quantum') return 'purple_spiral_globe';
+    if (s === 'aura_glass' || s === 'glass_iridescent_wave') return 'glass_iridescent_wave';
+    if (s === 'particle_blue_violet' || s === 'blue_violet_matrix' || s === 'dot_matrix' || s === 'galaxy' || s === 'human') return 'blue_violet_matrix';
+    if (s === 'particle_magenta_cyan' || s === 'magenta_cyan_mesh' || s === 'particle_sphere' || s === 'neon') return 'magenta_cyan_mesh';
+    return 'purple_spiral_globe';
+  };
+
   useEffect(() => {
     stateRef.current = state;
-    styleRef.current = style;
+    styleRef.current = resolveStyle(style);
     colorRef.current = colorScheme;
     speedRef.current = rotationSpeed;
     glowRef.current = glowIntensity;
@@ -73,256 +84,201 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
     canvas.style.height = `${size}px`;
     ctx.scale(dpr, dpr);
 
-    // Particle count based on density
-    let count = 1200;
-    if (densityRef.current === 'eco') count = 700;
-    else if (densityRef.current === 'ultra') count = 1800;
+    // Particle density count
+    let count = 1250;
+    if (densityRef.current === 'eco') count = 800;
+    else if (densityRef.current === 'ultra') count = 2100;
 
+    const baseRadius = size * 0.36;
+    const currentStyle = resolveStyle(styleRef.current);
     const points: Point3D[] = [];
-    const baseRadius = size * 0.35;
-    const currentStyle = styleRef.current;
 
-    // 1. STYLE: 'human' — Abstract AI Human Silhouette/Bust dot-matrix
-    if (currentStyle === 'human') {
-      const headRadius = baseRadius * 0.55;
-      const headCenterY = -baseRadius * 0.25;
-
-      // Head / Cranium 3D ellipsoid shell
-      const headCount = Math.round(count * 0.55);
-      for (let i = 0; i < headCount; i++) {
-        const u = Math.random();
-        const v = Math.random();
-        const theta = u * 2.0 * Math.PI;
-        const phi = Math.acos(2.0 * v - 1.0);
-        const r = headRadius * (0.95 + Math.random() * 0.1);
-        const x = r * Math.sin(phi) * Math.cos(theta) * 0.85;
-        const y = headCenterY + r * Math.cos(phi) * 1.15;
-        const z = r * Math.sin(phi) * Math.sin(theta) * 0.95;
+    // =========================================================================
+    // STYLE 1: Glass Iridescent Wave (da5d185d5fef16008ef717a105376508.jpg)
+    // Multi-layered glowing translucent orb with fluid internal light waves
+    // =========================================================================
+    if (currentStyle === 'glass_iridescent_wave') {
+      const ribbonCount = Math.round(count * 0.72);
+      for (let i = 0; i < ribbonCount; i++) {
+        const u = Math.random() * Math.PI * 2;
+        const v = (Math.random() - 0.5) * Math.PI;
+        const rNorm = Math.pow(Math.random(), 0.55) * 0.85;
+        const r = baseRadius * rNorm;
 
         points.push({
-          x,
-          y,
-          z,
+          x: r * Math.cos(v) * Math.cos(u),
+          y: r * Math.sin(v),
+          z: r * Math.cos(v) * Math.sin(u),
           baseRadius: r,
+          theta: u,
+          phi: v,
           phase: Math.random() * Math.PI * 2,
-          colorType: i % 4,
-          type: 'head'
+          colorType: i % 4, // 0: Cyan, 1: Magenta, 2: Amber/Gold, 3: Soft Green
+          type: 'ribbon'
         });
       }
 
-      // Facial Neural Nodes & Eyes
-      const eyeOffset = headRadius * 0.32;
-      const eyeY = headCenterY - headRadius * 0.05;
-      const eyeZ = headRadius * 0.82;
-      for (let i = 0; i < 24; i++) {
-        // Left eye cluster
+      // Translucent glass sphere outer boundary points
+      const shellCount = count - ribbonCount;
+      for (let i = 0; i < shellCount; i++) {
+        const u = Math.random() * Math.PI * 2;
+        const v = Math.acos(2 * Math.random() - 1);
+        const r = baseRadius * 0.98;
         points.push({
-          x: -eyeOffset + (Math.random() - 0.5) * 8,
-          y: eyeY + (Math.random() - 0.5) * 5,
-          z: eyeZ + (Math.random() - 0.5) * 4,
-          baseRadius: 10,
-          phase: i,
-          colorType: 0,
-          type: 'eye'
-        });
-        // Right eye cluster
-        points.push({
-          x: eyeOffset + (Math.random() - 0.5) * 8,
-          y: eyeY + (Math.random() - 0.5) * 5,
-          z: eyeZ + (Math.random() - 0.5) * 4,
-          baseRadius: 10,
-          phase: i + 1,
-          colorType: 0,
-          type: 'eye'
-        });
-      }
-
-      // Mouth / Speech articulation node line
-      const mouthY = headCenterY + headRadius * 0.48;
-      const mouthZ = headRadius * 0.75;
-      for (let i = 0; i < 28; i++) {
-        const mx = ((i - 14) / 14) * (headRadius * 0.42);
-        points.push({
-          x: mx,
-          y: mouthY + Math.sin((i / 28) * Math.PI) * 3,
-          z: mouthZ,
-          baseRadius: 8,
-          phase: i * 0.3,
-          colorType: 1,
-          type: 'mouth'
-        });
-      }
-
-      // Neck & Shoulder Bust Arch
-      const shoulderCount = Math.round(count * 0.38);
-      for (let i = 0; i < shoulderCount; i++) {
-        const t = (i / shoulderCount) * 2 - 1; // -1 to 1
-        const shoulderWidth = baseRadius * 1.45;
-        const x = t * shoulderWidth * 0.5 + (Math.random() - 0.5) * 12;
-        const curve = Math.cos(t * Math.PI * 0.5);
-        const y = baseRadius * 0.45 + (1 - curve) * baseRadius * 0.4 + (Math.random() - 0.5) * 10;
-        const z = (Math.random() - 0.5) * baseRadius * 0.65;
-
-        points.push({
-          x,
-          y,
-          z,
-          baseRadius: Math.hypot(x, y),
-          phase: Math.random() * Math.PI * 2,
-          colorType: 2,
-          type: 'shoulder'
-        });
-      }
-    } 
-    // 2. STYLE: 'galaxy' — Cosmic 3-Arm Galactic Core
-    else if (currentStyle === 'galaxy') {
-      const arms = 3;
-      for (let i = 0; i < count; i++) {
-        const armIndex = i % arms;
-        const armAngle = (armIndex * 2 * Math.PI) / arms;
-        const distNorm = Math.pow(Math.random(), 0.65);
-        const r = distNorm * baseRadius * 1.35;
-        const spiralAngle = armAngle + distNorm * Math.PI * 3.2;
-        const spread = (Math.random() - 0.5) * (0.35 * baseRadius * (1 - distNorm * 0.5));
-        const zSpread = (Math.random() - 0.5) * (0.3 * baseRadius * (1 - distNorm * 0.6));
-
-        points.push({
-          x: Math.cos(spiralAngle) * r + spread,
-          y: Math.sin(spiralAngle) * r + spread,
-          z: zSpread,
-          baseRadius: Math.max(8, r),
-          phase: Math.random() * Math.PI * 2,
-          colorType: i % 4
+          x: r * Math.sin(v) * Math.cos(u),
+          y: r * Math.cos(v),
+          z: r * Math.sin(v) * Math.sin(u),
+          baseRadius: r,
+          theta: u,
+          phi: v,
+          phase: u + v,
+          colorType: 4, // Glass specular highlight
+          type: 'shell'
         });
       }
     }
-    // 3. STYLE: 'neon' — Cyberpunk Gyroscope Laser Rings
-    else if (currentStyle === 'neon') {
-      const rings = 4;
-      const ptsPerRing = Math.floor(count / rings);
+    // =========================================================================
+    // STYLE 2: Blue-Violet Particle Matrix (66ba3e1d2797e5926917697d2432f77f.jpg)
+    // Dynamic 3D sphere formed by dense glowing blue-to-violet matrix dots with fluid wave motion
+    // =========================================================================
+    else if (currentStyle === 'blue_violet_matrix') {
+      const phiGolden = Math.PI * (3 - Math.sqrt(5));
+      for (let i = 0; i < count; i++) {
+        const yNorm = 1 - (i / (count - 1)) * 2; // -1 to 1
+        const radiusAtY = Math.sqrt(Math.max(0, 1 - yNorm * yNorm));
+        const theta = phiGolden * i;
+        const phi = Math.acos(Math.max(-1, Math.min(1, yNorm)));
+
+        // Fluid undulating folded ribbon wave
+        const wave = Math.sin(theta * 4) * Math.cos(phi * 3) * 0.18 + Math.sin(phi * 6) * 0.08;
+        const r = baseRadius * (0.88 + wave);
+
+        points.push({
+          x: Math.cos(theta) * radiusAtY * r,
+          y: yNorm * r,
+          z: Math.sin(theta) * radiusAtY * r,
+          baseRadius: r,
+          theta,
+          phi,
+          phase: theta * 2 + phi * 3,
+          colorType: i % 2 === 0 ? 0 : 1, // 0: Electric Blue/Sky, 1: Vivid Violet
+          type: 'matrix'
+        });
+      }
+    }
+    // =========================================================================
+    // STYLE 3: Magenta-Cyan Glowing Mesh (bd8d2f99f2effa5519a7639c3864e791.jpg)
+    // Intricate particle mesh sphere with vibrant magenta, cyan & blue neon glowing gradients
+    // =========================================================================
+    else if (currentStyle === 'magenta_cyan_mesh') {
+      const phiGolden = Math.PI * (3 - Math.sqrt(5));
+      for (let i = 0; i < count; i++) {
+        const yNorm = 1 - (i / (count - 1)) * 2; // +1 (top: cyan) to -1 (bottom: magenta)
+        const radiusAtY = Math.sqrt(Math.max(0, 1 - yNorm * yNorm));
+        const theta = phiGolden * i;
+        const phi = Math.acos(Math.max(-1, Math.min(1, yNorm)));
+
+        // Surface ripple turbulence matching the image
+        const wave = Math.sin(theta * 5) * Math.sin(phi * 4) * 0.16 + Math.cos(theta * 3 + phi * 5) * 0.09;
+        const r = baseRadius * (0.86 + wave);
+
+        // Color mapping by vertical elevation
+        let cType = 1; // Purple
+        if (yNorm > 0.25) cType = 0; // Top Cyan
+        else if (yNorm < -0.2) cType = 2; // Bottom Magenta
+
+        points.push({
+          x: Math.cos(theta) * radiusAtY * r,
+          y: yNorm * r,
+          z: Math.sin(theta) * radiusAtY * r,
+          baseRadius: r,
+          theta,
+          phi,
+          phase: theta * 3,
+          colorType: cType,
+          type: 'mesh'
+        });
+      }
+    }
+    // =========================================================================
+    // STYLE 4: Purple Spiral Dot Globe (Screenshot_2026-11-09-08-30-53-451.jpg)
+    // Precise spherical grid formed by concentric purple and white glowing dot lines with orbit rings
+    // =========================================================================
+    else {
+      // 1. Concentric diagonal spiral dot rings forming the sphere
+      const rings = 26;
+      const dotsPerRing = Math.round((count * 0.8) / rings);
+      const spiralTilt = 0.52; // ~30 deg diagonal spiral alignment like in screenshot
+
       for (let r = 0; r < rings; r++) {
-        const ringRadius = baseRadius * (0.45 + r * 0.24);
-        const ringTiltX = (r * Math.PI) / 3;
-        const ringTiltY = (r * Math.PI) / 4;
+        const ringFraction = r / (rings - 1);
+        const phi = ringFraction * Math.PI; // 0 to PI
+        const ringRadius = baseRadius * 0.94 * Math.sin(phi);
+        const y = baseRadius * 0.94 * Math.cos(phi);
 
-        for (let i = 0; i < ptsPerRing; i++) {
-          const theta = (i / ptsPerRing) * Math.PI * 2;
-          const px = Math.cos(theta) * ringRadius;
-          const py = Math.sin(theta) * ringRadius;
-          const pz = (Math.random() - 0.5) * 6;
+        for (let j = 0; j < dotsPerRing; j++) {
+          const theta = (j / dotsPerRing) * Math.PI * 2 + r * 0.22; // Spiral twist offset
 
-          // Rotate by ring tilt
-          const x = px * Math.cos(ringTiltY) + pz * Math.sin(ringTiltY);
-          const y = py * Math.cos(ringTiltX) - (pz * Math.cos(ringTiltY) - px * Math.sin(ringTiltY)) * Math.sin(ringTiltX);
-          const z = py * Math.sin(ringTiltX) + (pz * Math.cos(ringTiltY) - px * Math.sin(ringTiltY)) * Math.cos(ringTiltX);
+          // Rotate coordinate by spiral tilt
+          const px = ringRadius * Math.cos(theta);
+          const pz = ringRadius * Math.sin(theta);
+          const py = y;
+
+          // Tilted coordinate transform
+          const xTilted = px * Math.cos(spiralTilt) - py * Math.sin(spiralTilt);
+          const yTilted = px * Math.sin(spiralTilt) + py * Math.cos(spiralTilt);
+          const zTilted = pz;
+
+          // Color alternating between purple and white dots
+          const isWhiteDot = (r + j) % 3 === 0;
 
           points.push({
-            x,
-            y,
-            z,
-            baseRadius: ringRadius,
-            phase: theta,
-            colorType: r % 4,
-            type: 'ring'
+            x: xTilted,
+            y: yTilted,
+            z: zTilted,
+            baseRadius: baseRadius * 0.94,
+            theta,
+            phi,
+            phase: theta + r,
+            colorType: isWhiteDot ? 0 : 1, // 0: White glow, 1: Deep purple dot
+            type: 'spiral_dot'
           });
         }
       }
-    }
-    // 4. STYLE: 'crystal' / 'pixel' — 3D Polyhedral Geometric Crystal
-    else if (currentStyle === 'crystal' || currentStyle === 'pixel') {
-      const phiAngle = Math.PI * (3 - Math.sqrt(5));
-      for (let i = 0; i < count; i++) {
-        const yNorm = 1 - (i / (count - 1)) * 2;
-        const radiusAtY = Math.sqrt(Math.max(0, 1 - yNorm * yNorm));
-        const theta = phiAngle * i;
 
-        // Faceted crystal quantization
-        const facetSteps = 8;
-        const quantizedTheta = Math.round(theta * facetSteps / Math.PI) * (Math.PI / facetSteps);
-        const quantizedY = Math.round(yNorm * facetSteps) / facetSteps;
-        const r = baseRadius * (0.85 + Math.sin(theta * 6) * 0.15);
+      // 2. Surrounding Planetary Orbit Rings (Visible in screenshot)
+      const orbitRingPoints = Math.round(count * 0.2);
+      const orbitRadiusA = baseRadius * 1.28;
+      const orbitRadiusB = baseRadius * 1.34;
+      const orbitTilt = 0.35;
 
-        const x = Math.cos(quantizedTheta) * radiusAtY * r;
-        const y = quantizedY * r;
-        const z = Math.sin(quantizedTheta) * radiusAtY * r;
+      for (let i = 0; i < orbitRingPoints; i++) {
+        const angle = (i / orbitRingPoints) * Math.PI * 2;
+        const rOrbit = i % 2 === 0 ? orbitRadiusA : orbitRadiusB;
+        const ox = Math.cos(angle) * rOrbit;
+        const oy = Math.sin(angle) * (rOrbit * 0.32); // Elliptical projection
+        const oz = Math.sin(angle) * (rOrbit * 0.6);
 
-        points.push({
-          x,
-          y,
-          z,
-          baseRadius: r,
-          phase: theta,
-          colorType: Math.abs(Math.round(quantizedY * 4)) % 4,
-          type: 'crystal'
-        });
-      }
-    }
-    // 5. STYLE: 'energy' — Turbulent Plasma Electric Arc Sphere
-    else if (currentStyle === 'energy') {
-      for (let i = 0; i < count; i++) {
-        const u = Math.random();
-        const v = Math.random();
-        const theta = u * 2.0 * Math.PI;
-        const phi = Math.acos(2.0 * v - 1.0);
-        const r = baseRadius * (0.6 + Math.random() * 0.5);
-
-        const x = r * Math.sin(phi) * Math.cos(theta);
-        const y = r * Math.sin(phi) * Math.sin(theta);
-        const z = r * Math.cos(phi);
+        // Tilt orbit
+        const xOrb = ox;
+        const yOrb = oy * Math.cos(orbitTilt) - oz * Math.sin(orbitTilt);
+        const zOrb = oy * Math.sin(orbitTilt) + oz * Math.cos(orbitTilt);
 
         points.push({
-          x,
-          y,
-          z,
-          baseRadius: r,
-          phase: Math.random() * Math.PI * 2,
-          colorType: i % 3,
-          type: 'spark'
-        });
-      }
-    }
-    // 6. STYLE: 'quantum' / 'particle' — Harmonic Quantum Waveform Torus
-    else {
-      const R = baseRadius * 0.72; // Major radius
-      const rTube = baseRadius * 0.38; // Minor radius
-      for (let i = 0; i < count; i++) {
-        const u = Math.random() * Math.PI * 2;
-        const v = Math.random() * Math.PI * 2;
-        const wave = Math.sin(u * 5 + v * 3) * (rTube * 0.25);
-
-        const x = (R + (rTube + wave) * Math.cos(v)) * Math.cos(u);
-        const y = (rTube + wave) * Math.sin(v);
-        const z = (R + (rTube + wave) * Math.cos(v)) * Math.sin(u);
-
-        points.push({
-          x,
-          y,
-          z,
-          baseRadius: Math.hypot(x, y, z),
-          phase: u,
-          colorType: i % 4
+          x: xOrb,
+          y: yOrb,
+          z: zOrb,
+          baseRadius: rOrbit,
+          theta: angle,
+          phi: Math.PI / 2,
+          phase: angle * 2,
+          colorType: 2, // Orbit ring purple aura
+          type: 'orbit_ring'
         });
       }
     }
 
-    // Palette Palette definition for Orb Hue only
-    const getColorPalette = (scheme: OrbColorScheme): { primary: string; secondary: string; highlight: string; glow: string } => {
-      switch (scheme) {
-        case 'cyan':
-          return { primary: '#06b6d4', secondary: '#22d3ee', highlight: '#e0f2fe', glow: 'rgba(6, 182, 212, 0.45)' };
-        case 'rose':
-          return { primary: '#f43f5e', secondary: '#fb7185', highlight: '#ffe4e6', glow: 'rgba(244, 63, 94, 0.45)' };
-        case 'mint':
-          return { primary: '#10b981', secondary: '#34d399', highlight: '#d1fae5', glow: 'rgba(16, 185, 129, 0.45)' };
-        case 'amber':
-          return { primary: '#f59e0b', secondary: '#fbbf24', highlight: '#fef3c7', glow: 'rgba(245, 158, 11, 0.45)' };
-        case 'purple':
-        default:
-          return { primary: '#9333ea', secondary: '#c084fc', highlight: '#f3e8ff', glow: 'rgba(147, 51, 234, 0.45)' };
-      }
-    };
-
-    let angleX = 0;
+    let angleX = 0.15;
     let angleY = 0;
     let time = 0;
 
@@ -332,167 +288,345 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
       const st = stateRef.current;
       const sp = speedRef.current;
       const gl = glowRef.current;
-      const palette = getColorPalette(colorRef.current);
-      const isHuman = styleRef.current === 'human';
+      const curStyle = resolveStyle(styleRef.current);
 
-      // Speed multipliers
-      let baseSpeed = 0.007;
-      if (sp === 'slow') baseSpeed = 0.0035;
-      else if (sp === 'fast') baseSpeed = 0.013;
+      let baseSpeed = 0.008;
+      if (sp === 'slow') baseSpeed = 0.004;
+      else if (sp === 'fast') baseSpeed = 0.015;
 
-      let rotationMultiplier = 1;
-      let waveFrequency = 1;
-      let waveAmplitude = 1;
+      let rotationMult = 1.0;
+      let waveFreq = 1.0;
+      let waveAmp = 1.0;
 
       if (st === 'listening') {
-        rotationMultiplier = 1.35;
-        waveFrequency = 2.2;
-        waveAmplitude = 1.6;
+        rotationMult = 1.35;
+        waveFreq = 2.0;
+        waveAmp = 1.5;
       } else if (st === 'thinking') {
-        rotationMultiplier = 2.2;
-        waveFrequency = 3.5;
-        waveAmplitude = 1.2;
+        rotationMult = 2.2;
+        waveFreq = 3.2;
+        waveAmp = 1.3;
       } else if (st === 'speaking') {
-        rotationMultiplier = 1.5;
-        waveFrequency = 4.2;
-        waveAmplitude = 2.4;
+        rotationMult = 1.45;
+        waveFreq = 4.0;
+        waveAmp = 2.2;
       }
 
-      time += 0.025 * waveFrequency;
+      time += 0.02 * waveFreq;
 
-      if (isHuman) {
-        // Human bust oscillates gently left-to-right rather than spinning uncontrollably
-        angleY = Math.sin(time * 0.4) * 0.45;
-        angleX = Math.sin(time * 0.3) * 0.15;
+      if (curStyle === 'purple_spiral_globe') {
+        // Spiral globe rotates primarily along its axis
+        angleY += baseSpeed * 0.85 * rotationMult;
+        angleX = 0.18;
       } else {
-        angleY += baseSpeed * rotationMultiplier;
-        angleX += baseSpeed * 0.5 * rotationMultiplier;
+        angleY += baseSpeed * rotationMult;
+        angleX += baseSpeed * 0.45 * rotationMult;
       }
 
       const centerX = size / 2;
       const centerY = size / 2;
-      const fov = size * 1.1;
+      const fov = size * 1.25;
 
-      // Center Ambient Core Glow
-      let glowRadius = size * 0.28;
-      if (gl === 'soft') glowRadius = size * 0.20;
-      else if (gl === 'intense') glowRadius = size * 0.38;
+      // -----------------------------------------------------------------------
+      // AMBIENT CORE GLOW
+      // -----------------------------------------------------------------------
+      let glowR = baseRadius * 1.25;
+      if (gl === 'soft') glowR = baseRadius * 1.05;
+      else if (gl === 'intense') glowR = baseRadius * 1.45;
 
-      const radialGrad = ctx.createRadialGradient(
-        centerX,
-        centerY,
-        0,
-        centerX,
-        centerY,
-        glowRadius * (1 + Math.sin(time) * 0.08 * waveAmplitude)
-      );
-      radialGrad.addColorStop(0, palette.glow);
-      radialGrad.addColorStop(0.65, palette.glow.replace(/[\d.]+\)$/, '0.12)'));
-      radialGrad.addColorStop(1, 'transparent');
+      if (curStyle === 'glass_iridescent_wave') {
+        const auraGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.2, centerX, centerY, glowR);
+        auraGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
+        auraGrad.addColorStop(0.3, 'rgba(56, 189, 248, 0.25)'); // Cyan
+        auraGrad.addColorStop(0.6, 'rgba(217, 70, 239, 0.18)'); // Magenta
+        auraGrad.addColorStop(0.85, 'rgba(168, 85, 247, 0.08)'); // Purple
+        auraGrad.addColorStop(1, 'transparent');
+        ctx.fillStyle = auraGrad;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, glowR, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (curStyle === 'blue_violet_matrix') {
+        const blueGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.1, centerX, centerY, glowR);
+        blueGrad.addColorStop(0, 'rgba(56, 189, 248, 0.35)');
+        blueGrad.addColorStop(0.5, 'rgba(124, 58, 237, 0.2)');
+        blueGrad.addColorStop(1, 'transparent');
+        ctx.fillStyle = blueGrad;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, glowR, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (curStyle === 'magenta_cyan_mesh') {
+        const grad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.1, centerX, centerY, glowR);
+        grad.addColorStop(0, 'rgba(236, 72, 153, 0.32)');
+        grad.addColorStop(0.5, 'rgba(6, 182, 212, 0.22)');
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, glowR, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (curStyle === 'purple_spiral_globe') {
+        // Soft luminous lavender-purple ambient aura matching screenshot
+        const purpleGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.2, centerX, centerY, glowR * 1.15);
+        purpleGrad.addColorStop(0, 'rgba(192, 132, 252, 0.3)');
+        purpleGrad.addColorStop(0.55, 'rgba(147, 51, 234, 0.18)');
+        purpleGrad.addColorStop(0.85, 'rgba(126, 34, 206, 0.06)');
+        purpleGrad.addColorStop(1, 'transparent');
+        ctx.fillStyle = purpleGrad;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, glowR * 1.15, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
-      ctx.fillStyle = radialGrad;
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, glowRadius * 1.25, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Transform & Project 3D Points
+      // -----------------------------------------------------------------------
+      // 3D TRANSFORM & PROJECTION
+      // -----------------------------------------------------------------------
       const cosY = Math.cos(angleY);
       const sinY = Math.sin(angleY);
       const cosX = Math.cos(angleX);
       const sinX = Math.sin(angleX);
 
-      // Render points sorted by depth Z
       const projectedList: Array<{
         x2d: number;
         y2d: number;
         z: number;
-        size: number;
+        radius: number;
         alpha: number;
         color: string;
+        haloColor: string;
+        isOrbit?: boolean;
       }> = [];
 
       for (let i = 0; i < points.length; i++) {
         const pt = points[i];
 
-        // Dynamic State Modulation
-        let modX = pt.x;
-        let modY = pt.y;
-        let modZ = pt.z;
+        let x = pt.x;
+        let y = pt.y;
+        let z = pt.z;
 
-        if (st === 'speaking') {
-          if (pt.type === 'mouth') {
-            // Mouth rhythmically expands with speech volume
-            const speechPulse = Math.sin(time * 6 + pt.phase) * 5 * waveAmplitude;
-            modY += speechPulse;
-            modZ += Math.abs(speechPulse) * 0.8;
-          } else {
-            const ripple = Math.sin(time * 4 + pt.phase) * 3 * waveAmplitude;
-            modX += (pt.x / (pt.baseRadius || 1)) * ripple;
-            modY += (pt.y / (pt.baseRadius || 1)) * ripple;
-            modZ += (pt.z / (pt.baseRadius || 1)) * ripple;
+        // Dynamic State Modulation
+        if (curStyle === 'glass_iridescent_wave') {
+          if (pt.type === 'ribbon') {
+            const wave = Math.sin(time * 2 + pt.phase) * (baseRadius * 0.12 * waveAmp);
+            x += Math.cos(pt.theta + time) * wave;
+            y += Math.sin(pt.phi + time * 1.5) * wave;
           }
-        } else if (st === 'thinking') {
-          if (pt.type === 'eye' || pt.type === 'head') {
-            // Neural synapses glow and spark
-            const thinkPulse = Math.sin(time * 8 + pt.phase) * 2;
-            modY += thinkPulse;
+        } else if (curStyle === 'blue_violet_matrix' || curStyle === 'magenta_cyan_mesh') {
+          const wavePulse = Math.sin(time * 3 + pt.phase) * (3.5 * waveAmp);
+          const normR = pt.baseRadius || 1;
+          x += (pt.x / normR) * wavePulse;
+          y += (pt.y / normR) * wavePulse;
+          z += (pt.z / normR) * wavePulse;
+        } else if (curStyle === 'purple_spiral_globe') {
+          if (pt.type === 'spiral_dot') {
+            // Harmonic wave along spiral lines
+            const pulse = 1 + Math.sin(time * 3 + pt.phase) * 0.03 * waveAmp;
+            x *= pulse;
+            y *= pulse;
+            z *= pulse;
+          } else if (pt.type === 'orbit_ring') {
+            // Orbit gentle rotation
+            const orbPulse = 1 + Math.sin(time * 2 + pt.phase) * 0.02;
+            x *= orbPulse;
+            y *= orbPulse;
+            z *= orbPulse;
           }
-        } else if (st === 'listening') {
-          const listenWave = Math.sin(time * 3 + pt.phase) * 2;
-          modX += listenWave;
-          modZ += listenWave;
         }
 
-        // Rotation around Y axis
-        const x1 = modX * cosY - modZ * sinY;
-        const z1 = modZ * cosY + modX * sinY;
+        // Rotate Y
+        const rx1 = x * cosY + z * sinY;
+        const ry1 = y;
+        const rz1 = -x * sinY + z * cosY;
 
-        // Rotation around X axis
-        const y2 = modY * cosX - z1 * sinX;
-        const z2 = z1 * cosX + modY * sinX;
+        // Rotate X
+        const rx2 = rx1;
+        const ry2 = ry1 * cosX - rz1 * sinX;
+        const rz2 = ry1 * sinX + rz1 * cosX;
 
-        // Perspective projection
-        const scale = fov / (fov + z2 + baseRadius * 1.5);
-        const x2d = centerX + x1 * scale;
-        const y2d = centerY + y2 * scale;
+        // Perspective
+        const scale = fov / (fov + rz2);
+        const x2d = centerX + rx2 * scale;
+        const y2d = centerY + ry2 * scale;
 
-        // Depth alpha and radius
-        const depthNorm = (z2 + baseRadius * 1.5) / (baseRadius * 3);
-        const alpha = Math.max(0.12, Math.min(1.0, 0.25 + (1 - depthNorm) * 0.85));
+        const depthNorm = (rz2 + baseRadius) / (baseRadius * 2);
+        const alpha = Math.max(0.15, Math.min(1.0, 0.25 + depthNorm * 0.75));
+        const ptRadius = Math.max(0.8, (1.2 + depthNorm * 1.8) * scale);
 
-        let dotSize = Math.max(0.8, (1 - depthNorm * 0.6) * 2.8);
-        if (pt.type === 'eye') dotSize = 3.6;
-        if (pt.type === 'mouth') dotSize = 2.6;
+        // Color selection
+        let color = '#38bdf8';
+        let haloColor = 'rgba(56, 189, 248, 0.4)';
+        let isOrbit = false;
 
-        let dotColor = palette.primary;
-        if (pt.colorType === 1) dotColor = palette.secondary;
-        else if (pt.colorType === 2) dotColor = palette.highlight;
-        if (pt.type === 'eye') dotColor = '#FFFFFF';
+        if (curStyle === 'glass_iridescent_wave') {
+          if (pt.colorType === 0) {
+            color = '#38bdf8'; // Cyan
+            haloColor = 'rgba(56, 189, 248, 0.5)';
+          } else if (pt.colorType === 1) {
+            color = '#ec4899'; // Magenta
+            haloColor = 'rgba(236, 72, 153, 0.5)';
+          } else if (pt.colorType === 2) {
+            color = '#fde047'; // Gold
+            haloColor = 'rgba(253, 224, 71, 0.45)';
+          } else if (pt.colorType === 3) {
+            color = '#34d399'; // Emerald
+            haloColor = 'rgba(52, 211, 153, 0.45)';
+          } else {
+            color = '#ffffff'; // White shell
+            haloColor = 'rgba(255, 255, 255, 0.7)';
+          }
+        } else if (curStyle === 'blue_violet_matrix') {
+          if (pt.colorType === 0) {
+            color = '#38bdf8'; // Electric Sky Blue
+            haloColor = 'rgba(56, 189, 248, 0.5)';
+          } else {
+            color = '#a855f7'; // Bright Violet
+            haloColor = 'rgba(168, 85, 247, 0.5)';
+          }
+        } else if (curStyle === 'magenta_cyan_mesh') {
+          if (pt.colorType === 0) {
+            color = '#06b6d4'; // Electric Cyan
+            haloColor = 'rgba(6, 182, 212, 0.5)';
+          } else if (pt.colorType === 1) {
+            color = '#a855f7'; // Purple Transition
+            haloColor = 'rgba(168, 85, 247, 0.5)';
+          } else {
+            color = '#ec4899'; // Hot Magenta
+            haloColor = 'rgba(236, 72, 153, 0.5)';
+          }
+        } else if (curStyle === 'purple_spiral_globe') {
+          if (pt.type === 'orbit_ring') {
+            color = '#c084fc'; // Light purple orbital line
+            haloColor = 'rgba(192, 132, 252, 0.4)';
+            isOrbit = true;
+          } else if (pt.colorType === 0) {
+            color = '#ffffff'; // Crisp white glowing dot
+            haloColor = 'rgba(255, 255, 255, 0.75)';
+          } else {
+            color = '#9333ea'; // Rich purple dot
+            haloColor = 'rgba(147, 51, 234, 0.6)';
+          }
+        }
 
         projectedList.push({
           x2d,
           y2d,
-          z: z2,
-          size: dotSize,
+          z: rz2,
+          radius: ptRadius,
           alpha,
-          color: dotColor
+          color,
+          haloColor,
+          isOrbit
         });
       }
 
-      // Sort back-to-front
+      // Depth sort
       projectedList.sort((a, b) => a.z - b.z);
 
-      // Draw Projected Dots
+      // Render dots
       for (let i = 0; i < projectedList.length; i++) {
         const p = projectedList[i];
-        ctx.beginPath();
-        ctx.arc(p.x2d, p.y2d, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = p.color;
+
+        ctx.save();
         ctx.globalAlpha = p.alpha;
+
+        // Draw radiant halo first if dot is in front hemisphere
+        if (p.z > 0) {
+          ctx.fillStyle = p.haloColor;
+          ctx.beginPath();
+          ctx.arc(p.x2d, p.y2d, p.radius * 2.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Crisp solid core dot
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x2d, p.y2d, p.isOrbit ? p.radius * 0.75 : p.radius, 0, Math.PI * 2);
         ctx.fill();
+
+        // White glowing dots: crisp specular highlight
+        if (p.color === '#ffffff' && p.z > -10) {
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(p.x2d, p.y2d, p.radius * 0.55, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.restore();
       }
 
-      ctx.globalAlpha = 1.0;
+      // Post-Processing Glass Highlight for Style 1
+      if (curStyle === 'glass_iridescent_wave') {
+        ctx.save();
+        const coreGrad = ctx.createRadialGradient(
+          centerX, 
+          centerY, 
+          0, 
+          centerX, 
+          centerY, 
+          baseRadius * 0.55 * (1 + Math.sin(time * 3) * 0.1 * waveAmp)
+        );
+        coreGrad.addColorStop(0, 'rgba(255, 255, 255, 0.85)');
+        coreGrad.addColorStop(0.3, 'rgba(224, 242, 254, 0.5)');
+        coreGrad.addColorStop(0.7, 'rgba(192, 132, 252, 0.25)');
+        coreGrad.addColorStop(1, 'transparent');
+        ctx.fillStyle = coreGrad;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, baseRadius * 0.55, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Rim
+        const rimGrad = ctx.createRadialGradient(
+          centerX - baseRadius * 0.25, 
+          centerY - baseRadius * 0.28, 
+          baseRadius * 0.1, 
+          centerX, 
+          centerY, 
+          baseRadius
+        );
+        rimGrad.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
+        rimGrad.addColorStop(0.65, 'rgba(255, 255, 255, 0.05)');
+        rimGrad.addColorStop(0.92, 'rgba(56, 189, 248, 0.35)');
+        rimGrad.addColorStop(0.98, 'rgba(217, 70, 239, 0.55)');
+        rimGrad.addColorStop(1, 'rgba(255, 255, 255, 0.7)');
+
+        ctx.strokeStyle = rimGrad;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, baseRadius * 0.98, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(
+          centerX - baseRadius * 0.32, 
+          centerY - baseRadius * 0.35, 
+          baseRadius * 0.26, 
+          baseRadius * 0.12, 
+          -Math.PI / 4, 
+          0, 
+          Math.PI * 2
+        );
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Post-Processing for Style 4 Purple Spiral Globe: Concentric planetary orbit rings
+      if (curStyle === 'purple_spiral_globe') {
+        ctx.save();
+        // Inner luminous orbit ring
+        ctx.strokeStyle = 'rgba(192, 132, 252, 0.5)';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.ellipse(centerX, centerY, baseRadius * 1.24, baseRadius * 0.42, 0.36, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Outer subtle planetary orbit ring
+        ctx.strokeStyle = 'rgba(168, 85, 247, 0.32)';
+        ctx.lineWidth = 1.0;
+        ctx.beginPath();
+        ctx.ellipse(centerX, centerY, baseRadius * 1.35, baseRadius * 0.46, 0.36, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       animFrameRef.current = requestAnimationFrame(render);
     };
 
@@ -506,13 +640,15 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
   }, [size]);
 
   return (
-    <div
+    <div 
+      className="relative flex items-center justify-center cursor-pointer select-none"
       onClick={onClick}
-      className="relative flex items-center justify-center cursor-pointer select-none active:scale-95 transition-transform duration-200"
       style={{ width: size, height: size }}
-      title="Tap to interact with Zuzu AI"
     >
-      <canvas ref={canvasRef} className="block pointer-events-none" />
+      <canvas 
+        ref={canvasRef} 
+        className="block transition-transform duration-300 hover:scale-105 active:scale-95"
+      />
     </div>
   );
 };

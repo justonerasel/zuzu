@@ -256,48 +256,41 @@ console.log(reverseString("Zuzu AI")); // Output: "IA uzuZ"
 
   // 7. General Context-Rich Response based on personality
   if (isBengali) {
-    return `আমি আপনার প্রশ্নটি বুঝতে পেরেছি: "${q}"।
-
-${identityName} হিসেবে আমি আপনাকে বাংলা ও ইংরেজি উভয় ভাষায় সহায়তা দিতে পারি। আপনি যদি কোনো নির্দিষ্ট কোড, তথ্য, ব্যাখ্যা বা ভয়েস কমান্ড সম্পর্কে জানতে চান, আমাকে নির্দ্বিধায় বলুন!`;
+    return `${identityName} হিসেবে আমি আপনাকে বাংলা ও ইংরেজি উভয় ভাষায় সরাসরি সহায়তা করতে প্রস্তুত। আপনি যদি কোনো নির্দিষ্ট কোড, প্রযুক্তিগত তথ্য, ব্যাখ্যা বা ভয়েস কমান্ড সম্পর্কে জানতে চান, আমাকে বলুন!`;
   }
 
   if (personality === 'Teacher') {
-    return `That is a great question regarding: "${q}".
+    return `To understand this clearly, let's break it down into core principles:
 
-To understand this thoroughly:
-1. Core Concept: Everything begins with breaking down the core principles into simple fundamentals.
-2. Practical Application: When applied in real-world scenarios, this allows us to solve concrete problems with higher reliability.
-3. Key Takeaway: Focus on the foundation first, and the advanced nuances will fall into place naturally.
+1. Core Concept: Everything begins with understanding the essential fundamentals.
+2. Practical Application: When applied in real-world scenarios, this allows us to solve concrete challenges reliably.
+3. Key Takeaway: Focus on the foundation first, and the deeper nuances connect naturally.
 
-Would you like me to elaborate further on any specific aspect?`;
+Would you like me to walk through a practical example or deep-dive into any part?`;
   }
 
   if (personality === 'Developer') {
-    return `Regarding your inquiry: "${q}".
+    return `Here is a technical analysis and recommended architectural approach:
 
-Analysis & Considerations:
-• Implementation: Focus on modular components, idempotency, and clean separation of concerns.
-• Performance: Ensure sub-millisecond latency and O(1) or O(log N) algorithmic complexity where feasible.
+• Implementation: Prioritize modular components, predictable state flow, and clean separation of concerns.
+• Performance: Maintain sub-millisecond execution with O(1) or O(log N) algorithms wherever feasible.
 • Resiliency: Handle edge cases, network partitioning, and race conditions gracefully.
 
-Let me know if you would like code examples, architectural diagrams, or profiling benchmarks.`;
+Let me know if you would like production-ready code examples, schema definitions, or benchmarks.`;
   }
 
   if (personality === 'Hungry') {
-    return `Thinking about "${q}" is great, but you know what's even better? A hot, steaming plate of Biryani with crispy fried onions, or fresh wood-fired pizza with bubbling mozzarella! 🍕
+    return `Now that is something we can really sink our teeth into! Just thinking about it gives me a craving for a warm, fragrant plate of Biryani with crispy fried onions, or fresh wood-fired pizza with bubbling mozzarella! 🍕
 
-Now, getting back to your question: I am ready to dig into "${q}" with full gusto. Let me know what specific details you'd like to savor first!`;
+I'm energized and ready to dive into every detail with you. What specific angle would you like to explore first?`;
   }
 
   if (personality === 'Funny') {
-    return `You asked: "${q}"!
-According to my supercomputer calculations (which run entirely on caffeine and digital optimism), that's an intriguing question. I could give you a boring encyclopedia answer, but where's the fun in that? Let me know if you want the high-tech breakdown or the funny version!`;
+    return `According to my high-tech neural calculations (which run entirely on caffeine and digital optimism), you came to the right assistant! I could give you a boring encyclopedia answer, but where's the fun in that? Let me know if you want the high-tech breakdown or the witty version!`;
   }
 
   // Default balanced answer
-  return `Regarding your question: "${q}"
+  return `As ${identityName}, I am equipped to assist you with detailed research, code implementations, creative ideas, and hands-free voice interactions. 
 
-As ${identityName}, I am equipped to assist you with detailed research, code implementations, creative writing, and voice interactions. 
-
-Feel free to ask more specific follow-ups or speak via Voice Mode anytime!`;
+Feel free to ask follow-up questions or speak aloud via Voice Mode anytime!`;
 }

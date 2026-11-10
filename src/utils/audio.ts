@@ -82,6 +82,8 @@ export interface SpeakOptions {
   stability?: number;
   similarityBoost?: number;
   speechRate?: number;
+  volume?: number;
+  voiceStyleId?: string;
   onStart?: () => void;
   onEnd?: () => void;
   onError?: (error: any) => void;
@@ -113,12 +115,17 @@ export async function speakText(options: SpeakOptions): Promise<void> {
     stability = 0.5,
     similarityBoost = 0.75,
     speechRate = 1.0,
+    volume = 1.0,
+    voiceStyleId,
     onStart,
     onEnd,
     onError
   } = options;
 
   stopSpeaking();
+
+  const safeRate = Math.max(0.75, Math.min(1.5, speechRate));
+  const safeVolume = Math.max(0, Math.min(1, volume));
 
   try {
     // Step 1: Attempt ElevenLabs TTS via secure backend proxy
@@ -144,7 +151,8 @@ export async function speakText(options: SpeakOptions): Promise<void> {
       const audio = new Audio(audioUrl);
       currentAudio = audio;
 
-      audio.playbackRate = speechRate;
+      audio.playbackRate = safeRate;
+      audio.volume = safeVolume;
       audio.onplay = () => onStart?.();
       audio.onended = () => {
         URL.revokeObjectURL(audioUrl);
@@ -155,7 +163,7 @@ export async function speakText(options: SpeakOptions): Promise<void> {
         console.warn('ElevenLabs audio playback failed, falling back to browser speech:', e);
         URL.revokeObjectURL(audioUrl);
         currentAudio = null;
-        speakWithBrowserSpeech({ text, voiceIdentity, speechRate, onStart, onEnd, onError });
+        speakWithBrowserSpeech({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
       };
 
       await audio.play();
@@ -165,10 +173,10 @@ export async function speakText(options: SpeakOptions): Promise<void> {
     // If fallback JSON returned (e.g., no ElevenLabs key configured)
     const json = await response.json();
     console.log('[Zuzu Audio] TTS server response:', json.message || json);
-    speakWithBrowserSpeech({ text, voiceIdentity, speechRate, onStart, onEnd, onError });
+    speakWithBrowserSpeech({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
   } catch (err) {
     console.warn('[Zuzu Audio] Network or TTS fetch error. Using browser speech synthesis:', err);
-    speakWithBrowserSpeech({ text, voiceIdentity, speechRate, onStart, onEnd, onError });
+    speakWithBrowserSpeech({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
   }
 }
 
@@ -177,6 +185,8 @@ function speakWithBrowserSpeech({
   text,
   voiceIdentity,
   speechRate = 1.0,
+  volume = 1.0,
+  voiceStyleId,
   onStart,
   onEnd,
   onError
@@ -184,6 +194,8 @@ function speakWithBrowserSpeech({
   text: string;
   voiceIdentity: VoiceIdentity;
   speechRate?: number;
+  volume?: number;
+  voiceStyleId?: string;
   onStart?: () => void;
   onEnd?: () => void;
   onError?: (err: any) => void;
@@ -208,10 +220,20 @@ function speakWithBrowserSpeech({
   const isBengali = /[\u0980-\u09FF]/.test(cleanText);
   const voices = window.speechSynthesis.getVoices();
 
+  const safeRate = Math.max(0.75, Math.min(1.5, speechRate));
+  const safeVolume = Math.max(0, Math.min(1, volume));
+
+  utterance.rate = safeRate;
+  utterance.volume = safeVolume;
+
   // Male Zuzu parameters
   if (voiceIdentity === 'male') {
-    utterance.pitch = 0.85; // Deeper, authoritative resonance
-    utterance.rate = speechRate * 0.98;
+    // Style specific pitch calibration
+    if (voiceStyleId === 'george_warm') {
+      utterance.pitch = 0.92;
+    } else {
+      utterance.pitch = 0.85; // Deep Brian style
+    }
 
     if (isBengali) {
       const bnVoice = voices.find(v => v.lang.startsWith('bn') && (v.name.includes('Male') || v.name.includes('David') || v.name.includes('Natural')));
@@ -227,8 +249,14 @@ function speakWithBrowserSpeech({
   } 
   // Female Zuzu parameters
   else {
-    utterance.pitch = 1.22; // Luminous, warm, melodic tone
-    utterance.rate = speechRate * 1.02;
+    // Style specific pitch calibration: Kore firm vs Sarah soft vs Aria expressive
+    if (voiceStyleId === 'kore_firm') {
+      utterance.pitch = 1.12; // Kore: Firm, confident, melodic tone
+    } else if (voiceStyleId === 'aria_expressive') {
+      utterance.pitch = 1.28; // Radiant energetic
+    } else {
+      utterance.pitch = 1.20; // Sarah soft
+    }
 
     if (isBengali) {
       const bnVoice = voices.find(v => v.lang.startsWith('bn') && (v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Natural')));

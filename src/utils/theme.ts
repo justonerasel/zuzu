@@ -87,19 +87,6 @@ export const THEME_PRESETS: ThemePreset[] = [
     borderColor: '#FDE68A',
     description: 'Warm golden amber glow and evening daylight',
     gradient: 'from-[#FFFBEB] via-[#FEF3C7] to-[#FFFDF5]'
-  },
-  {
-    id: 'midnight',
-    name: 'Midnight Cyber Neon',
-    bgColor: '#090D16',
-    cardColor: '#121927',
-    accentColor: '#A855F7',
-    textColor: '#F8FAFC',
-    secondaryTextColor: '#94A3B8',
-    borderColor: '#1E293B',
-    description: 'Deep nocturnal cyber aesthetics with glowing accents',
-    gradient: 'from-[#090D16] via-[#0D1322] to-[#05080E]',
-    isDark: true
   }
 ];
 

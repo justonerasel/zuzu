@@ -49,7 +49,9 @@ import {
   RefreshCw,
   Sliders,
   Eye,
-  EyeOff
+  EyeOff,
+  VolumeX,
+  Moon
 } from 'lucide-react';
 import { 
   AppSettings, 
@@ -190,10 +192,10 @@ const CATEGORIES: CategoryCardInfo[] = [
   },
   {
     id: 'orb_animation',
-    title: 'Orb & Animation',
-    subtitle: '6 3D Orb styles, live preview, rotation & glow dynamics',
-    icon: Activity,
-    badge: '6 Styles',
+    title: '3D Dot & Particle Orb',
+    subtitle: '4 Advanced Holographic Dot & Particle Orb Styles',
+    icon: Disc,
+    badge: '4 Orb Styles',
     colorTheme: {
       bg: 'bg-indigo-50/70 hover:bg-indigo-50',
       border: 'border-indigo-200/80',
@@ -267,13 +269,36 @@ const ORB_STYLES: Array<{
   name: string;
   desc: string;
   icon: string;
+  badge: string;
 }> = [
-  { id: 'human', name: 'AI Silhouette Bust', desc: 'Dot-matrix 3D neural human silhouette bust with expressive facial contours', icon: '👤' },
-  { id: 'galaxy', name: 'Galaxy Spiral', desc: 'Cosmic 3-arm logarithmic spiral with celestial stardust & galactic core', icon: '🌌' },
-  { id: 'neon', name: 'Cyberpunk Gyroscope', desc: '4-axis gimbal laser rings with synchronized particle orbits', icon: '⚡' },
-  { id: 'crystal', name: 'Prismatic Polyhedron', desc: 'Faceted 3D polyhedral crystal mesh with refractive geometric vertices', icon: '💎' },
-  { id: 'energy', name: 'Plasma Arc Sphere', desc: 'Turbulent energy plasma field with crackling electrical particle discharges', icon: '🔮' },
-  { id: 'quantum', name: 'Quantum Torus', desc: 'Harmonic toroidal particle ring with multidimensional phase oscillations', icon: '⚛️' }
+  { 
+    id: 'purple_spiral_globe', 
+    name: 'Purple Spiral Dot Globe (Signature)', 
+    desc: 'Signature 3D dot-matrix sphere with concentric purple & white glowing dots, fluid rotation & subtle orbiting rings', 
+    icon: '🪐',
+    badge: 'Signature Style'
+  },
+  { 
+    id: 'glass_iridescent_wave', 
+    name: 'Orb 2 — Glass Iridescent Wave', 
+    desc: 'Multi-layered glowing translucent orb with fluid internal light waves & iridescent core', 
+    icon: '🔮',
+    badge: 'Iridescent Glass'
+  },
+  { 
+    id: 'blue_violet_matrix', 
+    name: 'Orb 3 — Blue-Violet Particle Matrix', 
+    desc: 'Dynamic 3D sphere formed by dense glowing blue-to-violet matrix dots with fluid wave motion', 
+    icon: '🌊',
+    badge: 'Fluid Wave'
+  },
+  { 
+    id: 'magenta_cyan_mesh', 
+    name: 'Orb 4 — Magenta-Cyan Glowing Mesh', 
+    desc: 'Intricate particle mesh sphere featuring vibrant magenta, cyan, and blue neon glowing dot gradients', 
+    icon: '✨',
+    badge: 'High-Density Mesh'
+  }
 ];
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSettings }) => {
@@ -306,6 +331,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
   // Orb Live Preview State
   const [previewOrbState, setPreviewOrbState] = useState<OrbState>('idle');
+
+  // Reset Confirmation Modal State (Requirement 5)
+  const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
+  const [resetApiKeysToggle, setResetApiKeysToggle] = useState(false);
 
   // Custom Theme Input state
   const [customHexInput, setCustomHexInput] = useState(settings.customBgColor || '#FAF5FF');
@@ -630,6 +659,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     }
   };
 
+  const [testingFillerPhrase, setTestingFillerPhrase] = useState<string | null>(null);
+
   const handlePreviewVoiceStyle = (style: typeof VOICE_STYLE_OPTIONS[0]) => {
     if (previewingStyleId === style.id) {
       stopSpeaking();
@@ -644,13 +675,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     speakText({
       text: style.previewSample,
       voiceIdentity: style.genderLabel === 'female' ? 'female' : 'male',
+      voiceStyleId: style.id,
+      volume: settings.volume ?? 1.0,
       customApiKey: settings.customElevenLabsApiKey,
       stability: settings.stability,
       similarityBoost: settings.similarityBoost,
-      speechRate: style.recommendedRate,
+      speechRate: settings.speechRate || style.recommendedRate,
       onStart: () => setPreviewingStyleId(style.id),
       onEnd: () => setPreviewingStyleId(null),
       onError: () => setPreviewingStyleId(null)
+    });
+  };
+
+  const handleTestFillerPhrase = (phrase: string) => {
+    if (testingFillerPhrase === phrase) {
+      stopSpeaking();
+      setTestingFillerPhrase(null);
+      return;
+    }
+    stopSpeaking();
+    setTestingFillerPhrase(phrase);
+    playHapticSound('switch');
+
+    speakText({
+      text: phrase,
+      voiceIdentity: settings.activeIdentity,
+      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId || 'kore_firm',
+      volume: settings.volume ?? 1.0,
+      speechRate: settings.speechRate || 1.0,
+      customApiKey: settings.customElevenLabsApiKey,
+      stability: settings.stability,
+      similarityBoost: settings.similarityBoost,
+      onEnd: () => setTestingFillerPhrase(null),
+      onError: () => setTestingFillerPhrase(null)
     });
   };
 
@@ -690,10 +747,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     playHapticSound('listen_stop');
   };
 
-  const handleResetDefaults = () => {
-    onUpdateSettings(DEFAULT_SETTINGS);
+  const handleOpenResetDialog = () => {
+    setResetApiKeysToggle(false);
+    setShowResetConfirmModal(true);
+    playHapticSound('message_sent');
+  };
+
+  const handleConfirmReset = () => {
+    // Reset general configuration while strictly preserving API keys, memories & chat history
+    const newSettings: AppSettings = {
+      ...DEFAULT_SETTINGS,
+      customGeminiApiKey: resetApiKeysToggle ? '' : (settings.customGeminiApiKey || ''),
+      customGrokApiKey: resetApiKeysToggle ? '' : (settings.customGrokApiKey || ''),
+      customElevenLabsApiKey: resetApiKeysToggle ? '' : (settings.customElevenLabsApiKey || ''),
+      userNickname: settings.userNickname,
+      assistantNickname: settings.assistantNickname
+    };
+    onUpdateSettings(newSettings);
     setCustomHexInput('#FAF5FF');
-    playHapticSound('listen_stop');
+    setShowResetConfirmModal(false);
+    playHapticSound('listen_start');
   };
 
   const handleApplyCustomHex = () => {
@@ -753,7 +826,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
               </div>
 
               <button
-                onClick={handleResetDefaults}
+                onClick={handleOpenResetDialog}
                 className="px-2.5 py-1.5 rounded-xl bg-white/90 hover:bg-white text-slate-700 text-xs font-semibold flex items-center gap-1 border border-purple-100 shadow-xs transition-colors"
                 title="Reset All Settings to Defaults"
               >
@@ -1426,38 +1499,44 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   </div>
                 </div>
 
-                {/* Selectable Voice Options (Requirement 7) */}
+                {/* Selectable Voice Styles (3 Female & 2 Male) */}
                 <div className="p-4 bg-white/95 border border-emerald-100 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                       <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Selectable Voice Styles (5 Options)</span>
+                      <span>Selectable Voice Styles (3 Female &amp; 2 Male)</span>
                     </div>
-                    <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                      Expressive
+                    <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-bold">
+                      Featuring Kore
                     </span>
                   </div>
 
                   <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Choose from tuned voice styles with customizable speed, pitch, and timbre.
+                    Choose from 3 expressive female voices (including <strong>Kore</strong> - Firm &amp; Melodic) and 2 male vocal timbres with calibrated speed and pitch.
                   </p>
 
                   <div className="space-y-2">
                     {VOICE_STYLE_OPTIONS.map((style) => {
-                      const isSelected = (settings.selectedVoiceOptionId || 'warm_friendly') === style.id;
+                      const isSelected = (settings.selectedVoiceStyleId || settings.selectedVoiceOptionId || 'kore_firm') === style.id;
                       const isPreviewing = previewingStyleId === style.id;
+                      const isKore = style.id === 'kore_firm';
                       return (
                         <div
                           key={style.id}
                           className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-2 ${
                             isSelected
-                              ? 'bg-emerald-50/80 border-emerald-400 shadow-xs'
+                              ? 'bg-emerald-50/90 border-emerald-400 shadow-xs ring-1 ring-emerald-300/40'
                               : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100/60'
                           }`}
                         >
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
                               <span className="text-xs font-bold text-slate-800">{style.name}</span>
+                              {isKore && (
+                                <span className="text-[9px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded border border-amber-200">
+                                  ⭐ Featured Melodic
+                                </span>
+                              )}
                               <span className="text-[9px] font-mono uppercase bg-white px-1.5 py-0.2 rounded border border-slate-200 text-slate-600">
                                 {style.toneTag}
                               </span>
@@ -1477,12 +1556,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                             <button
                               onClick={() => {
-                                onUpdateSettings({ selectedVoiceOptionId: style.id });
+                                onUpdateSettings({
+                                  selectedVoiceOptionId: style.id,
+                                  selectedVoiceStyleId: style.id,
+                                  activeIdentity: style.genderLabel === 'female' ? 'female' : 'male'
+                                });
                                 playHapticSound('switch');
                               }}
                               className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-colors ${
                                 isSelected
-                                  ? 'bg-emerald-600 text-white border-emerald-600'
+                                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
                                   : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                               }`}
                             >
@@ -1495,17 +1578,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   </div>
                 </div>
 
-                {/* Voice Speed & Volume Controls (Requirement 7) */}
-                <div className="p-4 bg-white/90 border border-emerald-100 rounded-2xl shadow-xs space-y-3.5">
-                  <div className="text-xs font-bold text-slate-800">Playback Calibration</div>
+                {/* Speech Speed & Volume Playback Calibration */}
+                <div className="p-4 bg-white/90 border border-emerald-100 rounded-2xl shadow-xs space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Gauge className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Playback Calibration &amp; Dynamic Range</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                      Tuned Engine
+                    </span>
+                  </div>
 
-                  <div className="space-y-1.5">
+                  {/* Speech Rate Slider & Presets */}
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-semibold text-slate-700 flex items-center gap-1">
-                        <Gauge className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Speech Speed:</span>
+                        <span>Speech Speed Rate:</span>
                       </span>
-                      <span className="font-mono text-emerald-700 font-bold">{settings.speechRate.toFixed(2)}x</span>
+                      <span className="font-mono text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                        {settings.speechRate.toFixed(2)}x
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -1514,22 +1607,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       step="0.05"
                       value={settings.speechRate}
                       onChange={(e) => onUpdateSettings({ speechRate: parseFloat(e.target.value) })}
-                      className="w-full accent-emerald-600"
+                      className="w-full accent-emerald-600 h-2 bg-slate-200 rounded-lg cursor-pointer"
                     />
-                    <div className="flex justify-between text-[9px] text-slate-400 font-mono">
-                      <span>0.75x (Calm)</span>
-                      <span>1.0x (Normal)</span>
-                      <span>1.5x (Fast)</span>
+                    <div className="grid grid-cols-4 gap-1.5 pt-1">
+                      {[
+                        { rate: 0.75, label: '0.75x Calm' },
+                        { rate: 1.0, label: '1.0x Normal' },
+                        { rate: 1.25, label: '1.25x Dynamic' },
+                        { rate: 1.5, label: '1.5x Fast' }
+                      ].map((item) => (
+                        <button
+                          key={item.rate}
+                          onClick={() => {
+                            onUpdateSettings({ speechRate: item.rate });
+                            playHapticSound('switch');
+                          }}
+                          className={`py-1 text-[10px] font-bold rounded-lg border transition-all ${
+                            Math.abs(settings.speechRate - item.rate) < 0.04
+                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                              : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  {/* Volume Slider & Presets */}
+                  <div className="pt-3 border-t border-slate-100 space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-semibold text-slate-700 flex items-center gap-1">
                         <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Speech Volume:</span>
+                        <span>Speech Volume Level:</span>
                       </span>
-                      <span className="font-mono text-emerald-700 font-bold">{Math.round((settings.volume ?? 1.0) * 100)}%</span>
+                      <span className="font-mono text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                        {Math.round((settings.volume ?? 1.0) * 100)}%
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -1538,8 +1652,91 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       step="0.05"
                       value={settings.volume ?? 1.0}
                       onChange={(e) => onUpdateSettings({ volume: parseFloat(e.target.value) })}
-                      className="w-full accent-emerald-600"
+                      className="w-full accent-emerald-600 h-2 bg-slate-200 rounded-lg cursor-pointer"
                     />
+                    <div className="grid grid-cols-3 gap-1.5 pt-1">
+                      {[
+                        { vol: 0.0, label: 'Mute (0%)' },
+                        { vol: 0.5, label: 'Balanced (50%)' },
+                        { vol: 1.0, label: 'Full (100%)' }
+                      ].map((item) => (
+                        <button
+                          key={item.vol}
+                          onClick={() => {
+                            onUpdateSettings({ volume: item.vol });
+                            playHapticSound('switch');
+                          }}
+                          className={`py-1 text-[10px] font-bold rounded-lg border transition-all ${
+                            Math.abs((settings.volume ?? 1.0) - item.vol) < 0.04
+                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                              : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Natural Conversational Fillers & Empathy */}
+                <div className="p-4 bg-white/95 border border-emerald-100 rounded-2xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Smile className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Natural Conversational Fillers &amp; Empathy</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-bold">
+                      Bengali &amp; English
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Zuzu AI uses natural human conversational fillers (e.g. <em>"হুম বস, আপনার কথাই আমি ভাবতেছিলাম..."</em> or <em>"Hmm boss, I was just thinking about that!"</em>) to sound warm, empathetic, and lifelike instead of mechanical.
+                  </p>
+
+                  <div className="space-y-2">
+                    {[
+                      {
+                        lang: 'Bengali',
+                        phrase: 'হুম বস, আপনার কথাই আমি ভাবতেছিলাম! বলুন কি সাহায্য করতে পারি?'
+                      },
+                      {
+                        lang: 'Bengali',
+                        phrase: 'আরে বস! দারুণ প্রশ্ন করেছেন। এক্ষুনি সুন্দর করে বুঝিয়ে দিচ্ছি।'
+                      },
+                      {
+                        lang: 'English',
+                        phrase: 'Hmm boss, I was just thinking about that! Let me break it down for you.'
+                      },
+                      {
+                        lang: 'English',
+                        phrase: 'Oh hey boss! That is such a great idea. Right on it!'
+                      }
+                    ].map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="p-2.5 rounded-xl bg-slate-50/80 border border-slate-200/80 flex items-center justify-between gap-2"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className="text-[9px] font-mono font-bold uppercase bg-white px-1.5 py-0.2 rounded border border-slate-200 text-emerald-700">
+                              {item.lang}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-700 font-medium italic truncate">
+                            "{item.phrase}"
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleTestFillerPhrase(item.phrase)}
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-[10px] font-bold flex items-center gap-1 flex-shrink-0 transition-colors"
+                        >
+                          <Play className="w-2.5 h-2.5 fill-current" />
+                          <span>{testingFillerPhrase === item.phrase ? 'Playing...' : 'Test'}</span>
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
@@ -1750,192 +1947,203 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             )}
 
             {/* ----------------------------------------------------------- */}
-            {/* 5. ORB & ANIMATION SUB-PAGE (Requirement PART 1)           */}
+            {/* 5. CHARACTER & ORB AVATAR SUB-PAGE                        */}
             {/* ----------------------------------------------------------- */}
             {activeCategory === 'orb_animation' && (
               <div className="space-y-3.5 animate-fade-in text-slate-800">
-                {/* Interactive Live Orb Canvas Preview */}
+                {/* Live Orb Canvas Preview */}
                 <div className="p-4 bg-white/95 border border-indigo-100 rounded-2xl shadow-xs flex flex-col items-center justify-center relative overflow-hidden">
                   <div className="text-[10px] font-mono uppercase font-bold text-indigo-600 tracking-wider mb-1 flex items-center gap-1.5">
                     <Activity className="w-3.5 h-3.5" />
-                    <span>Live Orb Canvas Preview</span>
+                    <span>3D Holographic Orb Live Preview</span>
                   </div>
+                      <div className="text-[10px] font-mono uppercase font-bold text-indigo-600 tracking-wider mb-1 flex items-center gap-1.5">
+                        <Activity className="w-3.5 h-3.5" />
+                        <span>Live Orb Canvas Preview</span>
+                      </div>
 
-                  <div className="my-2">
-                    <ParticleOrb
-                      state={previewOrbState}
-                      style={settings.orbStyle}
-                      colorScheme={settings.orbColor}
-                      rotationSpeed={settings.orbRotationSpeed}
-                      glowIntensity={settings.orbGlowIntensity}
-                      particleDensity={settings.orbParticleDensity}
-                      size={200}
-                    />
-                  </div>
+                      <div className="my-2">
+                        <ParticleOrb
+                          state={previewOrbState}
+                          style={settings.orbStyle}
+                          colorScheme={settings.orbColor}
+                          rotationSpeed={settings.orbRotationSpeed}
+                          glowIntensity={settings.orbGlowIntensity}
+                          particleDensity={settings.orbParticleDensity}
+                          size={200}
+                        />
+                      </div>
 
-                  {/* Animation State Test Pills */}
-                  <div className="flex items-center gap-1 mt-2 bg-indigo-50/70 p-1 rounded-xl border border-indigo-100">
-                    {(['idle', 'listening', 'thinking', 'speaking'] as OrbState[]).map(st => (
-                      <button
-                        key={st}
-                        onClick={() => setPreviewOrbState(st)}
-                        className={`px-2.5 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wider transition-all ${
-                          previewOrbState === st
-                            ? 'bg-indigo-600 text-white shadow-xs'
-                            : 'text-indigo-700 hover:bg-indigo-100/60'
-                        }`}
-                      >
-                        {st}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 6 Orb Styles Selection Grid */}
-                <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                      <Disc className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>Select Orb Visual Style (6 Styles)</span>
+                      {/* Animation State Test Pills */}
+                      <div className="flex items-center gap-1 mt-2 bg-indigo-50/70 p-1 rounded-xl border border-indigo-100">
+                        {(['idle', 'listening', 'thinking', 'speaking'] as OrbState[]).map(st => (
+                          <button
+                            key={st}
+                            onClick={() => setPreviewOrbState(st)}
+                            className={`px-2.5 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wider transition-all ${
+                              previewOrbState === st
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'text-indigo-700 hover:bg-indigo-100/60'
+                            }`}
+                          >
+                            {st}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200 font-bold uppercase">
-                      {settings.orbStyle}
-                    </span>
-                  </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    {ORB_STYLES.map(style => {
-                      const isSelected = settings.orbStyle === style.id;
-                      return (
-                        <button
-                          key={style.id}
-                          onClick={() => {
-                            playHapticSound('switch');
-                            onUpdateSettings({ orbStyle: style.id });
-                          }}
-                          className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                            isSelected
-                              ? 'bg-indigo-100/80 border-indigo-400 text-indigo-900 shadow-xs'
-                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-lg">{style.icon}</span>
-                            {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 stroke-[3]" />}
-                          </div>
-                          <div className="mt-1.5">
-                            <div className="text-xs font-bold">{style.name}</div>
-                            <div className="text-[10px] opacity-70 leading-snug mt-0.5">{style.desc}</div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                    {/* 6 Orb Styles Selection Grid */}
+                    <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <Disc className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Select Orb Visual Style (4 Advanced Styles)</span>
+                        </div>
+                        <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200 font-bold uppercase">
+                          {settings.orbStyle}
+                        </span>
+                      </div>
 
-                {/* Orb Color Scheme */}
-                <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-2.5">
-                  <div className="text-xs font-bold text-slate-800">Orb Color Scheme</div>
-                  <div className="grid grid-cols-5 gap-1.5">
-                    {[
-                      { id: 'purple', name: 'Purple', bg: 'bg-purple-500' },
-                      { id: 'cyan', name: 'Cyan', bg: 'bg-cyan-500' },
-                      { id: 'rose', name: 'Rose', bg: 'bg-rose-500' },
-                      { id: 'mint', name: 'Mint', bg: 'bg-emerald-500' },
-                      { id: 'amber', name: 'Amber', bg: 'bg-amber-500' }
-                    ].map(c => (
-                      <button
-                        key={c.id}
-                        onClick={() => {
-                          playHapticSound('switch');
-                          onUpdateSettings({ orbColor: c.id as any });
-                        }}
-                        className={`p-2 rounded-xl border text-center flex flex-col items-center gap-1 transition-all ${
-                          settings.orbColor === c.id
-                            ? 'bg-indigo-100 border-indigo-400 shadow-xs'
-                            : 'bg-slate-50 border-slate-200'
-                        }`}
-                      >
-                        <div className={`w-4 h-4 rounded-full ${c.bg} shadow-xs`} />
-                        <span className="text-[9px] font-bold text-slate-700 capitalize">{c.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Dynamics: Speed, Glow & Density */}
-                <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-3">
-                  <div className="text-xs font-bold text-slate-800">Rotation Speed &amp; Dynamics</div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-500">Rotation Speed:</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'slow', label: 'Slow (0.5x)' },
-                        { id: 'normal', label: 'Normal (1.0x)' },
-                        { id: 'fast', label: 'Fast (1.8x)' }
-                      ].map(s => (
-                        <button
-                          key={s.id}
-                          onClick={() => onUpdateSettings({ orbRotationSpeed: s.id as any })}
-                          className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
-                            settings.orbRotationSpeed === s.id
-                              ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
-                              : 'bg-slate-50 text-slate-600 border-slate-200'
-                          }`}
-                        >
-                          {s.label}
-                        </button>
-                      ))}
+                      <div className="grid grid-cols-2 gap-2.5">
+                        {ORB_STYLES.map(style => {
+                          const isSelected = settings.orbStyle === style.id;
+                          return (
+                            <button
+                              key={style.id}
+                              onClick={() => {
+                                playHapticSound('switch');
+                                onUpdateSettings({ orbStyle: style.id });
+                              }}
+                              className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                                isSelected
+                                  ? 'bg-indigo-100/90 border-indigo-500 text-indigo-900 ring-2 ring-indigo-400/30 shadow-xs'
+                                  : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="text-xl">{style.icon}</span>
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                                  isSelected ? 'bg-indigo-200 text-indigo-800' : 'bg-slate-200 text-slate-600'
+                                }`}>
+                                  {style.badge}
+                                </span>
+                              </div>
+                              <div className="mt-2">
+                                <div className="text-xs font-bold flex items-center justify-between">
+                                  <span>{style.name}</span>
+                                  {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 stroke-[3]" />}
+                                </div>
+                                <div className="text-[10px] opacity-75 leading-snug mt-1">{style.desc}</div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-1 pt-2 border-t border-slate-100">
-                    <label className="text-[10px] font-semibold text-slate-500">Glow Intensity:</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'soft', label: 'Soft' },
-                        { id: 'medium', label: 'Medium' },
-                        { id: 'intense', label: 'Intense' }
-                      ].map(g => (
-                        <button
-                          key={g.id}
-                          onClick={() => onUpdateSettings({ orbGlowIntensity: g.id as any })}
-                          className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
-                            settings.orbGlowIntensity === g.id
-                              ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
-                              : 'bg-slate-50 text-slate-600 border-slate-200'
-                          }`}
-                        >
-                          {g.label}
-                        </button>
-                      ))}
+                    {/* Orb Color Scheme */}
+                    <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-2.5">
+                      <div className="text-xs font-bold text-slate-800">Orb Color Scheme</div>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {[
+                          { id: 'purple', name: 'Purple', bg: 'bg-purple-500' },
+                          { id: 'cyan', name: 'Cyan', bg: 'bg-cyan-500' },
+                          { id: 'rose', name: 'Rose', bg: 'bg-rose-500' },
+                          { id: 'mint', name: 'Mint', bg: 'bg-emerald-500' },
+                          { id: 'amber', name: 'Amber', bg: 'bg-amber-500' }
+                        ].map(c => (
+                          <button
+                            key={c.id}
+                            onClick={() => {
+                              playHapticSound('switch');
+                              onUpdateSettings({ orbColor: c.id as any });
+                            }}
+                            className={`p-2 rounded-xl border text-center flex flex-col items-center gap-1 transition-all ${
+                              settings.orbColor === c.id
+                                ? 'bg-indigo-100 border-indigo-400 shadow-xs'
+                                : 'bg-slate-50 border-slate-200'
+                            }`}
+                          >
+                            <div className={`w-4 h-4 rounded-full ${c.bg} shadow-xs`} />
+                            <span className="text-[9px] font-bold text-slate-700 capitalize">{c.name}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-1 pt-2 border-t border-slate-100">
-                    <label className="text-[10px] font-semibold text-slate-500">Particle Density:</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'eco', label: 'Eco (750)' },
-                        { id: 'standard', label: 'Standard (1400)' },
-                        { id: 'ultra', label: 'Ultra (2200)' }
-                      ].map(d => (
-                        <button
-                          key={d.id}
-                          onClick={() => onUpdateSettings({ orbParticleDensity: d.id as any })}
-                          className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
-                            settings.orbParticleDensity === d.id
-                              ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
-                              : 'bg-slate-50 text-slate-600 border-slate-200'
-                          }`}
-                        >
-                          {d.label}
-                        </button>
-                      ))}
+                    {/* Dynamics: Speed, Glow & Density */}
+                    <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-3">
+                      <div className="text-xs font-bold text-slate-800">Rotation Speed &amp; Dynamics</div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-500">Rotation Speed:</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { id: 'slow', label: 'Slow (0.5x)' },
+                            { id: 'normal', label: 'Normal (1.0x)' },
+                            { id: 'fast', label: 'Fast (1.8x)' }
+                          ].map(s => (
+                            <button
+                              key={s.id}
+                              onClick={() => onUpdateSettings({ orbRotationSpeed: s.id as any })}
+                              className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
+                                settings.orbRotationSpeed === s.id
+                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
+                                  : 'bg-slate-50 text-slate-600 border-slate-200'
+                              }`}
+                            >
+                              {s.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 pt-2 border-t border-slate-100">
+                        <label className="text-[10px] font-semibold text-slate-500">Glow Intensity:</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { id: 'soft', label: 'Soft' },
+                            { id: 'medium', label: 'Medium' },
+                            { id: 'intense', label: 'Intense' }
+                          ].map(g => (
+                            <button
+                              key={g.id}
+                              onClick={() => onUpdateSettings({ orbGlowIntensity: g.id as any })}
+                              className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
+                                settings.orbGlowIntensity === g.id
+                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
+                                  : 'bg-slate-50 text-slate-600 border-slate-200'
+                              }`}
+                            >
+                              {g.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 pt-2 border-t border-slate-100">
+                        <label className="text-[10px] font-semibold text-slate-500">Particle Density:</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { id: 'eco', label: 'Eco (750)' },
+                            { id: 'standard', label: 'Standard (1400)' },
+                            { id: 'ultra', label: 'Ultra (2200)' }
+                          ].map(d => (
+                            <button
+                              key={d.id}
+                              onClick={() => onUpdateSettings({ orbParticleDensity: d.id as any })}
+                              className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
+                                settings.orbParticleDensity === d.id
+                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
+                                  : 'bg-slate-50 text-slate-600 border-slate-200'
+                              }`}
+                            >
+                              {d.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
               </div>
             )}
 
@@ -1944,12 +2152,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             {/* ----------------------------------------------------------- */}
             {activeCategory === 'theme' && (
               <div className="space-y-3.5 animate-fade-in text-slate-800">
-                {/* 5 Preset Themes */}
+                {/* Preset Themes */}
                 <div className="p-4 bg-white/90 border border-violet-100 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                       <Palette className="w-3.5 h-3.5 text-violet-600" />
-                      <span>Preset Cool Themes (5 Styles)</span>
+                      <span>Preset Theme Palettes ({THEME_PRESETS.length} Styles)</span>
                     </div>
                     <button
                       onClick={() => {
@@ -2193,78 +2401,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       return (
                         <div
                           key={def.id}
-                          className="p-3.5 bg-white/95 border border-teal-100 rounded-2xl shadow-xs space-y-2 text-slate-800"
+                          className="p-3 bg-white/95 border border-teal-100 rounded-2xl shadow-xs flex items-center justify-between gap-3 text-slate-800"
                         >
-                          {/* Card Top: Icon, Name & Status Badge */}
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-center gap-2.5">
-                              <div className="w-8 h-8 rounded-xl bg-teal-50 border border-teal-200/60 text-teal-700 flex items-center justify-center flex-shrink-0 shadow-2xs">
-                                <Icon className="w-4 h-4" />
-                              </div>
-                              <div>
-                                <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
-                                  <span>{def.name}</span>
-                                  <span className="text-[9px] font-mono font-semibold uppercase px-1.5 py-0.2 rounded bg-slate-100 text-slate-600">
-                                    {def.category}
-                                  </span>
-                                </div>
-                                <code className="text-[9px] font-mono text-slate-400 block mt-0.5 break-all">
-                                  {def.androidManifestName}
-                                </code>
-                              </div>
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-xl bg-teal-50 border border-teal-200/60 text-teal-700 flex items-center justify-center flex-shrink-0 shadow-2xs">
+                              <Icon className="w-4 h-4" />
                             </div>
+                            <div className="min-w-0">
+                              <div className="text-xs font-bold text-slate-800 truncate">
+                                {def.name}
+                              </div>
+                              <span className="text-[9px] font-mono font-semibold uppercase px-1.5 py-0.2 rounded bg-slate-100 text-slate-500">
+                                {def.category}
+                              </span>
+                            </div>
+                          </div>
 
-                            {/* Live Status Badge */}
-                            <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold flex-shrink-0 border ${
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {/* Live Status Badge - Strictly Granted or Denied */}
+                            <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold border ${
                               status === 'granted'
                                 ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                : status === 'system_required'
-                                ? 'bg-purple-100 text-purple-800 border-purple-300'
-                                : status === 'denied'
-                                ? 'bg-rose-100 text-rose-800 border-rose-300'
-                                : 'bg-blue-100 text-blue-800 border-blue-300'
+                                : 'bg-rose-100 text-rose-800 border-rose-300'
                             }`}>
                               {status === 'granted' ? (
                                 <>
                                   <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
                                   <span>GRANTED</span>
                                 </>
-                              ) : status === 'system_required' ? (
-                                <>
-                                  <ShieldCheck className="w-2.5 h-2.5 text-purple-600" />
-                                  <span>SYSTEM REQ</span>
-                                </>
-                              ) : status === 'denied' ? (
+                              ) : (
                                 <>
                                   <ShieldAlert className="w-2.5 h-2.5 text-rose-600" />
                                   <span>DENIED</span>
                                 </>
-                              ) : (
-                                <>
-                                  <AlertTriangle className="w-2.5 h-2.5 text-blue-600" />
-                                  <span>NOT GRANTED</span>
-                                </>
                               )}
                             </span>
-                          </div>
 
-                          {/* Why Needed */}
-                          <p className="text-[11px] text-slate-600 leading-relaxed">
-                            {def.whyNeeded}
-                          </p>
-
-                          {/* Android Security Restriction Note */}
-                          <div className="p-2 rounded-xl bg-slate-50/80 border border-slate-200/60 text-[10px] text-slate-500 flex items-start gap-1.5 leading-snug">
-                            <Lock className="w-3 h-3 text-slate-400 flex-shrink-0 mt-0.5" />
-                            <span>{def.androidSecurityNote}</span>
-                          </div>
-
-                          {/* Action Button */}
-                          <div className="pt-1 flex items-center justify-end">
+                            {/* Quick Action Button */}
                             <button
                               onClick={() => handlePermAction(def.id)}
                               disabled={isLoading}
-                              className={`py-1.5 px-3 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
+                              className={`py-1 px-2.5 rounded-xl text-[11px] font-bold flex items-center gap-1 transition-all shadow-xs ${
                                 def.isSpecialSystemSetting
                                   ? 'bg-purple-100 hover:bg-purple-200 text-purple-800 border border-purple-200'
                                   : status === 'granted'
@@ -2283,12 +2460,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                               )}
                               <span>
                                 {isLoading
-                                  ? 'Updating...'
+                                  ? '...'
                                   : def.isSpecialSystemSetting
-                                  ? 'Open Android Settings'
+                                  ? 'Settings'
                                   : status === 'granted'
-                                  ? 'Re-verify Access'
-                                  : 'Grant Permission'}
+                                  ? 'Verified'
+                                  : 'Grant'}
                               </span>
                             </button>
                           </div>
@@ -2412,6 +2589,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         <ExternalLink className="w-3 h-3" />
                       </a>
                     </div>
+
+                    {/* TikTok Profile Card (Requirement 7) */}
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-left">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-pink-50 border border-pink-200 text-pink-600 flex items-center justify-center flex-shrink-0 shadow-2xs">
+                          <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                            <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64c.298-.002.595.042.88.13V9.4a6.33 6.33 0 0 0-1-.08A6.34 6.34 0 0 0 3 15.66a6.34 6.34 0 0 0 10.82 4.47 6.27 6.27 0 0 0 1.88-4.47V8.58a8.27 8.27 0 0 0 4.84 1.56V6.69h-.95z" />
+                          </svg>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-slate-400 font-semibold uppercase">TikTok Profile</div>
+                          <div className="text-xs font-bold text-slate-800 font-mono">@justonerasel</div>
+                        </div>
+                      </div>
+
+                      <a
+                        href="https://www.tiktok.com/@justonerasel"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-pink-600 to-rose-600 text-white text-[11px] font-bold flex items-center gap-1 hover:opacity-95 transition-opacity"
+                        title="View TikTok profile"
+                      >
+                        <span>Visit</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
                   </div>
                 </div>
 
@@ -2455,6 +2658,57 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                 className="flex-1 py-2 rounded-xl bg-rose-600 text-xs text-white font-bold hover:bg-rose-700 shadow-sm"
               >
                 Clear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal for Settings Reset (Requirement 5) */}
+      {showResetConfirmModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in select-none">
+          <div className="bg-white border border-purple-200 rounded-3xl p-6 max-w-sm w-full text-center shadow-2xl relative overflow-hidden text-slate-800">
+            <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center mx-auto mb-3.5 border border-amber-200 shadow-xs">
+              <RotateCcw className="w-6 h-6" />
+            </div>
+
+            <h4 className="font-black text-slate-900 text-base tracking-tight">
+              Reset Zuzu AI Settings?
+            </h4>
+
+            <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+              Are you sure you want to reset your settings? This action will restore default assistant personality, voice preferences, and theme styling.
+            </p>
+
+            <div className="mt-3 p-2.5 rounded-xl bg-purple-50/70 border border-purple-100 text-[11px] text-purple-900 text-left flex items-start gap-2">
+              <ShieldCheck className="w-4 h-4 text-purple-600 flex-shrink-0 mt-0.5" />
+              <span>Your API keys, chat history, and long-term memories are safely preserved.</span>
+            </div>
+
+            <label className="mt-3 flex items-center gap-2 text-left cursor-pointer text-xs text-slate-600 select-none">
+              <input
+                type="checkbox"
+                checked={resetApiKeysToggle}
+                onChange={(e) => setResetApiKeysToggle(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-slate-300 text-purple-600 focus:ring-purple-400"
+              />
+              <span className="text-[11px]">Also clear saved API keys</span>
+            </label>
+
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setShowResetConfirmModal(false)}
+                className="py-2.5 rounded-xl bg-slate-100 text-xs text-slate-700 font-semibold hover:bg-slate-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReset}
+                className="py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-xs text-white font-bold shadow-md shadow-purple-200 transition-all"
+              >
+                Confirm Reset
               </button>
             </div>
           </div>

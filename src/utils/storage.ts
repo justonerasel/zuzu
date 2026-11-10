@@ -27,7 +27,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiFallbackEnabled: true,
 
   // Voice Options & Live Models Defaults
-  selectedVoiceOptionId: 'warm_friendly',
+  selectedVoiceOptionId: 'kore_firm',
+  selectedVoiceStyleId: 'kore_firm',
   selectedVoiceModelId: 'gemini-3.8-live',
   aiModel: 'gemini-3.8-flash',
   stability: 0.5,
@@ -37,8 +38,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   recognitionLanguage: 'auto',
   viewMode: 'android_frame',
 
-  // Orb Customization Defaults
-  orbStyle: 'particle',
+  // 4-Style Custom Dot/Particle Orb Defaults
+  orbStyle: 'purple_spiral_globe',
   orbColor: 'purple',
   orbRotationSpeed: 'normal',
   orbGlowIntensity: 'medium',

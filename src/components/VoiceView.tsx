@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { AppSettings, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
-import { detectVoiceSwitchIntent } from '../utils/intentDetector';
+import { detectVoiceSwitchIntent, detectVoiceActionIntent } from '../utils/intentDetector';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
 import { saveVoiceSession, getVoiceSessions, getMemories, saveMemory } from '../utils/storage';
 import { checkMicrophonePermission } from '../utils/permission';
@@ -29,6 +29,7 @@ interface VoiceViewProps {
   onMinimize: () => void;
   currentSession: VoiceSession | null;
   setCurrentSession: React.Dispatch<React.SetStateAction<VoiceSession | null>>;
+  onRequestApiKeyModal?: (actionName: string, onResume?: () => void) => void;
 }
 
 export const VoiceView: React.FC<VoiceViewProps> = ({
@@ -36,7 +37,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   onUpdateSettings,
   onMinimize,
   currentSession,
-  setCurrentSession
+  setCurrentSession,
+  onRequestApiKeyModal
 }) => {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -195,6 +197,12 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
   // Check microphone permission before initiating speech recognition
   const ensurePermissionAndStart = async () => {
+    if (!settings.customGeminiApiKey && onRequestApiKeyModal) {
+      onRequestApiKeyModal('Voice Studio', () => {
+        ensurePermissionAndStart();
+      });
+      return;
+    }
     try {
       const perm = await checkMicrophonePermission();
       if (perm.state !== 'granted') {
@@ -251,6 +259,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       stability: settings.stability,
       similarityBoost: settings.similarityBoost,
       speechRate: settings.speechRate,
+      volume: settings.volume ?? 1.0,
+      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId,
       onStart: () => {
         setIsSpeaking(true);
       },
@@ -347,6 +357,31 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
       setIsProcessing(false);
       speakZuzuResponse(clarifyText, currentId);
+      return;
+    }
+
+    // 1.2 Natural Language Voice Command Action Intents (Requirement 3)
+    const actionIntent = detectVoiceActionIntent(spokenText);
+    if (actionIntent.hasActionIntent) {
+      playHapticSound('message_sent');
+
+      appendVoiceMessage({
+        sender: 'user',
+        text: spokenText,
+        timestamp: Date.now(),
+        voiceIdentity: currentId
+      });
+
+      appendVoiceMessage({
+        sender: 'assistant',
+        text: actionIntent.spokenConfirmation,
+        timestamp: Date.now() + 100,
+        voiceIdentity: currentId,
+        audioDuration: 3
+      });
+
+      setIsProcessing(false);
+      speakZuzuResponse(actionIntent.spokenConfirmation, currentId);
       return;
     }
 
@@ -529,7 +564,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         {/* Subtle Ambient Radial Glow */}
         <div className="absolute w-80 h-80 rounded-full blur-3xl opacity-35 bg-gradient-to-tr from-purple-200 via-indigo-200 to-pink-200 pointer-events-none -z-0"></div>
 
-        {/* 3D Particle Orb */}
+        {/* 3D Interactive Dot/Particle Orb */}
         <div className="relative my-auto flex flex-col items-center">
           <ParticleOrb
             state={currentOrbState}

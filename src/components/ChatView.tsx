@@ -19,9 +19,10 @@ import { generateIntelligentAnswer } from '../utils/aiEngine';
 interface ChatViewProps {
   settings: AppSettings;
   onUpdateSettings?: (settings: Partial<AppSettings>) => void;
+  onRequestApiKeyModal?: (actionName: string, onResume?: () => void) => void;
 }
 
-export const ChatView: React.FC<ChatViewProps> = ({ settings }) => {
+export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyModal }) => {
   const [messages, setMessages] = useState<ChatMessage[]>(() => getChatMessages());
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);

@@ -18,8 +18,9 @@ import { SettingsView } from './components/SettingsView';
 import { UpdatesView } from './components/UpdatesView';
 import { MinimizedVoiceOverlay } from './components/MinimizedVoiceOverlay';
 import { ImageCreatorView } from './components/ImageCreatorView';
+import { FirstLaunchPermissionModal } from './components/FirstLaunchPermissionModal';
+import { ApiKeyModal } from './components/ApiKeyModal';
 import { stopSpeaking } from './utils/audio';
-
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => getAppSettings());
@@ -29,6 +30,19 @@ export default function App() {
   const [textMessageCount, setTextMessageCount] = useState(0);
   const [voiceSessionCount, setVoiceSessionCount] = useState(0);
   const [isBackendConnected, setIsBackendConnected] = useState(true);
+
+  // First-launch permission flow state (Requirement 3)
+  const [showFirstLaunch, setShowFirstLaunch] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !localStorage.getItem('zuzu_first_launch_done');
+  });
+
+  // Floating Gemini API Key Popup state (Requirement 4)
+  const [apiKeyModalConfig, setApiKeyModalConfig] = useState<{
+    isOpen: boolean;
+    actionName?: string;
+    onResume?: () => void;
+  }>({ isOpen: false });
 
   // Initialize and perform safe legacy migration on initial mount
   useEffect(() => {
@@ -115,6 +129,7 @@ export default function App() {
           <ChatView
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
+            onRequestApiKeyModal={(actionName, onResume) => setApiKeyModalConfig({ isOpen: true, actionName, onResume })}
           />
         )}
 
@@ -125,6 +140,7 @@ export default function App() {
             onMinimize={handleMinimizeVoice}
             currentSession={currentVoiceSession}
             setCurrentSession={setCurrentVoiceSession}
+            onRequestApiKeyModal={(actionName, onResume) => setApiKeyModalConfig({ isOpen: true, actionName, onResume })}
           />
         )}
 
@@ -174,6 +190,22 @@ export default function App() {
           setIsVoiceMinimized(false);
           setCurrentVoiceSession(null);
         }}
+      />
+
+      {/* First-Launch Permission Introduction Popup (Requirement 3) */}
+      <FirstLaunchPermissionModal
+        isOpen={showFirstLaunch}
+        onFinish={() => setShowFirstLaunch(false)}
+      />
+
+      {/* Floating Gemini API Key Popup (Requirement 4) */}
+      <ApiKeyModal
+        isOpen={apiKeyModalConfig.isOpen}
+        onClose={() => setApiKeyModalConfig(prev => ({ ...prev, isOpen: false }))}
+        currentKey={settings.customGeminiApiKey}
+        onSaveKey={(newKey) => handleUpdateSettings({ customGeminiApiKey: newKey })}
+        pendingActionName={apiKeyModalConfig.actionName}
+        onSuccessResume={apiKeyModalConfig.onResume}
       />
     </AndroidFrame>
   );

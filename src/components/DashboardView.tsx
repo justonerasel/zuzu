@@ -22,15 +22,17 @@ import {
 import { ActiveTab, AppSettings, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { ParticleOrb, OrbState } from './ParticleOrb';
+import { BengaliMarqueeWidget } from './BengaliMarqueeWidget';
 import { WeatherCard } from './WeatherCard';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
 import { checkMicrophonePermission } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
-import { detectVoiceSwitchIntent } from '../utils/intentDetector';
+import { detectVoiceSwitchIntent, detectVoiceActionIntent } from '../utils/intentDetector';
 import { saveVoiceSession, getVoiceSessions, getMemories, saveMemory } from '../utils/storage';
 import { generateIntelligentAnswer } from '../utils/aiEngine';
 import { getPersonalizedGreeting } from '../utils/greetingHelper';
 import { FacebookAutomationModal, FacebookTaskType } from './FacebookAutomationModal';
+import { ScreenAssistantModal } from './ScreenAssistantModal';
 
 interface DashboardViewProps {
   settings: AppSettings;
@@ -39,6 +41,7 @@ interface DashboardViewProps {
   textMessageCount: number;
   voiceSessionCount: number;
   isBackendConnected: boolean;
+  onRequestApiKeyModal?: (actionName: string, onResume?: () => void) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -47,7 +50,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigateTab,
   textMessageCount,
   voiceSessionCount,
-  isBackendConnected
+  isBackendConnected,
+  onRequestApiKeyModal
 }) => {
   // 1. Clock and Greeting State
   const [greeting, setGreeting] = useState<string>(() => getPersonalizedGreeting(settings));
@@ -181,6 +185,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     isCancelledRef.current = false;
     setTranscriptText('');
     setLastAiResponse(null);
+
+    // Check if API key is configured (Requirement 5)
+    if (!settings.customGeminiApiKey && onRequestApiKeyModal) {
+      onRequestApiKeyModal('Voice Assistant', () => {
+        startVoiceInteraction();
+      });
+      return;
+    }
 
     // Check mic permission first
     try {
@@ -329,6 +341,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       return;
     }
 
+    // 1.1 Check Natural Language Voice Action Intents (Requirement 4)
+    const actionIntent = detectVoiceActionIntent(cleanedSpoken);
+    if (actionIntent.hasActionIntent) {
+      playHapticSound('message_sent');
+      setLastAiResponse(actionIntent.spokenConfirmation);
+      speakSpokenReply(actionIntent.spokenConfirmation, currentId);
+      setStatusText('COMMAND EXECUTED');
+      return;
+    }
+
     // 2. Auto-extract memory intent if enabled
     const activeMemories = settings.memoryEnabled ? getMemories() : [];
     if (settings.memoryEnabled) {
@@ -462,6 +484,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       stability: settings.stability,
       similarityBoost: settings.similarityBoost,
       speechRate: settings.speechRate,
+      volume: settings.volume ?? 1.0,
+      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId,
       onStart: () => {
         setOrbState('speaking');
         setStatusText('SPEAKING...');
@@ -543,8 +567,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* 2. Futuristic 3D Particle AI Orb */}
-      <div className="flex flex-col items-center justify-center relative my-0.5">
+      {/* 2. Brand-New 4-Style 3D Particle Orb Centerpiece (Requirement 1 & 2) */}
+      <div className="flex flex-col items-center justify-center relative my-1">
         <ParticleOrb
           state={orbState}
           style={settings.orbStyle}
@@ -553,7 +577,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           glowIntensity={settings.orbGlowIntensity}
           particleDensity={settings.orbParticleDensity}
           onClick={isVoiceActive ? stopVoiceInteraction : startVoiceInteraction}
-          size={210}
+          size={215}
         />
 
         {/* 3. Compact Voice Status Pill */}
@@ -585,6 +609,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Single-Layer Scrolling LED Marquee for Today's Date & Special Events in Bengali */}
+      <BengaliMarqueeWidget />
 
       {/* Spoken Transcript & AI Reply Card (when active or recently spoken) */}
       {(transcriptText || lastAiResponse) && (
@@ -690,46 +717,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </button>
       </div>
 
-      {/* Screen Assistant Modal */}
-      {showScreenModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-5 max-w-sm w-full shadow-2xl border border-purple-100 space-y-3 animate-scale-in">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-              <div className="flex items-center gap-2">
-                <Monitor className="w-4 h-4 text-purple-600" />
-                <h3 className="font-bold text-sm text-slate-800">Screen Assistant</h3>
-              </div>
-              <button
-                onClick={() => setShowScreenModal(false)}
-                className="p-1 rounded-full text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Zuzu AI Screen Assistant can analyze your current display, read text, explain diagrams, or assist with applications.
-            </p>
-
-            <div className="p-3 bg-purple-50 rounded-2xl border border-purple-100 text-xs text-purple-900 space-y-1">
-              <div className="font-bold">Android Screen Cast Support:</div>
-              <p className="text-[11px] text-purple-700">
-                Authorized via standard Android MediaProjection and web display stream.
-              </p>
-            </div>
-
-            <button
-              onClick={() => {
-                setShowScreenModal(false);
-                startVoiceInteraction();
-              }}
-              className="w-full py-2.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-md shadow-purple-600/20"
-            >
-              Ask Zuzu About Screen
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Multimodal Screen Assistant Modal (Requirement 7) */}
+      <ScreenAssistantModal
+        isOpen={showScreenModal}
+        onClose={() => {
+          setShowScreenModal(false);
+          setScreenStreamActive(false);
+        }}
+        settings={settings}
+      />
 
       {/* Microphone Permission Modal */}
       <MicrophonePermissionModal

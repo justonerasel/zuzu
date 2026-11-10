@@ -76,13 +76,25 @@ export interface UserMemory {
   source: 'explicit' | 'learned';
 }
 
-export type OrbStyleId = 'human' | 'galaxy' | 'neon' | 'crystal' | 'energy' | 'quantum' | 'particle' | 'pixel';
+export type OrbStyleId = 
+  | 'glass_iridescent_wave' // Style 1: Glass Iridescent Wave (Translucent glowing orb with fluid internal light waves)
+  | 'blue_violet_matrix'     // Style 2: Blue-Violet Particle Matrix (Dense glowing blue-to-violet matrix dots with fluid wave motion)
+  | 'magenta_cyan_mesh'      // Style 3: Magenta-Cyan Glowing Mesh (Intricate particle mesh with vibrant magenta, cyan, and blue neon glowing dot gradients)
+  | 'purple_spiral_globe';   // Style 4: Purple Spiral Dot Globe (Precise spherical grid with concentric purple and white glowing dot lines & orbit rings)
+
 export type OrbColorScheme = 'purple' | 'cyan' | 'rose' | 'mint' | 'amber';
 export type OrbRotationSpeed = 'slow' | 'normal' | 'fast';
 export type OrbGlowIntensity = 'soft' | 'medium' | 'intense';
 export type OrbParticleDensity = 'eco' | 'standard' | 'ultra';
 
-export type ThemePresetId = 'lavender' | 'cool_blue' | 'mint' | 'soft_pink' | 'midnight' | 'emerald' | 'amber' | 'custom';
+export type ThemePresetId = 
+  | 'lavender'   // Lavender Dream
+  | 'cool_blue'  // Cool Sky
+  | 'mint'       // Mint Crystal
+  | 'soft_pink'  // Soft Rose Pastel
+  | 'emerald'    // Emerald Oasis
+  | 'amber'      // Sunset Amber
+  | 'custom';
 
 export interface AppSettings {
   activeIdentity: VoiceIdentity;
@@ -104,6 +116,7 @@ export interface AppSettings {
 
   // Voice Options & Live Models
   selectedVoiceOptionId: string;
+  selectedVoiceStyleId: string;
   selectedVoiceModelId: string;
   aiModel: string;
   stability: number;
