@@ -60,22 +60,34 @@ jobs:
           npx cap add android
           npx cap sync android
           python3 - <<'PY'
+          import os, re
+          # 1. Add required Android permissions
           p = "android/app/src/main/AndroidManifest.xml"
-          s = open(p, encoding="utf-8").read()
-          perms = [
-              "android.permission.INTERNET",
-              "android.permission.ACCESS_NETWORK_STATE",
-              "android.permission.RECORD_AUDIO",
-              "android.permission.MODIFY_AUDIO_SETTINGS",
-              "android.permission.VIBRATE",
-          ]
-          add = ""
-          for x in perms:
-              if x not in s:
-                  add += '    <uses-permission android:name="%s" />\n' % x
-          s = s.replace("</manifest>", add + "</manifest>")
-          open(p, "w", encoding="utf-8").write(s)
-          print("Permissions added")
+          if os.path.exists(p):
+              s = open(p, encoding="utf-8").read()
+              perms = [
+                  "android.permission.INTERNET",
+                  "android.permission.ACCESS_NETWORK_STATE",
+                  "android.permission.RECORD_AUDIO",
+                  "android.permission.MODIFY_AUDIO_SETTINGS",
+                  "android.permission.VIBRATE",
+              ]
+              add = ""
+              for x in perms:
+                  if x not in s:
+                      add += '    <uses-permission android:name="%s" />\n' % x
+              s = s.replace("</manifest>", add + "</manifest>")
+              open(p, "w", encoding="utf-8").write(s)
+              print("Permissions added")
+
+          # 2. Configure versionCode and versionName in android/app/build.gradle
+          g = "android/app/build.gradle"
+          if os.path.exists(g):
+              txt = open(g, encoding="utf-8").read()
+              txt = re.sub(r'versionCode\s+\d+', 'versionCode 351', txt)
+              txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.5.1"', txt)
+              open(g, "w", encoding="utf-8").write(txt)
+              print("Updated android/app/build.gradle to versionCode 351 and versionName 3.5.1")
           PY
 
       - name: Build Debug APK with Gradle

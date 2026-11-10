@@ -27,10 +27,10 @@ export const UpdatesView: React.FC = () => {
   const [checkStatusMessage, setCheckStatusMessage] = useState<string | null>(null);
 
   // App version state
-  const [currentVersion, setCurrentVersion] = useState('v3.5.0');
+  const [currentVersion, setCurrentVersion] = useState('v3.5.1');
   const availableVersion = 'v3.5.1';
   const releaseDate = 'November 2026';
-  const buildTag = 'Build 350-Production';
+  const buildTag = 'Build 351-Production';
 
   const handleCheckStatus = async () => {
     setIsChecking(true);
