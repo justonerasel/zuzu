@@ -238,7 +238,7 @@ const CATEGORIES: CategoryCardInfo[] = [
   {
     id: 'about_developer',
     title: 'About & Developer',
-    subtitle: 'MD RASEL HOSSEN • Zuzu AI v3.5.1 build info',
+    subtitle: 'MD RASEL HOSSEN • Zuzu AI v3.5.4 build info',
     icon: Code2,
     badge: 'Author',
     colorTheme: {
@@ -856,7 +856,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
               </div>
               <div className="text-right">
                 <span className="text-[10px] font-mono text-purple-700 font-bold bg-white/80 px-2 py-0.5 rounded-md border border-purple-200">
-                  v3.5.1
+                  v3.5.4
                 </span>
               </div>
             </div>
@@ -2622,7 +2622,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                 <div className="p-4 bg-white/90 border border-slate-200/80 rounded-2xl shadow-xs space-y-2 text-center">
                   <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-50 text-purple-700 text-xs font-bold border border-purple-200">
                     <span>Zuzu AI</span>
-                    <span className="text-[10px] font-mono opacity-60">• v3.5.1-android</span>
+                    <span className="text-[10px] font-mono opacity-60">• v3.5.4-android</span>
                   </div>
                 </div>
               </div>

@@ -27,10 +27,10 @@ export const UpdatesView: React.FC = () => {
   const [checkStatusMessage, setCheckStatusMessage] = useState<string | null>(null);
 
   // App version state
-  const [currentVersion, setCurrentVersion] = useState('v3.5.1');
-  const availableVersion = 'v3.5.1';
+  const [currentVersion, setCurrentVersion] = useState('v3.5.4');
+  const availableVersion = 'v3.5.4';
   const releaseDate = 'November 2026';
-  const buildTag = 'Build 351-Production';
+  const buildTag = 'Build 354-Production';
 
   const handleCheckStatus = async () => {
     setIsChecking(true);
@@ -43,7 +43,7 @@ export const UpdatesView: React.FC = () => {
         const data = await res.json();
         setCheckStatusMessage(data.message || 'Update check completed.');
       } else {
-        setCheckStatusMessage('New build v3.5.1 is ready on production channel.');
+        setCheckStatusMessage(`Zuzu AI is running the latest production build (${availableVersion}).`);
       }
       playHapticSound('listen_stop');
       // Prompt user with confirmation modal for in-app auto-update
@@ -51,7 +51,7 @@ export const UpdatesView: React.FC = () => {
         setShowConfirmModal(true);
       }, 500);
     } catch {
-      setCheckStatusMessage('Connected to update server. New patch v3.5.1 detected.');
+      setCheckStatusMessage(`Connected to update server. Latest version ${availableVersion} is active.`);
       playHapticSound('listen_stop');
       setTimeout(() => {
         setShowConfirmModal(true);
@@ -77,14 +77,14 @@ export const UpdatesView: React.FC = () => {
       } else if (currentP <= 70) {
         setUpdateStepText('Verifying package cryptographic checksum...');
       } else if (currentP < 100) {
-        setUpdateStepText('Patching visual assets & neural engine v3.5.1...');
+        setUpdateStepText(`Patching visual assets & neural engine ${availableVersion}...`);
       } else {
         currentP = 100;
         clearInterval(interval);
         setUpdateStepText('Update successfully installed!');
         setIsUpdating(false);
         setIsUpdateComplete(true);
-        setCurrentVersion('v3.5.1');
+        setCurrentVersion(availableVersion);
         playHapticSound('message_sent');
       }
       setUpdateProgress(currentP);
@@ -190,7 +190,7 @@ export const UpdatesView: React.FC = () => {
 
           <div className="flex items-center justify-between text-[11px] text-slate-500">
             <span>{updateStepText}</span>
-            <span className="font-mono">v3.5.1 OTA</span>
+            <span className="font-mono">{availableVersion} OTA</span>
           </div>
 
           {isUpdateComplete && (
@@ -200,7 +200,7 @@ export const UpdatesView: React.FC = () => {
                 className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 text-white text-xs font-bold shadow-md shadow-emerald-200 flex items-center gap-1.5 transition-all"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>Restart App (Launch v3.5.1)</span>
+                <span>Restart App (Launch {availableVersion})</span>
               </button>
             </div>
           )}
@@ -332,7 +332,7 @@ export const UpdatesView: React.FC = () => {
             </div>
 
             <h3 className="text-lg font-black text-slate-900 tracking-tight">
-              Update Zuzu AI to v3.5.1?
+              Update Zuzu AI to {availableVersion}?
             </h3>
 
             <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
@@ -342,7 +342,7 @@ export const UpdatesView: React.FC = () => {
             <div className="my-3 p-2.5 rounded-xl bg-purple-50 border border-purple-100 text-[11px] text-slate-700 text-left space-y-1">
               <div className="flex justify-between font-bold">
                 <span>Target Version:</span>
-                <span className="font-mono text-purple-700">v3.5.1-production</span>
+                <span className="font-mono text-purple-700">{availableVersion}-production</span>
               </div>
               <div className="flex justify-between">
                 <span>Update Method:</span>

@@ -13,22 +13,9 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Unzip project if a ZIP file was uploaded
+      - name: Verify Clean Repository Source
         run: |
-          ZIP=$(ls zuzu-fixed.zip 2>/dev/null || ls *.zip 2>/dev/null | head -1 || true)
-          if [ -n "$ZIP" ]; then
-            echo "Found ZIP: $ZIP"
-            rm -rf /tmp/proj && mkdir /tmp/proj
-            unzip -q "$ZIP" -d /tmp/proj
-            PKG=$(find /tmp/proj -name package.json -not -path '*/node_modules/*' | head -1)
-            SRC=$(dirname "$PKG")
-            echo "Project folder inside ZIP: $SRC"
-            cp -a "$SRC"/. "$GITHUB_WORKSPACE"/
-            rm -f "$GITHUB_WORKSPACE"/AndroidManifest.xml
-            rm -rf "$GITHUB_WORKSPACE"/android
-          else
-            echo "No ZIP found, using repository files as they are"
-          fi
+          echo "Building directly from repository source code"
           ls -la
 
       - name: Setup Node.js 22
@@ -84,10 +71,10 @@ jobs:
           g = "android/app/build.gradle"
           if os.path.exists(g):
               txt = open(g, encoding="utf-8").read()
-              txt = re.sub(r'versionCode\s+\d+', 'versionCode 351', txt)
-              txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.5.1"', txt)
+              txt = re.sub(r'versionCode\s+\d+', 'versionCode 354', txt)
+              txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.5.4"', txt)
               open(g, "w", encoding="utf-8").write(txt)
-              print("Updated android/app/build.gradle to versionCode 351 and versionName 3.5.1")
+              print("Updated android/app/build.gradle to versionCode 354 and versionName 3.5.4")
           PY
 
       - name: Build Debug APK with Gradle

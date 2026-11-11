@@ -42,7 +42,7 @@ app.get('/api/config', (req, res) => {
     femaleVoiceId: process.env.ELEVENLABS_FEMALE_VOICE_ID || DEFAULT_FEMALE_VOICE_ID,
     hasElevenLabsKey: Boolean(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_API_KEY.trim().length > 0),
     hasGeminiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0),
-    version: 'v3.5.1 (Latest Release)',
+    version: 'v3.5.4 (Latest Release)',
     targetCompatibility: 'Android 9.0 (Pie) through Android 16'
   });
 });
@@ -51,15 +51,15 @@ app.get('/api/config', (req, res) => {
 app.get('/api/system/check-update', (req, res) => {
   res.json({
     appName: 'Zuzu AI',
-    currentVersion: 'v3.5.1',
-    latestVersion: 'v3.5.1',
-    buildTag: 'Release 351',
+    currentVersion: 'v3.5.4',
+    latestVersion: 'v3.5.4',
+    buildTag: 'Release 354',
     releaseDate: 'November 2026',
     status: 'up_to_date',
     targetCompatibility: 'Android 9.0 (Pie) through Android 16',
-    downloadUrl: '/apk/zuzu-ai-v3.5.1.apk',
+    downloadUrl: '/apk/zuzu-ai-v3.5.4.apk',
     downloadAvailable: true,
-    message: 'Zuzu AI is running the latest production build (v3.5.1). All system modules, dual voice engines, and 3D dot-matrix orbs are fully optimized and up-to-date.',
+    message: 'Zuzu AI is running the latest production build (v3.5.4). All system modules, dual voice engines, and 3D dot-matrix orbs are fully optimized and up-to-date.',
     changelogSummary: [
       'Universal transparent 3D character overlay with free roaming & dynamic actions',
       'Dual 3D robot companions (Male Robot & soft Light Pink Female Robot) with color customization',

@@ -7,8 +7,8 @@ android {
         applicationId "com.zuzu.ai.assistant"
         minSdkVersion 22
         targetSdkVersion 34
-        versionCode 351
-        versionName "3.5.1"
+        versionCode 354
+        versionName "3.5.4"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
