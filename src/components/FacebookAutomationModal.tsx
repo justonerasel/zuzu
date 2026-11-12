@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { AppSettings } from '../types';
 import { playHapticSound } from '../utils/audio';
+import { apiFetch } from '../utils/apiConfig';
 
 export type FacebookTaskType = 'search' | 'comment' | 'like' | 'upload_photo' | 'info';
 
@@ -100,9 +101,8 @@ export const FacebookAutomationModal: React.FC<FacebookAutomationModalProps> = (
       // Automatically generate caption via AI
       setIsGeneratingCaption(true);
       try {
-        const res = await fetch('/api/generate-caption', {
+        const res = await apiFetch('/api/generate-caption', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             imageBase64: base64,
             mimeType: file.type,

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { AppSettings } from '../types';
 import { playHapticSound } from '../utils/audio';
+import { apiFetch } from '../utils/apiConfig';
 
 interface ImageCreatorViewProps {
   settings: AppSettings;
@@ -81,9 +82,8 @@ export const ImageCreatorView: React.FC<ImageCreatorViewProps> = ({
     playHapticSound('message_sent');
 
     try {
-      const res = await fetch('/api/generate-image', {
+      const res = await apiFetch('/api/generate-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: prompt.trim(),
           aspectRatio,

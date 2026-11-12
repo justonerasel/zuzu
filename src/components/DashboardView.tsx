@@ -33,6 +33,7 @@ import { generateIntelligentAnswer } from '../utils/aiEngine';
 import { getPersonalizedGreeting } from '../utils/greetingHelper';
 import { FacebookAutomationModal, FacebookTaskType } from './FacebookAutomationModal';
 import { ScreenAssistantModal } from './ScreenAssistantModal';
+import { apiFetch } from '../utils/apiConfig';
 
 interface DashboardViewProps {
   settings: AppSettings;
@@ -391,9 +392,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     // 3. Request AI Response from /api/chat
     try {
-      const res = await fetch('/api/chat', {
+      const res = await apiFetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: [{ sender: 'user', text: cleanedSpoken }],
           personality: settings.activePersonality,

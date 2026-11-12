@@ -15,6 +15,17 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
+// Enable CORS for Android APK (Capacitor/WebView) and remote clients
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 // Verified Premade System Voice IDs (Free-tier safe on ElevenLabs)
 // Brian (deep, masculine, authoritative) & Sarah (warm, melodic, feminine)
 const DEFAULT_MALE_VOICE_ID = process.env.ELEVENLABS_MALE_VOICE_ID || 'nPczCjzI2devNBz1zQrb'; // Brian (Premade)
@@ -42,7 +53,7 @@ app.get('/api/config', (req, res) => {
     femaleVoiceId: process.env.ELEVENLABS_FEMALE_VOICE_ID || DEFAULT_FEMALE_VOICE_ID,
     hasElevenLabsKey: Boolean(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_API_KEY.trim().length > 0),
     hasGeminiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0),
-    version: 'v3.5.4 (Latest Release)',
+    version: 'v3.5.5 (Latest Release)',
     targetCompatibility: 'Android 9.0 (Pie) through Android 16'
   });
 });
@@ -106,26 +117,29 @@ app.get('/api/elevenlabs/voices', async (req, res) => {
   }
 });
 
-// Endpoint: Test AI Provider (Gemini or xAI Grok)
-app.post('/api/test-provider', async (req, res) => {
-  const { provider, apiKey } = req.body;
-  if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
+// Reusable AI Provider Test Handler
+const handleTestAiProvider = async (req: express.Request, res: express.Response) => {
+  const { provider = 'gemini' } = req.body;
+  const rawKey = req.body.apiKey || req.body.customGeminiKey || req.body.key;
+
+  if (!rawKey || typeof rawKey !== 'string' || rawKey.trim().length === 0) {
     return res.status(400).json({ success: false, error: 'API key is required for testing.' });
   }
 
-  const trimmedKey = apiKey.trim();
+  const trimmedKey = rawKey.trim();
   const startTime = Date.now();
 
   if (provider === 'gemini') {
+    const client = new GoogleGenAI({
+      apiKey: trimmedKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+    });
+
+    // 1. Try gemini-3.8-flash first
     try {
-      const client = new GoogleGenAI({
-        apiKey: trimmedKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-      });
-      const response = await client.models.generateContent({
+      await client.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: 'Ping test. Reply with "OK" only.',
-        config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
       });
       const latency = Date.now() - startTime;
       return res.json({
@@ -133,14 +147,62 @@ app.post('/api/test-provider', async (req, res) => {
         provider: 'gemini',
         model: 'gemini-3.8-flash',
         latencyMs: latency,
-        message: `Connected successfully (${latency}ms)`
+        message: `Connected successfully (${latency}ms) • gemini-3.8-flash`
       });
-    } catch (err: any) {
-      return res.status(400).json({
-        success: false,
-        provider: 'gemini',
-        error: err.message || 'Failed to authenticate with Google Gemini API.'
-      });
+    } catch (err38: any) {
+      console.log('[Zuzu AI] gemini-3.8-flash test note:', err38?.message);
+
+      // 2. Fallback to gemini-2.5-flash
+      try {
+        await client.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: 'Ping test. Reply with "OK" only.',
+        });
+        const latency = Date.now() - startTime;
+        return res.json({
+          success: true,
+          provider: 'gemini',
+          model: 'gemini-2.5-flash',
+          latencyMs: latency,
+          message: `Connected successfully (${latency}ms) • gemini-2.5-flash`
+        });
+      } catch (err25: any) {
+        console.log('[Zuzu AI] gemini-2.5-flash test note:', err25?.message);
+
+        // 3. Fallback to Google REST models endpoint verification
+        try {
+          const restRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmedKey)}`);
+          if (restRes.ok) {
+            const latency = Date.now() - startTime;
+            return res.json({
+              success: true,
+              provider: 'gemini',
+              model: 'gemini-verified',
+              latencyMs: latency,
+              message: `Connected successfully (${latency}ms) • Google Gemini Key Verified`
+            });
+          }
+        } catch {
+          // ignore network error on fallback
+        }
+
+        // Clean user-friendly message
+        const rawErr = err25?.message || err38?.message || 'Failed to authenticate with Google Gemini API.';
+        let userMessage = rawErr;
+        if (rawErr.includes('API_KEY_INVALID') || rawErr.includes('API key not valid')) {
+          userMessage = 'Invalid API Key. Please verify your key in Google AI Studio.';
+        } else if (rawErr.includes('RESOURCE_EXHAUSTED') || rawErr.includes('429')) {
+          userMessage = 'Google AI Studio quota reached for this key.';
+        } else if (rawErr.includes('PERMISSION_DENIED') || rawErr.includes('403')) {
+          userMessage = 'Permission denied. Ensure the Generative Language API is enabled.';
+        }
+
+        return res.status(400).json({
+          success: false,
+          provider: 'gemini',
+          error: userMessage
+        });
+      }
     }
   }
 
@@ -186,7 +248,13 @@ app.post('/api/test-provider', async (req, res) => {
   }
 
   return res.status(400).json({ success: false, error: 'Unsupported provider.' });
-});
+};
+
+// Endpoint: Test AI Provider (Gemini or xAI Grok)
+app.post('/api/test-provider', handleTestAiProvider);
+// Alias endpoint for API key validation
+app.post('/api/test-ai-key', handleTestAiProvider);
+
 
 // Endpoint: Real Image Generation using gemini-3.1-flash-lite-image
 app.post('/api/generate-image', async (req, res) => {
@@ -489,31 +557,42 @@ GUIDELINES FOR GF MODE:
           timeoutHandle = setTimeout(() => reject(new Error('timeout')), 12000);
         });
 
-        const response: any = await Promise.race([
-          clientAi.models.generateContent({
-            model: 'gemini-3.8-flash',
+        let response: any = null;
+        try {
+          response = await Promise.race([
+            clientAi.models.generateContent({
+              model: 'gemini-3.8-flash',
+              contents: contents,
+              config: {
+                systemInstruction: systemInstruction,
+              }
+            }),
+            timeoutPromise
+          ]);
+        } catch (err38) {
+          console.log('[Zuzu AI] 3.8-flash chat attempt note, trying 2.5-flash fallback');
+          response = await clientAi.models.generateContent({
+            model: 'gemini-2.5-flash',
             contents: contents,
             config: {
               systemInstruction: systemInstruction,
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
             }
-          }),
-          timeoutPromise
-        ]);
+          });
+        }
 
         if (timeoutHandle) clearTimeout(timeoutHandle);
 
         if (response?.text && response.text.trim().length > 0) {
           return res.json({ 
             reply: response.text.trim(), 
-            model: 'gemini-3.8-flash',
+            model: 'gemini-flash',
             isCloudAI: true,
             provider: 'google_gemini'
           });
         }
       } catch (geminiError: any) {
         if (timeoutHandle) clearTimeout(timeoutHandle);
-        console.log('[Zuzu AI] Gemini error or timeout, evaluating fallback options');
+        console.log('[Zuzu AI] Gemini chat fallback reached:', geminiError?.message);
       }
     }
 

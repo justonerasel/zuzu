@@ -16,6 +16,7 @@ import {
   Check
 } from 'lucide-react';
 import { playHapticSound } from '../utils/audio';
+import { apiFetch } from '../utils/apiConfig';
 
 export const UpdatesView: React.FC = () => {
   const [isChecking, setIsChecking] = useState(false);
@@ -27,10 +28,10 @@ export const UpdatesView: React.FC = () => {
   const [checkStatusMessage, setCheckStatusMessage] = useState<string | null>(null);
 
   // App version state
-  const [currentVersion, setCurrentVersion] = useState('v3.5.4');
-  const availableVersion = 'v3.5.4';
+  const [currentVersion, setCurrentVersion] = useState('v3.5.5');
+  const availableVersion = 'v3.5.5';
   const releaseDate = 'November 2026';
-  const buildTag = 'Build 354-Production';
+  const buildTag = 'Build 355-Production';
 
   const handleCheckStatus = async () => {
     setIsChecking(true);
@@ -38,7 +39,7 @@ export const UpdatesView: React.FC = () => {
     playHapticSound('switch');
 
     try {
-      const res = await fetch('/api/system/check-update');
+      const res = await apiFetch('/api/system/check-update');
       if (res.ok) {
         const data = await res.json();
         setCheckStatusMessage(data.message || 'Update check completed.');

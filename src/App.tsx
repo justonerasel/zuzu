@@ -21,6 +21,7 @@ import { ImageCreatorView } from './components/ImageCreatorView';
 import { FirstLaunchPermissionModal } from './components/FirstLaunchPermissionModal';
 import { ApiKeyModal } from './components/ApiKeyModal';
 import { stopSpeaking } from './utils/audio';
+import { apiFetch } from './utils/apiConfig';
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => getAppSettings());
@@ -50,7 +51,7 @@ export default function App() {
     updateCounts();
 
     // Verify backend connectivity
-    fetch('/api/config')
+    apiFetch('/api/config')
       .then(res => res.json())
       .then(() => setIsBackendConnected(true))
       .catch(() => setIsBackendConnected(false));

@@ -1,4 +1,5 @@
 import { VoiceIdentity } from '../types';
+import { apiFetch } from './apiConfig';
 
 let currentAudio: HTMLAudioElement | null = null;
 let currentUtterance: SpeechSynthesisUtterance | null = null;
@@ -129,9 +130,8 @@ export async function speakText(options: SpeakOptions): Promise<void> {
 
   try {
     // Step 1: Attempt ElevenLabs TTS via secure backend proxy
-    const response = await fetch('/api/tts', {
+    const response = await apiFetch('/api/tts', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text,
         voiceIdentity,

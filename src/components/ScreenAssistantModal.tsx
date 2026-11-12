@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { AppSettings } from '../types';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
+import { apiFetch } from '../utils/apiConfig';
 
 interface ScreenAssistantModalProps {
   isOpen: boolean;
@@ -150,7 +151,7 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
         headers['x-custom-gemini-key'] = settings.customGeminiApiKey;
       }
 
-      const res = await fetch('/api/analyze-screen', {
+      const res = await apiFetch('/api/analyze-screen', {
         method: 'POST',
         headers,
         body: JSON.stringify({

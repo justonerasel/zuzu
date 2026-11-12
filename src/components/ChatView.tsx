@@ -15,6 +15,7 @@ import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { getChatMessages, saveChatMessage, clearChatHistory, getMemories, saveMemory } from '../utils/storage';
 import { playHapticSound } from '../utils/audio';
 import { generateIntelligentAnswer } from '../utils/aiEngine';
+import { apiFetch, directGeminiGenerateContent } from '../utils/apiConfig';
 
 interface ChatViewProps {
   settings: AppSettings;
@@ -98,9 +99,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
         text: m.text
       }));
 
-      const res = await fetch('/api/chat', {
+      const res = await apiFetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: conversationContext,
           personality: settings.activePersonality,
@@ -147,17 +147,33 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
     } catch (err: any) {
       console.warn('Text Chat Network fallback:', err);
       const activeMemories = settings.memoryEnabled ? getMemories() : [];
-      // Guarantee intelligent answer even if network drops
-      const fallbackReply = generateIntelligentAnswer({
-        userQuestion: text,
-        conversationHistory: messages,
-        personality: settings.activePersonality,
-        voiceIdentity: settings.activeIdentity,
-        customPersonalityPrompt: settings.customPersonalityPrompt,
-        isVoiceMode: false,
-        memories: activeMemories,
-        memoryEnabled: settings.memoryEnabled
-      });
+      let fallbackReply = '';
+
+      // Emergency Direct Gemini API Call if user has configured custom Gemini key
+      if (settings.customGeminiApiKey && settings.customGeminiApiKey.trim().length > 0) {
+        try {
+          fallbackReply = await directGeminiGenerateContent(
+            settings.customGeminiApiKey,
+            text,
+            `You are Zuzu AI, an intelligent AI assistant. Personality: ${settings.activePersonality}. Voice identity: ${settings.activeIdentity}. Language: Bengali & English.`
+          );
+        } catch (directErr) {
+          console.warn('[Zuzu AI] Direct Gemini fallback failed, using local engine:', directErr);
+        }
+      }
+
+      if (!fallbackReply) {
+        fallbackReply = generateIntelligentAnswer({
+          userQuestion: text,
+          conversationHistory: messages,
+          personality: settings.activePersonality,
+          voiceIdentity: settings.activeIdentity,
+          customPersonalityPrompt: settings.customPersonalityPrompt,
+          isVoiceMode: false,
+          memories: activeMemories,
+          memoryEnabled: settings.memoryEnabled
+        });
+      }
 
       const fallbackMsg: ChatMessage = {
         id: `chat-ai-${Date.now()}`,

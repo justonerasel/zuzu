@@ -21,6 +21,7 @@ import { saveVoiceSession, getVoiceSessions, getMemories, saveMemory } from '../
 import { checkMicrophonePermission } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import { generateIntelligentAnswer } from '../utils/aiEngine';
+import { apiFetch, directGeminiGenerateContent } from '../utils/apiConfig';
 import { ParticleOrb, OrbState } from './ParticleOrb';
 
 interface VoiceViewProps {
@@ -429,9 +430,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       }
 
       // Call Gemini AI backend
-      const res = await fetch('/api/chat', {
+      const res = await apiFetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: [...historyContext, { sender: 'user', text: spokenText }],
           personality: settings.activePersonality,
@@ -476,16 +476,32 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       console.warn('Voice Assistant Query Network Fallback:', err);
       setIsProcessing(false);
       const activeMemories = settings.memoryEnabled ? getMemories() : [];
-      const fallbackReply = generateIntelligentAnswer({
-        userQuestion: spokenText,
-        conversationHistory: (sessionRef.current?.messages || []).map(m => ({ sender: m.sender, text: m.text })),
-        personality: settings.activePersonality,
-        voiceIdentity: currentId,
-        customPersonalityPrompt: settings.customPersonalityPrompt,
-        isVoiceMode: true,
-        memories: activeMemories,
-        memoryEnabled: settings.memoryEnabled
-      });
+      let fallbackReply = '';
+
+      if (settings.customGeminiApiKey && settings.customGeminiApiKey.trim().length > 0) {
+        try {
+          fallbackReply = await directGeminiGenerateContent(
+            settings.customGeminiApiKey,
+            spokenText,
+            `You are Zuzu AI, an intelligent spoken voice assistant. Personality: ${settings.activePersonality}. Voice identity: ${currentId}. Keep spoken answers concise, engaging, and conversational without markdown.`
+          );
+        } catch (directErr) {
+          console.warn('[Zuzu AI] Voice direct Gemini fallback note:', directErr);
+        }
+      }
+
+      if (!fallbackReply) {
+        fallbackReply = generateIntelligentAnswer({
+          userQuestion: spokenText,
+          conversationHistory: (sessionRef.current?.messages || []).map(m => ({ sender: m.sender, text: m.text })),
+          personality: settings.activePersonality,
+          voiceIdentity: currentId,
+          customPersonalityPrompt: settings.customPersonalityPrompt,
+          isVoiceMode: true,
+          memories: activeMemories,
+          memoryEnabled: settings.memoryEnabled
+        });
+      }
 
       appendVoiceMessage({
         sender: 'assistant',

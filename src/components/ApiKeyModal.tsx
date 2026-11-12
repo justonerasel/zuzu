@@ -13,6 +13,7 @@ import {
   Lock
 } from 'lucide-react';
 import { playHapticSound } from '../utils/audio';
+import { validateAiKey } from '../utils/apiConfig';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -57,26 +58,17 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     playHapticSound('message_sent');
 
     try {
-      const res = await fetch('/api/test-ai-key', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: 'gemini',
-          customGeminiKey: trimmed
-        })
-      });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
+      const result = await validateAiKey('gemini', trimmed);
+      if (result.success) {
         setTestStatus({
           success: true,
-          message: `Valid ✓ Connected to Google Gemini (${data.latencyMs || 150}ms)`
+          message: result.message || `Valid ✓ Connected to Google Gemini (${result.latencyMs || 120}ms)`
         });
         playHapticSound('listen_start');
       } else {
         setTestStatus({
           success: false,
-          message: data.error || 'Connection failed: Invalid API key or model unreachable.'
+          message: result.message || result.error || 'Connection failed: Invalid API key or model unreachable.'
         });
         playHapticSound('listen_stop');
       }

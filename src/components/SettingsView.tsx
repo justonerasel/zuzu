@@ -82,6 +82,7 @@ import {
   clearAllMemories
 } from '../utils/storage';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
+import { apiFetch, validateAiKey } from '../utils/apiConfig';
 import { 
   PERMISSION_DEFINITIONS, 
   PermissionDefinition, 
@@ -418,7 +419,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   };
 
   useEffect(() => {
-    fetch('/api/config')
+    apiFetch('/api/config')
       .then(res => res.json())
       .then(data => setBackendConfig(data))
       .catch(err => console.warn('Could not fetch backend config:', err));
@@ -490,9 +491,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
     const startTime = Date.now();
     try {
-      const res = await fetch('/api/chat', {
+      const res = await apiFetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: [{ sender: 'user', text: 'Ping Zuzu AI' }],
           personality: settings.activePersonality,
@@ -526,19 +526,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     setGeminiValidation('validating');
     setGeminiTestStatus('Validating with Google Gemini...');
     try {
-      const res = await fetch('/api/test-provider', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'gemini', apiKey: keyToTest })
-      });
-      const data = await res.json();
-      if (data.success) {
+      const result = await validateAiKey('gemini', keyToTest);
+      if (result.success) {
         setGeminiValidation('valid');
-        setGeminiTestStatus(`Valid ✓ Connected (${data.latencyMs}ms) • ${data.model}`);
+        setGeminiTestStatus(result.message || `Valid ✓ Connected (${result.latencyMs || 120}ms)`);
         playHapticSound('listen_start');
       } else {
         setGeminiValidation('failed');
-        setGeminiTestStatus(`Failed ✕ ${data.error || 'Invalid API Key'}`);
+        setGeminiTestStatus(`Failed ✕ ${result.message || 'Invalid API Key'}`);
         playHapticSound('listen_stop');
       }
     } catch (err: any) {
@@ -562,19 +557,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     setGeminiTestStatus('Validating connection...');
     playHapticSound('message_sent');
     try {
-      const res = await fetch('/api/test-provider', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'gemini', apiKey: keyToTest })
-      });
-      const data = await res.json();
-      if (data.success) {
+      const result = await validateAiKey('gemini', keyToTest);
+      if (result.success) {
         setGeminiValidation('valid');
-        setGeminiTestStatus(`Valid ✓ Connected (${data.latencyMs}ms) • ${data.model}`);
+        setGeminiTestStatus(result.message || `Valid ✓ Connected (${result.latencyMs || 120}ms)`);
         playHapticSound('listen_start');
       } else {
         setGeminiValidation('failed');
-        setGeminiTestStatus(`Failed ✕ ${data.error || 'Invalid API Key'}`);
+        setGeminiTestStatus(`Failed ✕ ${result.message || 'Invalid API Key'}`);
         playHapticSound('listen_stop');
       }
     } catch (err: any) {
@@ -599,19 +589,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     setGrokValidation('validating');
     setGrokTestStatus('Validating with xAI Grok...');
     try {
-      const res = await fetch('/api/test-provider', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'grok', apiKey: keyToTest })
-      });
-      const data = await res.json();
-      if (data.success) {
+      const result = await validateAiKey('grok', keyToTest);
+      if (result.success) {
         setGrokValidation('valid');
-        setGrokTestStatus(`Valid ✓ Connected (${data.latencyMs}ms) • ${data.model}`);
+        setGrokTestStatus(result.message || `Valid ✓ Connected (${result.latencyMs || 120}ms)`);
         playHapticSound('listen_start');
       } else {
         setGrokValidation('failed');
-        setGrokTestStatus(`Failed ✕ ${data.error || 'Invalid API Key'}`);
+        setGrokTestStatus(`Failed ✕ ${result.message || 'Invalid API Key'}`);
         playHapticSound('listen_stop');
       }
     } catch (err: any) {
@@ -635,19 +620,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     setGrokTestStatus('Validating connection...');
     playHapticSound('message_sent');
     try {
-      const res = await fetch('/api/test-provider', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'grok', apiKey: keyToTest })
-      });
-      const data = await res.json();
-      if (data.success) {
+      const result = await validateAiKey('grok', keyToTest);
+      if (result.success) {
         setGrokValidation('valid');
-        setGrokTestStatus(`Valid ✓ Connected (${data.latencyMs}ms) • ${data.model}`);
+        setGrokTestStatus(result.message || `Valid ✓ Connected (${result.latencyMs || 120}ms)`);
         playHapticSound('listen_start');
       } else {
         setGrokValidation('failed');
-        setGrokTestStatus(`Failed ✕ ${data.error || 'Invalid API Key'}`);
+        setGrokTestStatus(`Failed ✕ ${result.message || 'Invalid API Key'}`);
         playHapticSound('listen_stop');
       }
     } catch (err: any) {
