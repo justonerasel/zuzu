@@ -28,10 +28,10 @@ export const UpdatesView: React.FC = () => {
   const [checkStatusMessage, setCheckStatusMessage] = useState<string | null>(null);
 
   // App version state
-  const [currentVersion, setCurrentVersion] = useState('v3.5.5');
-  const availableVersion = 'v3.5.5';
+  const [currentVersion, setCurrentVersion] = useState('v3.6.0');
+  const availableVersion = 'v3.6.0';
   const releaseDate = 'November 2026';
-  const buildTag = 'Build 355-Production';
+  const buildTag = 'Build 360-Production';
 
   const handleCheckStatus = async () => {
     setIsChecking(true);
@@ -214,7 +214,7 @@ export const UpdatesView: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-extrabold text-slate-900 tracking-tight">
-                {isUpdateComplete ? 'v3.5.1' : availableVersion}
+                {availableVersion}
               </h2>
               <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-purple-600 text-white">
                 Latest Available Release

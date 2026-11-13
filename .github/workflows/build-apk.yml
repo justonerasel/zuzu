@@ -71,10 +71,10 @@ jobs:
           g = "android/app/build.gradle"
           if os.path.exists(g):
               txt = open(g, encoding="utf-8").read()
-              txt = re.sub(r'versionCode\s+\d+', 'versionCode 354', txt)
-              txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.5.4"', txt)
+              txt = re.sub(r'versionCode\s+\d+', 'versionCode 360', txt)
+              txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.6.0"', txt)
               open(g, "w", encoding="utf-8").write(txt)
-              print("Updated android/app/build.gradle to versionCode 354 and versionName 3.5.4")
+              print("Updated android/app/build.gradle to versionCode 360 and versionName 3.6.0")
           PY
 
       - name: Build Debug APK with Gradle
