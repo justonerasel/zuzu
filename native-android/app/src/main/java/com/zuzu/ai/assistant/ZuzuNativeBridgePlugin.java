@@ -226,8 +226,8 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             call.resolve(ret);
         } catch (Exception e) {
             JSObject ret = new JSObject();
-            ret.put("versionName", "3.6.2");
-            ret.put("versionCode", 362);
+            ret.put("versionName", "3.6.3");
+            ret.put("versionCode", 363);
             call.resolve(ret);
         }
     }

@@ -180,13 +180,28 @@ export default function App() {
     securityLocked
   ]);
 
-  // Auto-sync NUSU Account Firebase cloud backup in background when signed in
+  // Auto-sync NUSU Account Firebase cloud backup in background when local data changes
   useEffect(() => {
     if (!settings.nusuAccountId || !settings.nusuVaultKey) return;
-    const syncTimer = setTimeout(() => {
-      syncNusuCloudNow(settings).catch(() => {});
-    }, 3500);
-    return () => clearTimeout(syncTimer);
+    let syncTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const triggerDebouncedSync = () => {
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => {
+        const latest = getAppSettings();
+        if (latest.nusuAccountId && latest.nusuVaultKey) {
+          syncNusuCloudNow(latest).catch(() => {});
+        }
+      }, 3000);
+    };
+
+    window.addEventListener('zuzu-nusu-data-changed', triggerDebouncedSync);
+    triggerDebouncedSync();
+
+    return () => {
+      if (syncTimer) clearTimeout(syncTimer);
+      window.removeEventListener('zuzu-nusu-data-changed', triggerDebouncedSync);
+    };
   }, [
     textMessageCount,
     voiceSessionCount,

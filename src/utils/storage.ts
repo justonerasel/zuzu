@@ -8,6 +8,12 @@ const STORAGE_KEYS = {
   LEGACY_ARCHIVE: 'zuzu_unclassified_archive_v2'
 };
 
+function notifyNusuDataChanged(): void {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('zuzu-nusu-data-changed'));
+  }
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   activeIdentity: 'male',
   activePersonality: 'Normal',
@@ -260,10 +266,12 @@ export function saveChatMessage(message: ChatMessage): void {
   const current = getChatMessages();
   current.push(message);
   localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(current));
+  notifyNusuDataChanged();
 }
 
 export function clearChatHistory(): void {
   localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify([]));
+  notifyNusuDataChanged();
 }
 
 // ----------------- VOICE HISTORY STORE (STRICT) -----------------
@@ -295,15 +303,18 @@ export function saveVoiceSession(session: VoiceSession): void {
     sessions.unshift(session);
   }
   localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify(sessions));
+  notifyNusuDataChanged();
 }
 
 export function deleteVoiceSession(sessionId: string): void {
   const sessions = getVoiceSessions().filter(s => s.id !== sessionId);
   localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify(sessions));
+  notifyNusuDataChanged();
 }
 
 export function clearVoiceHistory(): void {
   localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify([]));
+  notifyNusuDataChanged();
 }
 
 // ----------------- SETTINGS STORE -----------------
@@ -342,6 +353,7 @@ export function saveAppSettings(settings: Partial<AppSettings>): AppSettings {
   const current = getAppSettings();
   const updated: AppSettings = { ...current, ...settings };
   localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+  notifyNusuDataChanged();
   return updated;
 }
 
@@ -466,6 +478,7 @@ export function saveMemory(
         updatedAt: now
       };
       localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
+      notifyNusuDataChanged();
       return { success: true, memory: memories[existingIndex] };
     }
   }
@@ -480,6 +493,7 @@ export function saveMemory(
       updatedAt: now
     };
     localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
+    notifyNusuDataChanged();
     return { success: true, memory: memories[existingKeyIndex] };
   }
 
@@ -496,6 +510,7 @@ export function saveMemory(
 
   memories.unshift(newMemory);
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
+  notifyNusuDataChanged();
   return { success: true, memory: newMemory };
 }
 
@@ -526,6 +541,7 @@ export function updateMemory(id: string, updates: Partial<UserMemory>): { succes
   };
 
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
+  notifyNusuDataChanged();
   return { success: true };
 }
 
@@ -535,6 +551,7 @@ export function updateMemory(id: string, updates: Partial<UserMemory>): { succes
 export function deleteMemory(id: string): void {
   const memories = getMemories().filter(m => m.id !== id);
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
+  notifyNusuDataChanged();
 }
 
 /**
@@ -542,6 +559,7 @@ export function deleteMemory(id: string): void {
  */
 export function clearAllMemories(): void {
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify([]));
+  notifyNusuDataChanged();
 }
 
 export interface ZuzuBackupSnapshot {

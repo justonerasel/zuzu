@@ -402,11 +402,16 @@ export async function syncNusuCloudNow(settings: AppSettings): Promise<{
     localStorage.setItem(`${LOCAL_VAULT_MIRROR_PREFIX}${accountId}`, JSON.stringify(cleanSnapshot));
   } catch {}
 
+  const rawPhone = String(settings.nusuPhone || cleanSnapshot.settings?.nusuPhone || 'NUSU-User').trim();
+  const safePhone = rawPhone.length >= 3 ? rawPhone.slice(0, 40) : 'NUSU-User';
+  const rawName = String(settings.nusuFullName || settings.userNickname || 'Zuzu User').trim();
+  const safeName = rawName.length >= 1 ? rawName.slice(0, 80) : 'Zuzu User';
+
   const vaultPath = `nusu_accounts/${accountId}/vault/${vaultId}`;
   try {
     await updateDoc(doc(db, 'nusu_accounts', accountId, 'vault', vaultId), {
-      phone: settings.nusuPhone || cleanSnapshot.settings?.nusuPhone || 'NUSU-User',
-      fullName: settings.nusuFullName || settings.userNickname || 'Zuzu User',
+      phone: safePhone,
+      fullName: safeName,
       chatHistory: cleanSnapshot.chatHistory,
       voiceSessions: cleanSnapshot.voiceSessions,
       memories: cleanSnapshot.memories,
@@ -415,7 +420,14 @@ export async function syncNusuCloudNow(settings: AppSettings): Promise<{
     });
 
     const now = Date.now();
-    saveAppSettings({ nusuLastSyncedAt: now });
+    try {
+      const currentRaw = localStorage.getItem('zuzu_settings_v2');
+      if (currentRaw) {
+        const parsed = JSON.parse(currentRaw);
+        parsed.nusuLastSyncedAt = now;
+        localStorage.setItem('zuzu_settings_v2', JSON.stringify(parsed));
+      }
+    } catch {}
 
     return {
       success: true,

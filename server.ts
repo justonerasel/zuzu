@@ -128,8 +128,8 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-const LATEST_APP_VERSION = '3.6.2';
-const LATEST_VERSION_CODE = 362;
+const LATEST_APP_VERSION = '3.6.3';
+const LATEST_VERSION_CODE = 363;
 const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.6.0';
 
 // Endpoint: Configuration check (Voice IDs, API key availability)
@@ -160,7 +160,7 @@ app.get('/api/system/check-update', (req, res) => {
     latestVersion: `v${LATEST_APP_VERSION}`,
     versionCode: LATEST_VERSION_CODE,
     minSupportedVersion: `v${MIN_SUPPORTED_VERSION}`,
-    buildTag: 'Build 362-Production',
+    buildTag: 'Build 363-Production',
     releaseDate: 'November 2026',
     status: hasNewerVersion ? 'update_available' : 'up_to_date',
     updateRequired: hasNewerVersion,

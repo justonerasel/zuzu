@@ -796,14 +796,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   };
 
   const handleConfirmReset = () => {
-    // Reset general configuration while strictly preserving API keys, memories & chat history
+    // Reset general configuration while strictly preserving API keys, NUSU session, memories & chat history
     const newSettings: AppSettings = {
       ...DEFAULT_SETTINGS,
       customGeminiApiKey: resetApiKeysToggle ? '' : (settings.customGeminiApiKey || ''),
       customGrokApiKey: resetApiKeysToggle ? '' : (settings.customGrokApiKey || ''),
       customElevenLabsApiKey: resetApiKeysToggle ? '' : (settings.customElevenLabsApiKey || ''),
       userNickname: settings.userNickname,
-      assistantNickname: settings.assistantNickname
+      assistantNickname: settings.assistantNickname,
+      nusuAccountId: settings.nusuAccountId,
+      nusuFullName: settings.nusuFullName,
+      nusuPhone: settings.nusuPhone,
+      nusuToken: settings.nusuToken,
+      nusuVaultKey: settings.nusuVaultKey,
+      nusuLastSyncedAt: settings.nusuLastSyncedAt
     };
     onUpdateSettings(newSettings);
     setCustomHexInput('#FAF5FF');

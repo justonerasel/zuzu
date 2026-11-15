@@ -5,8 +5,8 @@
  */
 
 // Current Application Build Version (Keep synchronized across Gradle, Server, UI & CI)
-export const APP_VERSION = '3.6.2';
-export const APP_VERSION_CODE = 362;
+export const APP_VERSION = '3.6.3';
+export const APP_VERSION_CODE = 363;
 
 // Deployed Cloud Run Production Backend URL for Android APK
 export const DEFAULT_REMOTE_BACKEND_URL = 'https://ais-dev-requvmmuycwborvooarj55-817905745905.asia-east1.run.app';

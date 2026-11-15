@@ -28,10 +28,10 @@ export const UpdatesView: React.FC = () => {
   const [checkStatusMessage, setCheckStatusMessage] = useState<string | null>(null);
 
   // App version state
-  const [currentVersion, setCurrentVersion] = useState('v3.6.2');
-  const availableVersion = 'v3.6.2';
+  const [currentVersion, setCurrentVersion] = useState('v3.6.3');
+  const availableVersion = 'v3.6.3';
   const releaseDate = 'November 2026';
-  const buildTag = 'Build 362-Production';
+  const buildTag = 'Build 363-Production';
 
   const handleCheckStatus = async () => {
     setIsChecking(true);
@@ -39,7 +39,7 @@ export const UpdatesView: React.FC = () => {
     playHapticSound('switch');
 
     try {
-      const res = await apiFetch('/api/system/check-update?installedVersion=3.6.2&versionCode=362');
+      const res = await apiFetch('/api/system/check-update?installedVersion=3.6.3&versionCode=363');
       if (res.ok) {
         const data = await res.json();
         setCheckStatusMessage(data.message || 'Update check completed.');

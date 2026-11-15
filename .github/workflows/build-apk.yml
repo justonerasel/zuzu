@@ -104,14 +104,14 @@ jobs:
               open(p, "w", encoding="utf-8").write(s)
               print("Permissions, ZuzuForegroundService & ZuzuBootReceiver added")
 
-          # 2. Configure versionCode 362 and versionName 3.6.2 in android/app/build.gradle
+          # 2. Configure versionCode 363 and versionName 3.6.3 in android/app/build.gradle
           g = "android/app/build.gradle"
           if os.path.exists(g):
               txt = open(g, encoding="utf-8").read()
-              txt = re.sub(r'versionCode\s+\d+', 'versionCode 362', txt)
-              txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.6.2"', txt)
+              txt = re.sub(r'versionCode\s+\d+', 'versionCode 363', txt)
+              txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.6.3"', txt)
               open(g, "w", encoding="utf-8").write(txt)
-              print("Updated android/app/build.gradle to versionCode 362 and versionName 3.6.2")
+              print("Updated android/app/build.gradle to versionCode 363 and versionName 3.6.3")
           PY
 
       - name: Build Debug APK with Gradle
