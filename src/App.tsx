@@ -40,9 +40,8 @@ export default function App() {
   // Security Lock State (Anti-Theft Master PIN)
   const [securityLocked, setSecurityLockedState] = useState<boolean>(() => isSecurityLocked());
 
-  // Force Update Overlay State
+  // Force Update Overlay State (only shown when server signals genuine required update)
   const [forceUpdateInfo, setForceUpdateInfo] = useState<ForceUpdatePayload | null>(null);
-  const [isForceUpdatePreview, setIsForceUpdatePreview] = useState(false);
 
   // First-launch permission flow state (Requirement 3)
   const [showFirstLaunch, setShowFirstLaunch] = useState(() => {
@@ -73,7 +72,6 @@ export default function App() {
       .then(res => res.json())
       .then(data => {
         if (data?.forceUpdate) {
-          setIsForceUpdatePreview(false);
           setForceUpdateInfo({
             latestVersion: data.latestVersion || `v${APP_VERSION}`,
             minSupportedVersion: data.minSupportedVersion,
@@ -156,7 +154,11 @@ export default function App() {
     const intervalMs = Math.max(8000, (settings.securityCheckIntervalSec || 12) * 1000);
     const timer = setInterval(() => {
       if (!isSecurityLocked() && document.visibilityState === 'visible') {
-        runSilentFaceSecurityCheck(settings.ownerFaceDescriptor, settings.securityMaxAttempts || 3)
+        runSilentFaceSecurityCheck(
+          settings.ownerFaceDescriptor,
+          settings.securityMaxAttempts || 3,
+          settings.ownerFaceProfiles
+        )
           .then(res => {
             if (res.lockedTriggered) {
               setSecurityLockedState(true);
@@ -174,6 +176,7 @@ export default function App() {
     settings.antiTheftEnabled,
     settings.ownerFaceEnrolled,
     settings.ownerFaceDescriptor,
+    settings.ownerFaceProfiles,
     settings.masterPinHash,
     settings.securityMaxAttempts,
     settings.securityCheckIntervalSec,
@@ -254,22 +257,6 @@ export default function App() {
     setIsVoiceMinimized(false);
   };
 
-  const handlePreviewForceUpdate = () => {
-    setIsForceUpdatePreview(true);
-    setForceUpdateInfo({
-      latestVersion: `v${APP_VERSION}`,
-      minSupportedVersion: 'v3.6.0',
-      apkDownloadUrl: 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
-      websiteUrl: 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
-      message: 'A mandatory Zuzu AI update is ready with Foreground Wake-Word Persistence, Anti-Theft Face Guard, and NUSU Cloud Sync.',
-      changelogSummary: [
-        'Android Foreground Service & Battery Optimization persistence',
-        'Always-On "Wake up Zuzu" listener & Anti-Theft 3-strike Master PIN lock',
-        'NUSU Account (NU-XXXXXX) cross-reinstall cloud backup'
-      ]
-    });
-  };
-
   return (
     <AndroidFrame
       activeIdentity={settings.activeIdentity}
@@ -325,12 +312,13 @@ export default function App() {
           <SettingsView
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
-            onPreviewForceUpdate={handlePreviewForceUpdate}
           />
         )}
 
         {activeTab === 'updates' && (
-          <UpdatesView />
+          <UpdatesView
+            onForceUpdateTriggered={(payload) => setForceUpdateInfo(payload)}
+          />
         )}
 
         {activeTab === 'image_creator' && (
@@ -386,14 +374,8 @@ export default function App() {
       <ForceUpdateOverlay
         isOpen={Boolean(forceUpdateInfo)}
         updateInfo={forceUpdateInfo}
-        isPreview={isForceUpdatePreview}
-        onDismissPreview={() => {
-          setForceUpdateInfo(null);
-          setIsForceUpdatePreview(false);
-        }}
         onStartOtaUpdate={() => {
           setForceUpdateInfo(null);
-          setIsForceUpdatePreview(false);
           setActiveTab('updates');
         }}
       />
@@ -402,6 +384,11 @@ export default function App() {
       <MasterPinLockOverlay
         isOpen={securityLocked && Boolean(settings.masterPinHash)}
         masterPinHash={settings.masterPinHash}
+        ownerFaceEnrolled={settings.ownerFaceEnrolled}
+        ownerFaceProfiles={settings.ownerFaceProfiles}
+        ownerFaceDescriptor={settings.ownerFaceDescriptor}
+        securityRecoveryHints={settings.securityRecoveryHints}
+        onResetMasterPin={(newHash) => handleUpdateSettings({ masterPinHash: newHash })}
         onUnlocked={() => setSecurityLockedState(false)}
       />
     </AndroidFrame>

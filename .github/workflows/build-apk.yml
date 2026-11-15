@@ -54,6 +54,11 @@ jobs:
             mkdir -p android/app/src/main/java
             cp -rv native-android/app/src/main/java/* android/app/src/main/java/
           fi
+          if [ -d "native-android/app/src/main/res" ]; then
+            mkdir -p android/app/src/main/res
+            cp -rv native-android/app/src/main/res/* android/app/src/main/res/
+            rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          fi
           npx cap sync android
           python3 - <<'PY'
           import os, re, xml.etree.ElementTree as ET

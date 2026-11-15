@@ -17,12 +17,13 @@ import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
 /**
- * Persistent Android Foreground Service for Zuzu AI.
+ * Persistent Silent Android Foreground Service for Zuzu AI.
  * Keeps background Wake-Word listening and Security Guard monitoring alive
- * across Android 9 - Android 16 (API 28 - 36) without being killed by Doze.
+ * across Android 9 - Android 16 (API 28 - 36) with ZERO notification sound or vibration.
  */
 public class ZuzuForegroundService extends Service {
-    public static final String CHANNEL_ID = "zuzu_ai_foreground_channel";
+    public static final String CHANNEL_ID = "zuzu_ai_silent_bg_v2";
+    private static final String LEGACY_CHANNEL_ID = "zuzu_ai_foreground_channel";
     public static final int NOTIFICATION_ID = 36101;
     public static final String PREFS_NAME = "ZuzuNativePrefs";
     public static final String KEY_SERVICE_ENABLED = "foreground_enabled";
@@ -30,6 +31,7 @@ public class ZuzuForegroundService extends Service {
     public static final String ACTION_STOP_SERVICE = "com.zuzu.ai.assistant.ACTION_STOP_SERVICE";
 
     private static volatile boolean isRunning = false;
+    private String activeWakeWord = null;
     private PowerManager.WakeLock wakeLock;
 
     public static boolean isServiceRunning() {
@@ -39,7 +41,7 @@ public class ZuzuForegroundService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        createNotificationChannel();
+        createSilentNotificationChannel();
         acquireWakeLock();
     }
 
@@ -47,6 +49,7 @@ public class ZuzuForegroundService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP_SERVICE.equals(intent.getAction())) {
             saveEnabledPref(false);
+            activeWakeWord = null;
             stopForegroundCompat();
             stopSelf();
             return START_NOT_STICKY;
@@ -69,7 +72,14 @@ public class ZuzuForegroundService extends Service {
                 .putString(KEY_WAKE_WORD, wakeWord)
                 .apply();
 
-        Notification notification = buildNotification(wakeWord);
+        // Avoid re-posting identical notifications repeatedly while already running
+        if (isRunning && wakeWord.equals(activeWakeWord)) {
+            return START_STICKY;
+        }
+        activeWakeWord = wakeWord;
+
+        createSilentNotificationChannel();
+        Notification notification = buildSilentNotification(wakeWord);
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -105,7 +115,7 @@ public class ZuzuForegroundService extends Service {
                 .apply();
     }
 
-    private Notification buildNotification(String wakeWord) {
+    private Notification buildSilentNotification(String wakeWord) {
         Intent launchIntent = new Intent(this, MainActivity.class);
         launchIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
 
@@ -121,10 +131,14 @@ public class ZuzuForegroundService extends Service {
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Zuzu AI Active Guard")
-                .setContentText("Listening for \"" + wakeWord + "\" • Anti-Theft & Core active")
+                .setContentText("Silent guard • Listening for \"" + wakeWord + "\"")
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
+                .setSilent(true)
+                .setSound(null)
+                .setVibrate(new long[]{0L})
+                .setDefaults(0)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setContentIntent(contentIntent)
@@ -132,17 +146,31 @@ public class ZuzuForegroundService extends Service {
                 .build();
     }
 
-    private void createNotificationChannel() {
+    private void createSilentNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Zuzu AI Background Service",
-                    NotificationManager.IMPORTANCE_LOW
-            );
-            channel.setDescription("Keeps Zuzu AI wake-word listener and anti-theft guard running reliably.");
-            channel.setShowBadge(false);
             NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (manager != null) {
+            if (manager == null) return;
+
+            // Remove legacy notification channel so Android never keeps old alert sound settings
+            try {
+                if (manager.getNotificationChannel(LEGACY_CHANNEL_ID) != null) {
+                    manager.deleteNotificationChannel(LEGACY_CHANNEL_ID);
+                }
+            } catch (Exception ignored) {}
+
+            NotificationChannel existing = manager.getNotificationChannel(CHANNEL_ID);
+            if (existing == null) {
+                NotificationChannel channel = new NotificationChannel(
+                        CHANNEL_ID,
+                        "Zuzu AI Background Guard (Silent)",
+                        NotificationManager.IMPORTANCE_LOW
+                );
+                channel.setDescription("Silent background listener for Zuzu AI wake-word and anti-theft guard.");
+                channel.setSound(null, null);
+                channel.enableVibration(false);
+                channel.setVibrationPattern(new long[]{0L});
+                channel.enableLights(false);
+                channel.setShowBadge(false);
                 manager.createNotificationChannel(channel);
             }
         }
@@ -194,6 +222,7 @@ public class ZuzuForegroundService extends Service {
     @Override
     public void onDestroy() {
         isRunning = false;
+        activeWakeWord = null;
         releaseWakeLock();
         super.onDestroy();
     }

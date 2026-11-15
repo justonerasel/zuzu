@@ -97,10 +97,12 @@ export const FirstLaunchPermissionModal: React.FC<FirstLaunchPermissionModalProp
 
         {/* Modal Header */}
         <div className="flex flex-col items-center text-center">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mb-3 flex items-center justify-center">
-            <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center text-purple-600">
-              <ShieldCheck className="w-7 h-7" />
-            </div>
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mb-3 flex items-center justify-center overflow-hidden">
+            <img
+              src="/zuzu-logo.png"
+              alt="Zuzu AI"
+              className="w-full h-full rounded-[14px] object-cover"
+            />
           </div>
 
           <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-purple-100 border border-purple-200 text-purple-800 text-[10px] font-bold uppercase tracking-wider mb-1.5">

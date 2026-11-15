@@ -51,7 +51,10 @@ import {
   Eye,
   EyeOff,
   VolumeX,
-  Moon
+  Moon,
+  Upload,
+  ScanFace,
+  HelpCircle
 } from 'lucide-react';
 import { 
   AppSettings, 
@@ -109,21 +112,26 @@ import {
   logoutNusuAccount 
 } from '../utils/nusuAccount';
 import { 
-  enrollOwnerFace, 
-  hashMasterPin, 
-  runSilentFaceSecurityCheck, 
+  SECURITY_HINT_QUESTIONS,
+  MAX_OWNER_FACE_PROFILES,
+  extractFaceProfilesFromFiles,
+  hashMasterPin,
+  verifyMasterPin,
+  hashSecurityAnswer,
+  verifySecurityHints,
   setSecurityLocked, 
   getFailedSecurityAttempts 
 } from '../utils/faceGuard';
+import { FaceScannerModal } from './FaceScannerModal';
 import { 
   syncBackgroundServicesWithSettings, 
   isForegroundServiceActive 
 } from '../utils/backgroundService';
+import { OwnerFaceProfile } from '../types';
 
 interface SettingsViewProps {
   settings: AppSettings;
   onUpdateSettings: (settings: Partial<AppSettings>) => void;
-  onPreviewForceUpdate?: () => void;
 }
 
 export type SettingsCategoryId = 
@@ -340,7 +348,7 @@ const ORB_STYLES: Array<{
   }
 ];
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSettings, onPreviewForceUpdate }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSettings }) => {
   // Navigation State
   const [activeCategory, setActiveCategory] = useState<SettingsCategoryId | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -442,6 +450,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [pinDraft, setPinDraft] = useState('');
   const [faceGuardLoading, setFaceGuardLoading] = useState(false);
   const [faceGuardStatus, setFaceGuardStatus] = useState<string | null>(null);
+  const [faceScannerMode, setFaceScannerMode] = useState<'enroll' | 'verify' | null>(null);
+
+  // Security Recovery Hints & Reset PIN State
+  const [hint1Question, setHint1Question] = useState<string>(
+    settings.securityRecoveryHints?.[0]?.question || SECURITY_HINT_QUESTIONS[1]
+  );
+  const [hint1AnswerDraft, setHint1AnswerDraft] = useState('');
+  const [hint2Question, setHint2Question] = useState<string>(
+    settings.securityRecoveryHints?.[1]?.question || SECURITY_HINT_QUESTIONS[3]
+  );
+  const [hint2AnswerDraft, setHint2AnswerDraft] = useState('');
+  const [showPinResetBox, setShowPinResetBox] = useState(false);
+  const [resetHintAnswers, setResetHintAnswers] = useState<string[]>(['', '']);
+  const [resetCurrentPinInput, setResetCurrentPinInput] = useState('');
+  const [resetNewPinInput, setResetNewPinInput] = useState('');
 
   const refreshAllPermissions = async () => {
     setIsCheckingPermissions(true);
@@ -809,7 +832,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
       nusuPhone: settings.nusuPhone,
       nusuToken: settings.nusuToken,
       nusuVaultKey: settings.nusuVaultKey,
-      nusuLastSyncedAt: settings.nusuLastSyncedAt
+      nusuLastSyncedAt: settings.nusuLastSyncedAt,
+      masterPinHash: settings.masterPinHash,
+      ownerFaceEnrolled: settings.ownerFaceEnrolled,
+      ownerFaceDescriptor: settings.ownerFaceDescriptor,
+      ownerFaceProfiles: settings.ownerFaceProfiles,
+      securityRecoveryHints: settings.securityRecoveryHints
     };
     onUpdateSettings(newSettings);
     setCustomHexInput('#FAF5FF');
@@ -883,23 +911,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
               </button>
             </div>
 
-            {/* Permanent Branding Banner */}
+            {/* Branding Banner */}
             <div className="p-3.5 bg-gradient-to-r from-purple-100/90 via-indigo-50 to-blue-50 border border-purple-200/80 rounded-2xl shadow-xs flex items-center justify-between text-slate-800">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center font-black text-sm shadow-sm">
-                  Z
-                </div>
+                <img
+                  src="/zuzu-logo.png"
+                  alt="Zuzu AI"
+                  className="w-10 h-10 rounded-xl object-cover shadow-sm border border-purple-200 flex-shrink-0"
+                />
                 <div>
                   <div className="text-xs font-extrabold flex items-center gap-1.5">
                     <span>Zuzu AI</span>
-                    <span className="text-[9px] bg-purple-200/80 text-purple-800 font-mono px-1.5 py-0.2 rounded-full font-bold">
-                      Permanent Name
-                    </span>
                   </div>
                   <div className="text-[10px] text-slate-500">
                     Voice Identity &amp; Expression • Intelligent Android Assistant
                   </div>
-
                 </div>
               </div>
               <div className="text-right">
@@ -2987,71 +3013,127 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                     </button>
                   </div>
 
-                  {/* Step A: Owner Face Enrollment */}
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                  {/* Step A: Owner Face Enrollment (Live Camera + Multiple Reference Photos) */}
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-slate-700">1. Owner Biometric Profile</span>
+                      <span className="font-bold text-slate-700">1. Owner Biometric Profile (Max {MAX_OWNER_FACE_PROFILES})</span>
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                         settings.ownerFaceEnrolled ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                       }`}>
-                        {settings.ownerFaceEnrolled ? 'Enrolled ✓' : 'Not Enrolled'}
+                        {settings.ownerFaceEnrolled
+                          ? `${(settings.ownerFaceProfiles?.length || 1)} Enrolled ✓`
+                          : 'Not Enrolled'}
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2">
+                    <p className="text-[10px] text-slate-500 leading-snug">
+                      Add up to 5 front-facing photos (or live poses) for haircuts, glasses, or shave variations.
+                    </p>
+
+                    <div className="grid grid-cols-3 gap-1.5">
                       <button
                         type="button"
                         disabled={faceGuardLoading}
-                        onClick={async () => {
-                          setFaceGuardLoading(true);
-                          setFaceGuardStatus('Scanning owner face via front camera...');
-                          try {
-                            const res = await enrollOwnerFace();
-                            setFaceGuardStatus(res.message);
-                            if (res.success && res.descriptor) {
-                              onUpdateSettings({
-                                ownerFaceEnrolled: true,
-                                ownerFaceDescriptor: res.descriptor
-                              });
-                              playHapticSound('message_sent');
-                            } else {
-                              playHapticSound('listen_stop');
-                            }
-                          } finally {
-                            setFaceGuardLoading(false);
-                          }
+                        onClick={() => {
+                          setFaceGuardStatus(null);
+                          setFaceScannerMode('enroll');
                         }}
-                        className="py-2 px-2.5 rounded-xl bg-slate-900 hover:bg-black text-white text-[11px] font-bold flex items-center justify-center gap-1 disabled:opacity-50"
+                        className="py-2 px-2 rounded-xl bg-slate-900 hover:bg-black text-white text-[11px] font-bold flex items-center justify-center gap-1 disabled:opacity-50"
                       >
                         <Camera className="w-3.5 h-3.5" />
-                        <span>{settings.ownerFaceEnrolled ? 'Re-Enroll Face' : 'Enroll Face'}</span>
+                        <span>Enroll Face</span>
                       </button>
+
+                      <label className="py-2 px-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Upload</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={async (e) => {
+                            const files = e.target.files;
+                            if (!files || files.length === 0) return;
+                            setFaceGuardLoading(true);
+                            setFaceGuardStatus('Analyzing uploaded reference photos via MediaPipe...');
+                            try {
+                              const currentProfiles = settings.ownerFaceProfiles || [];
+                              const res = await extractFaceProfilesFromFiles(files, currentProfiles.length, MAX_OWNER_FACE_PROFILES);
+                              setFaceGuardStatus(res.message);
+                              if (res.added.length > 0) {
+                                const merged = [...currentProfiles, ...res.added].slice(0, MAX_OWNER_FACE_PROFILES);
+                                onUpdateSettings({
+                                  ownerFaceEnrolled: true,
+                                  ownerFaceProfiles: merged,
+                                  ownerFaceDescriptor: merged[0].descriptor
+                                });
+                                playHapticSound('message_sent');
+                              } else {
+                                playHapticSound('listen_stop');
+                              }
+                            } finally {
+                              setFaceGuardLoading(false);
+                              e.target.value = '';
+                            }
+                          }}
+                        />
+                      </label>
 
                       <button
                         type="button"
                         disabled={faceGuardLoading || !settings.ownerFaceEnrolled}
-                        onClick={async () => {
-                          setFaceGuardLoading(true);
-                          setFaceGuardStatus('Running silent front-camera check...');
-                          try {
-                            const outcome = await runSilentFaceSecurityCheck(
-                              settings.ownerFaceDescriptor,
-                              settings.securityMaxAttempts || 3
-                            );
-                            setFaceGuardStatus(outcome.detail);
-                          } finally {
-                            setFaceGuardLoading(false);
-                          }
+                        onClick={() => {
+                          setFaceGuardStatus(null);
+                          setFaceScannerMode('verify');
                         }}
-                        className="py-2 px-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-bold disabled:opacity-50"
+                        className="py-2 px-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-bold flex items-center justify-center gap-1 disabled:opacity-50"
                       >
-                        Verify Face Now
+                        <ScanFace className="w-3.5 h-3.5 text-purple-600" />
+                        <span>Verify Face</span>
                       </button>
                     </div>
+
+                    {/* Enrolled Reference Photo Strip (up to 5 thumbnails) */}
+                    {settings.ownerFaceProfiles && settings.ownerFaceProfiles.length > 0 && (
+                      <div className="flex items-center gap-2 overflow-x-auto pt-1 pb-0.5">
+                        {settings.ownerFaceProfiles.map((prof: OwnerFaceProfile) => (
+                          <div key={prof.id} className="relative flex-shrink-0 group">
+                            {prof.thumbnail ? (
+                              <img
+                                src={prof.thumbnail}
+                                alt={prof.label}
+                                className="w-12 h-12 rounded-xl object-cover border border-purple-200 shadow-2xs"
+                              />
+                            ) : (
+                              <div className="w-12 h-12 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center text-[10px] font-bold border border-purple-200">
+                                {prof.label.slice(0, 4)}
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = (settings.ownerFaceProfiles || []).filter(p => p.id !== prof.id);
+                                onUpdateSettings({
+                                  ownerFaceProfiles: next,
+                                  ownerFaceEnrolled: next.length > 0,
+                                  ownerFaceDescriptor: next[0]?.descriptor
+                                });
+                                playHapticSound('listen_stop');
+                              }}
+                              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-xs text-[9px] font-bold"
+                              title={`Remove ${prof.label}`}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
-                  {/* Step B: Master PIN Configuration */}
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                  {/* Step B: Master PIN & Security Recovery Hints */}
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-bold text-slate-700">2. Strict Master PIN (4-6 Digits)</span>
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
@@ -3061,46 +3143,238 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       </span>
                     </div>
 
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        inputMode="numeric"
-                        maxLength={6}
-                        value={pinDraft}
-                        onChange={(e) => setPinDraft(e.target.value.replace(/\D/g, ''))}
-                        placeholder="Enter 4-6 digit Master PIN"
-                        className="flex-1 bg-white text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-rose-400"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (pinDraft.length < 4 || pinDraft.length > 6) {
-                            setFaceGuardStatus('Master PIN must be 4 to 6 digits.');
-                            return;
-                          }
-                          const hashed = hashMasterPin(pinDraft);
-                          onUpdateSettings({ masterPinHash: hashed });
-                          setPinDraft('');
-                          setFaceGuardStatus('Master PIN saved securely!');
-                          playHapticSound('message_sent');
-                        }}
-                        className="px-3 py-2 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700"
-                      >
-                        Set PIN
-                      </button>
-                    </div>
+                    {!settings.masterPinHash ? (
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={6}
+                          value={pinDraft}
+                          onChange={(e) => setPinDraft(e.target.value.replace(/\D/g, ''))}
+                          placeholder="Enter 4-6 digit Master PIN"
+                          className="flex-1 bg-white text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-rose-400"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (pinDraft.length < 4 || pinDraft.length > 6) {
+                              setFaceGuardStatus('Master PIN must be 4 to 6 digits.');
+                              return;
+                            }
+                            const hashed = hashMasterPin(pinDraft);
+                            onUpdateSettings({ masterPinHash: hashed });
+                            setPinDraft('');
+                            setFaceGuardStatus('Master PIN saved securely! Add Security Hints below for protected PIN reset.');
+                            playHapticSound('message_sent');
+                          }}
+                          className="px-3 py-2 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700"
+                        >
+                          Set PIN
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowPinResetBox((v) => !v);
+                            setResetHintAnswers(['', '']);
+                            setResetCurrentPinInput('');
+                            setResetNewPinInput('');
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 text-[11px] font-bold flex items-center gap-1"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Reset PIN</span>
+                        </button>
 
-                    <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1">
-                      <span>Failed attempts counter: {getFailedSecurityAttempts()} / {settings.securityMaxAttempts || 3}</span>
-                      {settings.masterPinHash && (
                         <button
                           type="button"
                           onClick={() => setSecurityLocked(true, 'Manual Security Lock Test triggered by owner.')}
-                          className="text-rose-700 font-bold hover:underline"
+                          className="text-[11px] text-rose-700 font-bold hover:underline"
                         >
                           Test Lock Screen
                         </button>
-                      )}
+                      </div>
+                    )}
+
+                    {/* Protected Reset PIN Flow (Verifies Security Hints or Current PIN) */}
+                    {showPinResetBox && settings.masterPinHash && (
+                      <div className="p-2.5 rounded-xl bg-white border border-rose-200 space-y-2 animate-fade-in">
+                        <div className="text-[11px] font-bold text-rose-800">
+                          {(settings.securityRecoveryHints?.length || 0) > 0
+                            ? 'Answer Your Security Hints to Reset PIN:'
+                            : 'Enter Current PIN to Reset:'}
+                        </div>
+
+                        {(settings.securityRecoveryHints?.length || 0) > 0 ? (
+                          settings.securityRecoveryHints!.map((hint, idx) => (
+                            <div key={idx} className="space-y-1">
+                              <label className="text-[10px] font-semibold text-slate-600 block">
+                                {hint.question}
+                              </label>
+                              <input
+                                type="text"
+                                value={resetHintAnswers[idx] || ''}
+                                onChange={(e) => {
+                                  const next = [...resetHintAnswers];
+                                  next[idx] = e.target.value;
+                                  setResetHintAnswers(next);
+                                }}
+                                placeholder="Your secret answer..."
+                                className="w-full bg-slate-50 text-xs text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                              />
+                            </div>
+                          ))
+                        ) : (
+                          <input
+                            type="password"
+                            inputMode="numeric"
+                            maxLength={6}
+                            value={resetCurrentPinInput}
+                            onChange={(e) => setResetCurrentPinInput(e.target.value.replace(/\D/g, ''))}
+                            placeholder="Current 4-6 digit Master PIN"
+                            className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                          />
+                        )}
+
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={6}
+                          value={resetNewPinInput}
+                          onChange={(e) => setResetNewPinInput(e.target.value.replace(/\D/g, ''))}
+                          placeholder="New 4-6 digit Master PIN"
+                          className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                        />
+
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowPinResetBox(false)}
+                            className="flex-1 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-bold"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const hasHints = (settings.securityRecoveryHints?.length || 0) > 0;
+                              if (hasHints) {
+                                if (!verifySecurityHints(settings.securityRecoveryHints, resetHintAnswers)) {
+                                  setFaceGuardStatus('Security hint answers do not match. PIN reset blocked.');
+                                  playHapticSound('listen_stop');
+                                  return;
+                                }
+                              } else if (!verifyMasterPin(resetCurrentPinInput, settings.masterPinHash)) {
+                                setFaceGuardStatus('Current Master PIN is incorrect.');
+                                playHapticSound('listen_stop');
+                                return;
+                              }
+
+                              if (resetNewPinInput.length < 4 || resetNewPinInput.length > 6) {
+                                setFaceGuardStatus('New Master PIN must be 4 to 6 digits.');
+                                return;
+                              }
+
+                              onUpdateSettings({ masterPinHash: hashMasterPin(resetNewPinInput) });
+                              setShowPinResetBox(false);
+                              setResetNewPinInput('');
+                              setResetCurrentPinInput('');
+                              setResetHintAnswers(['', '']);
+                              setFaceGuardStatus('Master PIN reset successfully!');
+                              playHapticSound('listen_start');
+                            }}
+                            className="flex-1 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold"
+                          >
+                            Confirm Reset
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Security Recovery Hints Setup */}
+                    <div className="pt-2 border-t border-slate-200/70 space-y-2">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-bold text-slate-700 flex items-center gap-1">
+                          <HelpCircle className="w-3.5 h-3.5 text-purple-600" />
+                          <span>Security Recovery Hints</span>
+                        </span>
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                          (settings.securityRecoveryHints?.length || 0) >= 2
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-slate-200 text-slate-600'
+                        }`}>
+                          {(settings.securityRecoveryHints?.length || 0) >= 2 ? 'Protected ✓' : 'Configure'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <select
+                          value={hint1Question}
+                          onChange={(e) => setHint1Question(e.target.value)}
+                          className="w-full bg-white text-[11px] text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                        >
+                          {SECURITY_HINT_QUESTIONS.map((q) => (
+                            <option key={q} value={q}>{q}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="text"
+                          value={hint1AnswerDraft}
+                          onChange={(e) => setHint1AnswerDraft(e.target.value)}
+                          placeholder="Answer 1 (e.g. Biryani)"
+                          className="w-full bg-white text-xs text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                        />
+
+                        <select
+                          value={hint2Question}
+                          onChange={(e) => setHint2Question(e.target.value)}
+                          className="w-full bg-white text-[11px] text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                        >
+                          {SECURITY_HINT_QUESTIONS.map((q) => (
+                            <option key={q} value={q}>{q}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="text"
+                          value={hint2AnswerDraft}
+                          onChange={(e) => setHint2AnswerDraft(e.target.value)}
+                          placeholder="Answer 2 (e.g. Cat)"
+                          className="w-full bg-white text-xs text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (hint1Question === hint2Question) {
+                              setFaceGuardStatus('Choose two different security questions.');
+                              return;
+                            }
+                            if (hint1AnswerDraft.trim().length < 2 || hint2AnswerDraft.trim().length < 2) {
+                              setFaceGuardStatus('Enter both recovery hint answers (at least 2 characters each).');
+                              return;
+                            }
+                            onUpdateSettings({
+                              securityRecoveryHints: [
+                                { question: hint1Question, answerHash: hashSecurityAnswer(hint1AnswerDraft) },
+                                { question: hint2Question, answerHash: hashSecurityAnswer(hint2AnswerDraft) }
+                              ]
+                            });
+                            setHint1AnswerDraft('');
+                            setHint2AnswerDraft('');
+                            setFaceGuardStatus('Security Recovery Hints saved! Thieves cannot reset your PIN without these.');
+                            playHapticSound('message_sent');
+                          }}
+                          className="w-full py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-bold"
+                        >
+                          Save Security Recovery Hints
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="text-[10px] text-slate-500 pt-0.5">
+                      Failed attempts counter: {getFailedSecurityAttempts()} / {settings.securityMaxAttempts || 3}
                     </div>
                   </div>
 
@@ -3110,17 +3384,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                     </div>
                   )}
                 </div>
-
-                {/* Force Update Check Trigger */}
-                {onPreviewForceUpdate && (
-                  <button
-                    type="button"
-                    onClick={onPreviewForceUpdate}
-                    className="w-full py-2.5 px-3 rounded-2xl bg-white/90 hover:bg-white border border-purple-200 text-xs font-bold text-purple-800 shadow-xs"
-                  >
-                    Preview Force Update Dialog ("Update Required")
-                  </button>
-                )}
               </div>
             )}
 
@@ -3331,6 +3594,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
           </div>
         </div>
       )}
+
+      {/* Live Front Camera Face Scanner Modal (Enroll up to 5 poses & Real-Time Verify) */}
+      <FaceScannerModal
+        isOpen={faceScannerMode !== null}
+        mode={faceScannerMode || 'verify'}
+        existingProfiles={settings.ownerFaceProfiles || []}
+        legacyDescriptor={settings.ownerFaceDescriptor}
+        lockOnStranger={true}
+        onClose={() => setFaceScannerMode(null)}
+        onEnrolledProfile={(profile) => {
+          const current = settings.ownerFaceProfiles || [];
+          const merged = [...current, profile].slice(0, MAX_OWNER_FACE_PROFILES);
+          onUpdateSettings({
+            ownerFaceEnrolled: true,
+            ownerFaceProfiles: merged,
+            ownerFaceDescriptor: merged[0].descriptor
+          });
+          setFaceGuardStatus(
+            `Enrolled ${profile.label} ✓ (${merged.length}/${MAX_OWNER_FACE_PROFILES} poses active).`
+          );
+        }}
+        onVerifiedSuccess={(detail) => {
+          setFaceScannerMode(null);
+          setFaceGuardStatus(detail);
+        }}
+        onUnrecognizedLocked={(detail) => {
+          setFaceScannerMode(null);
+          setFaceGuardStatus(detail);
+        }}
+      />
     </div>
   );
 };
+

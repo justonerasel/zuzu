@@ -88,6 +88,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   masterPinHash: '',
   ownerFaceEnrolled: false,
   ownerFaceDescriptor: undefined,
+  ownerFaceProfiles: [],
+  securityRecoveryHints: [],
   securityMaxAttempts: 3,
   securityCheckIntervalSec: 12,
 

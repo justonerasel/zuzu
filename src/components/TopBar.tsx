@@ -1,6 +1,6 @@
 import React from 'react';
-import { Sparkles, MessageSquare, Settings, Radio } from 'lucide-react';
-import { VoiceIdentity, PersonalityId, ActiveTab } from '../types';
+import { MessageSquare, Settings } from 'lucide-react';
+import { VoiceIdentity, PersonalityId } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { playHapticSound } from '../utils/audio';
 
@@ -45,9 +45,11 @@ export const TopBar: React.FC<TopBarProps> = ({
       {/* 2. Center: Zuzu AI Logo & Name */}
       <div className="flex flex-col items-center">
         <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-lg bg-gradient-to-tr from-purple-600 via-indigo-600 to-sky-500 p-0.5 shadow-md shadow-purple-600/20 flex items-center justify-center">
-            <Sparkles className="w-3.5 h-3.5 text-white" />
-          </div>
+          <img
+            src="/zuzu-logo.png"
+            alt="Zuzu AI"
+            className="w-7 h-7 rounded-xl object-cover shadow-md shadow-purple-600/20 border border-purple-200/80"
+          />
           <span className="font-black text-base tracking-tight text-slate-800">
             Zuzu <span className="bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">AI</span>
           </span>

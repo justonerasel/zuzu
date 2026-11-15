@@ -17,8 +17,13 @@ import {
 } from 'lucide-react';
 import { playHapticSound } from '../utils/audio';
 import { apiFetch } from '../utils/apiConfig';
+import type { ForceUpdatePayload } from './ForceUpdateOverlay';
 
-export const UpdatesView: React.FC = () => {
+interface UpdatesViewProps {
+  onForceUpdateTriggered?: (payload: ForceUpdatePayload) => void;
+}
+
+export const UpdatesView: React.FC<UpdatesViewProps> = ({ onForceUpdateTriggered }) => {
   const [isChecking, setIsChecking] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -42,21 +47,29 @@ export const UpdatesView: React.FC = () => {
       const res = await apiFetch('/api/system/check-update?installedVersion=3.6.3&versionCode=363');
       if (res.ok) {
         const data = await res.json();
-        setCheckStatusMessage(data.message || 'Update check completed.');
+        setCheckStatusMessage(data.message || `Zuzu AI is running the latest production build (${availableVersion}).`);
+        playHapticSound('listen_stop');
+        if (data?.forceUpdate) {
+          onForceUpdateTriggered?.({
+            latestVersion: data.latestVersion || availableVersion,
+            minSupportedVersion: data.minSupportedVersion,
+            apkDownloadUrl: data.apkDownloadUrl || data.downloadUrl || 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
+            websiteUrl: data.websiteUrl || 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
+            message: data.message || 'A required Zuzu AI update is available.',
+            changelogSummary: data.changelogSummary
+          });
+        } else if (data?.updateRequired) {
+          setTimeout(() => {
+            setShowConfirmModal(true);
+          }, 400);
+        }
       } else {
         setCheckStatusMessage(`Zuzu AI is running the latest production build (${availableVersion}).`);
+        playHapticSound('listen_stop');
       }
-      playHapticSound('listen_stop');
-      // Prompt user with confirmation modal for in-app auto-update
-      setTimeout(() => {
-        setShowConfirmModal(true);
-      }, 500);
     } catch {
-      setCheckStatusMessage(`Connected to update server. Latest version ${availableVersion} is active.`);
+      setCheckStatusMessage(`Could not reach OTA update server. Running local build ${availableVersion}.`);
       playHapticSound('listen_stop');
-      setTimeout(() => {
-        setShowConfirmModal(true);
-      }, 500);
     } finally {
       setIsChecking(false);
     }
@@ -322,10 +335,12 @@ export const UpdatesView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in select-none">
           <div className="bg-white border border-purple-200 rounded-3xl p-6 max-w-sm w-full text-center shadow-2xl relative overflow-hidden text-slate-800">
             {/* Header Icon */}
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mx-auto mb-3 flex items-center justify-center">
-              <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center text-purple-600">
-                <ArrowUpCircle className="w-7 h-7" />
-              </div>
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mx-auto mb-3 flex items-center justify-center overflow-hidden">
+              <img
+                src="/zuzu-logo.png"
+                alt="Zuzu AI"
+                className="w-full h-full rounded-[14px] object-cover"
+              />
             </div>
 
             <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-800 text-[10px] font-bold uppercase tracking-wider mb-1.5">

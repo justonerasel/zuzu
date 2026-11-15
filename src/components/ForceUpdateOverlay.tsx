@@ -31,10 +31,12 @@ export const ForceUpdateOverlay: React.FC<ForceUpdateOverlayProps> = ({
   return (
     <div className="fixed inset-0 z-[110] bg-slate-950/75 backdrop-blur-xl flex items-center justify-center p-5 select-none animate-fade-in">
       <div className="w-full max-w-sm rounded-3xl bg-white border border-purple-200 p-6 text-center shadow-2xl text-slate-800 relative overflow-hidden">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mx-auto mb-3.5 flex items-center justify-center">
-          <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center text-purple-600">
-            <ArrowUpCircle className="w-8 h-8" />
-          </div>
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mx-auto mb-3.5 flex items-center justify-center overflow-hidden">
+          <img
+            src="/zuzu-logo.png"
+            alt="Zuzu AI"
+            className="w-full h-full rounded-[14px] object-cover"
+          />
         </div>
 
         <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[10px] font-bold uppercase tracking-wider mb-2">

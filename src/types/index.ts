@@ -170,6 +170,8 @@ export interface AppSettings {
   masterPinHash: string;
   ownerFaceEnrolled: boolean;
   ownerFaceDescriptor?: number[];
+  ownerFaceProfiles?: OwnerFaceProfile[];
+  securityRecoveryHints?: SecurityRecoveryHint[];
   securityMaxAttempts: number;
   securityCheckIntervalSec: number;
 
@@ -180,6 +182,20 @@ export interface AppSettings {
   nusuToken?: string;
   nusuVaultKey?: string;
   nusuLastSyncedAt?: number;
+}
+
+export interface OwnerFaceProfile {
+  id: string;
+  label: string;
+  thumbnail: string;
+  descriptor: number[];
+  createdAt: number;
+  source: 'camera' | 'upload';
+}
+
+export interface SecurityRecoveryHint {
+  question: string;
+  answerHash: string;
 }
 
 export type ActiveTab = 'dashboard' | 'chat' | 'voice' | 'history' | 'settings' | 'updates' | 'image_creator';
