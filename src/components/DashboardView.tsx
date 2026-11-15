@@ -34,6 +34,7 @@ import { getPersonalizedGreeting } from '../utils/greetingHelper';
 import { FacebookAutomationModal, FacebookTaskType } from './FacebookAutomationModal';
 import { ScreenAssistantModal } from './ScreenAssistantModal';
 import { apiFetch } from '../utils/apiConfig';
+import { setMicBusyForActiveSession } from '../utils/backgroundService';
 
 interface DashboardViewProps {
   settings: AppSettings;
@@ -136,6 +137,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
 
     recognition.onstart = () => {
+      setMicBusyForActiveSession(true);
       setOrbState('listening');
       setStatusText('LISTENING...');
       setIsVoiceActive(true);
@@ -150,6 +152,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
     recognition.onerror = (event: any) => {
       console.warn('Speech Recognition error event:', event.error);
+      setMicBusyForActiveSession(false);
       if (event.error === 'not-allowed') {
         setShowPermissionModal(true);
       }
@@ -160,6 +163,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     };
 
     recognition.onend = () => {
+      setMicBusyForActiveSession(false);
       if (isCancelledRef.current) {
         setOrbState('idle');
         setStatusText('ZUZU AI OFF • TAP TO START');
@@ -220,10 +224,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     try {
       const rec = initSpeechRecognition();
       if (rec) {
+        setMicBusyForActiveSession(true);
         recognitionRef.current = rec;
         rec.start();
       }
     } catch (err: any) {
+      setMicBusyForActiveSession(false);
       console.warn('Recognition start error:', err);
     }
   };
@@ -231,6 +237,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Stop / Cancel voice interaction
   const stopVoiceInteraction = () => {
     isCancelledRef.current = true;
+    setMicBusyForActiveSession(false);
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();

@@ -82,7 +82,11 @@ import {
   clearAllMemories
 } from '../utils/storage';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
-import { apiFetch, validateAiKey } from '../utils/apiConfig';
+import { 
+  apiFetch, 
+  validateAiKey, 
+  APP_VERSION 
+} from '../utils/apiConfig';
 import { 
   PERMISSION_DEFINITIONS, 
   PermissionDefinition, 
@@ -98,10 +102,28 @@ import {
 } from '../utils/permission';
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { THEME_PRESETS, isValidHexColor, getThemeDetails } from '../utils/theme';
+import { 
+  registerNusuAccount, 
+  loginNusuAccount, 
+  syncNusuCloudNow, 
+  logoutNusuAccount 
+} from '../utils/nusuAccount';
+import { 
+  enrollOwnerFace, 
+  hashMasterPin, 
+  runSilentFaceSecurityCheck, 
+  setSecurityLocked, 
+  getFailedSecurityAttempts 
+} from '../utils/faceGuard';
+import { 
+  syncBackgroundServicesWithSettings, 
+  isForegroundServiceActive 
+} from '../utils/backgroundService';
 
 interface SettingsViewProps {
   settings: AppSettings;
   onUpdateSettings: (settings: Partial<AppSettings>) => void;
+  onPreviewForceUpdate?: () => void;
 }
 
 export type SettingsCategoryId = 
@@ -112,6 +134,7 @@ export type SettingsCategoryId =
   | 'orb_animation'
   | 'theme'
   | 'permissions'
+  | 'security_guard'
   | 'about_developer';
 
 interface CategoryCardInfo {
@@ -237,9 +260,24 @@ const CATEGORIES: CategoryCardInfo[] = [
     }
   },
   {
+    id: 'security_guard',
+    title: 'Background AI & Face Guard',
+    subtitle: 'Foreground Service, Wake Word "Wake up Zuzu" & Anti-Theft PIN',
+    icon: Lock,
+    badge: 'Guard',
+    colorTheme: {
+      bg: 'bg-indigo-50/70 hover:bg-indigo-50',
+      border: 'border-indigo-200/80',
+      iconBg: 'bg-indigo-100 text-indigo-700',
+      iconColor: 'text-indigo-600',
+      pillBg: 'bg-indigo-100/80',
+      pillColor: 'text-indigo-700'
+    }
+  },
+  {
     id: 'about_developer',
     title: 'About & Developer',
-    subtitle: 'MD RASEL HOSSEN • Zuzu AI v3.5.4 build info',
+    subtitle: `MD RASEL HOSSEN • Zuzu AI v${APP_VERSION} build info`,
     icon: Code2,
     badge: 'Author',
     colorTheme: {
@@ -302,7 +340,7 @@ const ORB_STYLES: Array<{
   }
 ];
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSettings }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSettings, onPreviewForceUpdate }) => {
   // Navigation State
   const [activeCategory, setActiveCategory] = useState<SettingsCategoryId | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -380,6 +418,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [newMemVal, setNewMemVal] = useState('');
   const [newMemCategory, setNewMemCategory] = useState<MemoryCategory>('personal');
   const [memError, setMemError] = useState<string | null>(null);
+
+  // NUSU Account State (NU-XXXXXX + Firebase Firestore)
+  const [nusuMode, setNusuMode] = useState<'login' | 'register'>('login');
+  const [nusuIdInput, setNusuIdInput] = useState(settings.nusuAccountId || '');
+  const [nusuFullNameInput, setNusuFullNameInput] = useState(settings.nusuFullName || settings.userNickname || '');
+  const [nusuPhoneInput, setNusuPhoneInput] = useState(settings.nusuPhone || '');
+  const [nusuPasswordInput, setNusuPasswordInput] = useState('');
+  const [nusuConfirmPasswordInput, setNusuConfirmPasswordInput] = useState('');
+  const [showNusuPassword, setShowNusuPassword] = useState(false);
+  const [newlyCreatedNusuId, setNewlyCreatedNusuId] = useState<string | null>(null);
+  const [nusuLoading, setNusuLoading] = useState(false);
+  const [nusuStatusMsg, setNusuStatusMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settings.userNickname) {
+      setUserNickname(settings.userNickname);
+    }
+  }, [settings.userNickname]);
+
+  // Background Service, Wake Word & Anti-Theft Face Guard State
+  const [wakeWordDraft, setWakeWordDraft] = useState(settings.wakeWordPhrase || 'wake up zuzu');
+  const [pinDraft, setPinDraft] = useState('');
+  const [faceGuardLoading, setFaceGuardLoading] = useState(false);
+  const [faceGuardStatus, setFaceGuardStatus] = useState<string | null>(null);
 
   const refreshAllPermissions = async () => {
     setIsCheckingPermissions(true);
@@ -799,7 +861,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       Settings &amp; Preferences
                     </h2>
                     <p className="text-[11px] opacity-70">
-                      Zuzu AI v3.5 • Personalize your assistant
+                      Zuzu AI v{APP_VERSION} • Personalize your assistant
                     </p>
                   </div>
                 </div>
@@ -836,7 +898,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
               </div>
               <div className="text-right">
                 <span className="text-[10px] font-mono text-purple-700 font-bold bg-white/80 px-2 py-0.5 rounded-md border border-purple-200">
-                  v3.5.4
+                  v{APP_VERSION}
                 </span>
               </div>
             </div>
@@ -952,7 +1014,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
               </button>
 
               <div className="text-[11px] font-mono opacity-60">
-                Category {CATEGORIES.findIndex(c => c.id === activeCategory) + 1} of 8
+                Category {CATEGORIES.findIndex(c => c.id === activeCategory) + 1} of {CATEGORIES.length}
               </div>
             </div>
 
@@ -1011,6 +1073,273 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       className="w-full bg-purple-50/50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-purple-100 focus:outline-none focus:border-purple-300"
                     />
                   </div>
+                </div>
+
+                {/* Custom NUSU Account Login & Firebase Cloud Persistent Memory Card */}
+                <div className="p-4 bg-white/95 border border-indigo-200 rounded-2xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold">
+                        <UserCheck className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <span>NUSU Cloud Account</span>
+                          <span className="text-[9px] font-mono font-bold bg-indigo-100 text-indigo-800 px-1.5 py-0.2 rounded">
+                            NU-ID
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          Firebase Firestore backup • Survives APK uninstalls
+                        </div>
+                      </div>
+                    </div>
+                    {settings.nusuAccountId && settings.nusuVaultKey && (
+                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        {settings.nusuAccountId}
+                      </span>
+                    )}
+                  </div>
+
+                  {settings.nusuAccountId && settings.nusuVaultKey ? (
+                    <div className="space-y-2.5 pt-1 border-t border-slate-100">
+                      {newlyCreatedNusuId && (
+                        <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-950 space-y-0.5">
+                          <div className="font-extrabold">Save Your NUSU ID: <span className="font-mono text-emerald-700">{newlyCreatedNusuId}</span></div>
+                          <div className="text-[10px] text-emerald-800">Use this ID and your password to restore chats &amp; memories after reinstalling.</div>
+                        </div>
+                      )}
+
+                      <div className="p-2.5 rounded-xl bg-indigo-50/60 border border-indigo-100 text-[11px] flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-bold text-indigo-900 truncate">
+                            {settings.nusuFullName || settings.userNickname || 'Zuzu User'} • <span className="font-mono">{settings.nusuAccountId}</span>
+                          </div>
+                          {settings.nusuPhone && (
+                            <div className="text-[10px] text-slate-600 truncate">ID / Phone: {settings.nusuPhone}</div>
+                          )}
+                          <div className="text-[10px] text-slate-500">
+                            Last synced: {settings.nusuLastSyncedAt ? new Date(settings.nusuLastSyncedAt).toLocaleString() : 'Just now'}
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full flex-shrink-0">
+                          Firebase ✓
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          disabled={nusuLoading}
+                          onClick={async () => {
+                            setNusuLoading(true);
+                            setNusuStatusMsg(null);
+                            try {
+                              const res = await syncNusuCloudNow(settings);
+                              setNusuStatusMsg(res.message);
+                              if (res.success && res.lastSyncedAt) {
+                                onUpdateSettings({ nusuLastSyncedAt: res.lastSyncedAt });
+                                playHapticSound('message_sent');
+                              }
+                            } finally {
+                              setNusuLoading(false);
+                            }
+                          }}
+                          className="py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1 shadow-xs disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${nusuLoading ? 'animate-spin' : ''}`} />
+                          <span>{nusuLoading ? 'Syncing...' : 'Sync Now'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = logoutNusuAccount();
+                            onUpdateSettings(next);
+                            setNewlyCreatedNusuId(null);
+                            setNusuPasswordInput('');
+                            setNusuConfirmPasswordInput('');
+                            setNusuStatusMsg('Signed out of NUSU Account.');
+                            playHapticSound('listen_stop');
+                          }}
+                          className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
+                        >
+                          Sign Out
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5 pt-1 border-t border-slate-100">
+                      <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl">
+                        <button
+                          type="button"
+                          onClick={() => { setNusuMode('login'); setNusuStatusMsg(null); }}
+                          className={`py-1.5 rounded-lg text-[11px] font-bold transition-all ${
+                            nusuMode === 'login' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
+                          }`}
+                        >
+                          Login (NU-XXXXXX)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setNusuMode('register'); setNusuStatusMsg(null); }}
+                          className={`py-1.5 rounded-lg text-[11px] font-bold transition-all ${
+                            nusuMode === 'register' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
+                          }`}
+                        >
+                          Create New ID
+                        </button>
+                      </div>
+
+                      {nusuMode === 'login' ? (
+                        <input
+                          type="text"
+                          value={nusuIdInput}
+                          onChange={(e) => setNusuIdInput(e.target.value.toUpperCase())}
+                          placeholder="Enter NUSU ID (e.g. NU-482915)"
+                          className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
+                        />
+                      ) : (
+                        <>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-semibold text-slate-500 px-0.5">
+                              Full Name or Username
+                            </label>
+                            <input
+                              type="text"
+                              value={nusuFullNameInput}
+                              onChange={(e) => setNusuFullNameInput(e.target.value)}
+                              placeholder="e.g. MD Rasel Hossen"
+                              className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-semibold text-slate-500 px-0.5">
+                              Phone Number / Identifier
+                            </label>
+                            <input
+                              type="text"
+                              value={nusuPhoneInput}
+                              onChange={(e) => setNusuPhoneInput(e.target.value)}
+                              placeholder="e.g. +88017XXXXXXXX or username@mail"
+                              className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
+                            />
+                          </div>
+                        </>
+                      )}
+
+                      <div className="space-y-1">
+                        {nusuMode === 'register' && (
+                          <label className="text-[10px] font-semibold text-slate-500 px-0.5">
+                            Secure Password (min 6 chars)
+                          </label>
+                        )}
+                        <div className="relative">
+                          <input
+                            type={showNusuPassword ? 'text' : 'password'}
+                            value={nusuPasswordInput}
+                            onChange={(e) => setNusuPasswordInput(e.target.value)}
+                            placeholder={nusuMode === 'register' ? 'Create secure password (min 6 chars)' : 'Enter NUSU password'}
+                            className="w-full bg-slate-50 text-xs text-slate-800 pl-3 pr-9 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNusuPassword(v => !v)}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                            title={showNusuPassword ? 'Hide password' : 'Show password'}
+                          >
+                            {showNusuPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {nusuMode === 'register' && (
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-semibold text-slate-500 px-0.5">
+                            Confirm Password
+                          </label>
+                          <input
+                            type={showNusuPassword ? 'text' : 'password'}
+                            value={nusuConfirmPasswordInput}
+                            onChange={(e) => setNusuConfirmPasswordInput(e.target.value)}
+                            placeholder="Re-enter password to confirm"
+                            className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
+                          />
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        disabled={nusuLoading}
+                        onClick={async () => {
+                          setNusuLoading(true);
+                          setNusuStatusMsg(null);
+                          try {
+                            if (nusuMode === 'register') {
+                              const res = await registerNusuAccount({
+                                fullName: nusuFullNameInput,
+                                phone: nusuPhoneInput,
+                                password: nusuPasswordInput,
+                                confirmPassword: nusuConfirmPasswordInput
+                              });
+                              setNusuStatusMsg(res.message);
+                              if (res.success && res.accountId) {
+                                setNusuIdInput(res.accountId);
+                                setNewlyCreatedNusuId(res.accountId);
+                                setNusuPasswordInput('');
+                                setNusuConfirmPasswordInput('');
+                                if (res.fullName) {
+                                  setUserNickname(res.fullName);
+                                }
+                                if (res.restoredSettings) {
+                                  onUpdateSettings(res.restoredSettings);
+                                }
+                                playHapticSound('message_sent');
+                              } else {
+                                playHapticSound('listen_stop');
+                              }
+                            } else {
+                              const res = await loginNusuAccount(nusuIdInput, nusuPasswordInput);
+                              setNusuStatusMsg(res.message);
+                              if (res.success) {
+                                setNusuPasswordInput('');
+                                setNewlyCreatedNusuId(null);
+                                if (res.restoredSettings) {
+                                  onUpdateSettings(res.restoredSettings);
+                                  if (res.restoredSettings.userNickname) {
+                                    setUserNickname(res.restoredSettings.userNickname);
+                                  }
+                                }
+                                setMemories(getMemories());
+                                updateCounts();
+                                playHapticSound('switch');
+                              } else {
+                                playHapticSound('listen_stop');
+                              }
+                            }
+                          } catch (err: any) {
+                            setNusuStatusMsg(err?.message || 'Firebase NUSU connection failed.');
+                          } finally {
+                            setNusuLoading(false);
+                          }
+                        }}
+                        className="w-full py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs disabled:opacity-50"
+                      >
+                        {nusuLoading
+                          ? 'Connecting to Firebase Cloud...'
+                          : nusuMode === 'register'
+                          ? 'Generate NU-XXXXXX ID & Sign In'
+                          : 'Sign In & Restore All Memory'}
+                      </button>
+                    </div>
+                  )}
+
+                  {nusuStatusMsg && (
+                    <div className="p-2 rounded-xl bg-indigo-50 border border-indigo-200 text-[11px] text-indigo-900 font-medium">
+                      {nusuStatusMsg}
+                    </div>
+                  )}
                 </div>
 
                 {/* Assistant Nickname Customization (Requirement 4) */}
@@ -2488,7 +2817,309 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             )}
 
             {/* ----------------------------------------------------------- */}
-            {/* 8. ABOUT & DEVELOPER SUB-PAGE (Requirement 11)              */}
+            {/* 8. SECURITY GUARD & BACKGROUND AI SUB-PAGE                  */}
+            {/* ----------------------------------------------------------- */}
+            {activeCategory === 'security_guard' && (
+              <div className="space-y-3.5 animate-fade-in text-slate-800">
+                {/* 1. Foreground Service & Battery Exemption */}
+                <div className="p-4 bg-white/95 border border-indigo-200 rounded-2xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center">
+                        <Activity className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-800">Android Foreground Service</div>
+                        <div className="text-[10px] text-slate-500">Persistent notification + WakeLock background protection</div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const nextVal = !settings.foregroundServiceEnabled;
+                        const updated = { ...settings, foregroundServiceEnabled: nextVal };
+                        onUpdateSettings({ foregroundServiceEnabled: nextVal });
+                        await syncBackgroundServicesWithSettings(updated);
+                        playHapticSound('switch');
+                      }}
+                      className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
+                        settings.foregroundServiceEnabled
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                          : 'bg-slate-100 text-slate-500 border-slate-200'
+                      }`}
+                    >
+                      {settings.foregroundServiceEnabled ? 'Active' : 'Off'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-100 text-[11px]">
+                    <span className="text-slate-700 font-medium">
+                      Service Status: <strong className="text-indigo-800">{isForegroundServiceActive() ? 'Running with WakeLock' : 'Standby'}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openAndroidSettings('android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS');
+                        setFaceGuardStatus('Opening Android Battery Optimization settings...');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white border border-indigo-200 text-indigo-700 font-bold text-[10px] hover:bg-indigo-100"
+                    >
+                      Ignore Battery Opt
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Always-On Wake Word Listener */}
+                <div className="p-4 bg-white/95 border border-purple-200 rounded-2xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center">
+                        <Mic className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-800">Always-On Wake Word</div>
+                        <div className="text-[10px] text-slate-500">Hands-free background trigger even while using other tabs</div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const nextVal = !settings.wakeWordEnabled;
+                        const updated = { ...settings, wakeWordEnabled: nextVal };
+                        onUpdateSettings({ wakeWordEnabled: nextVal });
+                        await syncBackgroundServicesWithSettings(updated);
+                        playHapticSound('switch');
+                      }}
+                      className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
+                        settings.wakeWordEnabled
+                          ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
+                          : 'bg-slate-100 text-slate-500 border-slate-200'
+                      }`}
+                    >
+                      {settings.wakeWordEnabled ? 'Listening' : 'Off'}
+                    </button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={wakeWordDraft}
+                      onChange={(e) => setWakeWordDraft(e.target.value)}
+                      placeholder="Wake up Zuzu"
+                      className="flex-1 bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-purple-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const clean = wakeWordDraft.trim() || 'wake up zuzu';
+                        setWakeWordDraft(clean);
+                        const updated = { ...settings, wakeWordPhrase: clean };
+                        onUpdateSettings({ wakeWordPhrase: clean });
+                        await syncBackgroundServicesWithSettings(updated);
+                        setFaceGuardStatus(`Wake phrase updated to "${clean}"`);
+                        playHapticSound('message_sent');
+                      }}
+                      className="px-3 py-2 rounded-xl bg-purple-600 text-white text-xs font-bold hover:bg-purple-700"
+                    >
+                      Save
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.dispatchEvent(
+                        new CustomEvent('zuzu-wake-word-triggered', {
+                          detail: { transcript: settings.wakeWordPhrase || 'Wake up Zuzu', remainingCommand: '' }
+                        })
+                      );
+                    }}
+                    className="w-full py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 text-[11px] font-bold"
+                  >
+                    Simulate Wake Word Trigger ("{settings.wakeWordPhrase || 'Wake up Zuzu'}")
+                  </button>
+                </div>
+
+                {/* 3. Anti-Theft Smart Face Recognition & Master PIN */}
+                <div className="p-4 bg-white/95 border border-rose-200 rounded-2xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center">
+                        <ShieldAlert className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-800">Anti-Theft Face Guard &amp; PIN</div>
+                        <div className="text-[10px] text-slate-500">Locks screen after 3 unrecognized front-camera detections</div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!settings.antiTheftEnabled) {
+                          if (!settings.ownerFaceEnrolled) {
+                            setFaceGuardStatus('Enroll owner face first before enabling Anti-Theft Guard.');
+                            return;
+                          }
+                          if (!settings.masterPinHash) {
+                            setFaceGuardStatus('Set a 4-6 digit Master PIN first.');
+                            return;
+                          }
+                        }
+                        const next = !settings.antiTheftEnabled;
+                        onUpdateSettings({ antiTheftEnabled: next });
+                        playHapticSound('switch');
+                        setFaceGuardStatus(next ? 'Anti-Theft Face Guard armed!' : 'Anti-Theft Face Guard paused.');
+                      }}
+                      className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
+                        settings.antiTheftEnabled
+                          ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                          : 'bg-slate-100 text-slate-500 border-slate-200'
+                      }`}
+                    >
+                      {settings.antiTheftEnabled ? 'Armed' : 'Off'}
+                    </button>
+                  </div>
+
+                  {/* Step A: Owner Face Enrollment */}
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-700">1. Owner Biometric Profile</span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        settings.ownerFaceEnrolled ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {settings.ownerFaceEnrolled ? 'Enrolled ✓' : 'Not Enrolled'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        disabled={faceGuardLoading}
+                        onClick={async () => {
+                          setFaceGuardLoading(true);
+                          setFaceGuardStatus('Scanning owner face via front camera...');
+                          try {
+                            const res = await enrollOwnerFace();
+                            setFaceGuardStatus(res.message);
+                            if (res.success && res.descriptor) {
+                              onUpdateSettings({
+                                ownerFaceEnrolled: true,
+                                ownerFaceDescriptor: res.descriptor
+                              });
+                              playHapticSound('message_sent');
+                            } else {
+                              playHapticSound('listen_stop');
+                            }
+                          } finally {
+                            setFaceGuardLoading(false);
+                          }
+                        }}
+                        className="py-2 px-2.5 rounded-xl bg-slate-900 hover:bg-black text-white text-[11px] font-bold flex items-center justify-center gap-1 disabled:opacity-50"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>{settings.ownerFaceEnrolled ? 'Re-Enroll Face' : 'Enroll Face'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={faceGuardLoading || !settings.ownerFaceEnrolled}
+                        onClick={async () => {
+                          setFaceGuardLoading(true);
+                          setFaceGuardStatus('Running silent front-camera check...');
+                          try {
+                            const outcome = await runSilentFaceSecurityCheck(
+                              settings.ownerFaceDescriptor,
+                              settings.securityMaxAttempts || 3
+                            );
+                            setFaceGuardStatus(outcome.detail);
+                          } finally {
+                            setFaceGuardLoading(false);
+                          }
+                        }}
+                        className="py-2 px-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-bold disabled:opacity-50"
+                      >
+                        Verify Face Now
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Step B: Master PIN Configuration */}
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-700">2. Strict Master PIN (4-6 Digits)</span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        settings.masterPinHash ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {settings.masterPinHash ? 'PIN Set ✓' : 'No PIN'}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={6}
+                        value={pinDraft}
+                        onChange={(e) => setPinDraft(e.target.value.replace(/\D/g, ''))}
+                        placeholder="Enter 4-6 digit Master PIN"
+                        className="flex-1 bg-white text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-rose-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (pinDraft.length < 4 || pinDraft.length > 6) {
+                            setFaceGuardStatus('Master PIN must be 4 to 6 digits.');
+                            return;
+                          }
+                          const hashed = hashMasterPin(pinDraft);
+                          onUpdateSettings({ masterPinHash: hashed });
+                          setPinDraft('');
+                          setFaceGuardStatus('Master PIN saved securely!');
+                          playHapticSound('message_sent');
+                        }}
+                        className="px-3 py-2 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700"
+                      >
+                        Set PIN
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1">
+                      <span>Failed attempts counter: {getFailedSecurityAttempts()} / {settings.securityMaxAttempts || 3}</span>
+                      {settings.masterPinHash && (
+                        <button
+                          type="button"
+                          onClick={() => setSecurityLocked(true, 'Manual Security Lock Test triggered by owner.')}
+                          className="text-rose-700 font-bold hover:underline"
+                        >
+                          Test Lock Screen
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {faceGuardStatus && (
+                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] text-rose-900 font-medium">
+                      {faceGuardStatus}
+                    </div>
+                  )}
+                </div>
+
+                {/* Force Update Check Trigger */}
+                {onPreviewForceUpdate && (
+                  <button
+                    type="button"
+                    onClick={onPreviewForceUpdate}
+                    className="w-full py-2.5 px-3 rounded-2xl bg-white/90 hover:bg-white border border-purple-200 text-xs font-bold text-purple-800 shadow-xs"
+                  >
+                    Preview Force Update Dialog ("Update Required")
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* ----------------------------------------------------------- */}
+            {/* 9. ABOUT & DEVELOPER SUB-PAGE (Requirement 11)              */}
             {/* ----------------------------------------------------------- */}
             {activeCategory === 'about_developer' && (
               <div className="space-y-4 animate-fade-in text-slate-800">
@@ -2602,7 +3233,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                 <div className="p-4 bg-white/90 border border-slate-200/80 rounded-2xl shadow-xs space-y-2 text-center">
                   <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-50 text-purple-700 text-xs font-bold border border-purple-200">
                     <span>Zuzu AI</span>
-                    <span className="text-[10px] font-mono opacity-60">• v3.5.4-android</span>
+                    <span className="text-[10px] font-mono opacity-60">• v{APP_VERSION}-android</span>
                   </div>
                 </div>
               </div>

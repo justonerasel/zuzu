@@ -22,6 +22,15 @@ export interface PermissionStateItem extends PermissionDefinition {
 const STORAGE_KEY_PREFIX = 'zuzu_perm_status_';
 const MIC_STORAGE_KEY = 'zuzu_mic_permission_status';
 
+function getNativeZuzuPlugin(): any | null {
+  if (typeof window === 'undefined') return null;
+  const cap = (window as any).Capacitor;
+  if (cap?.isNativePlatform?.() && cap?.Plugins?.ZuzuNative) {
+    return cap.Plugins.ZuzuNative;
+  }
+  return null;
+}
+
 export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   {
     id: 'microphone',
@@ -278,7 +287,27 @@ export async function requestMicrophonePermission(): Promise<PermissionRequestRe
 export async function checkAllPermissions(): Promise<Record<string, PermissionStatusState>> {
   const results: Record<string, PermissionStatusState> = {};
 
+  // Query real Android OS permissions first if running inside Capacitor APK
+  const nativePlugin = getNativeZuzuPlugin();
+  let nativeMap: Record<string, PermissionStatusState> | null = null;
+  if (nativePlugin?.checkAllNativePermissions) {
+    try {
+      nativeMap = await nativePlugin.checkAllNativePermissions();
+    } catch (err) {
+      console.warn('[Permissions] Native check notice:', err);
+    }
+  }
+
   for (const def of PERMISSION_DEFINITIONS) {
+    if (nativeMap && nativeMap[def.id]) {
+      results[def.id] = nativeMap[def.id];
+      localStorage.setItem(`${STORAGE_KEY_PREFIX}${def.id}`, nativeMap[def.id]);
+      if (def.id === 'microphone') {
+        localStorage.setItem(MIC_STORAGE_KEY, nativeMap[def.id]);
+      }
+      continue;
+    }
+
     const cached = localStorage.getItem(`${STORAGE_KEY_PREFIX}${def.id}`) as PermissionStatusState | null;
 
     if (def.isSpecialSystemSetting) {
@@ -346,13 +375,36 @@ export async function handlePermissionAction(id: string): Promise<{
   const def = PERMISSION_DEFINITIONS.find(p => p.id === id);
   if (!def) return { success: false, status: 'unsupported' };
 
+  const nativePlugin = getNativeZuzuPlugin();
+
   if (def.isSpecialSystemSetting) {
     openAndroidSettings(def.settingsAction);
     return {
       success: true,
       status: 'system_required',
-      message: `${def.name} requires manual authorization in Android Settings.`
+      message: `${def.name} opened in Android System Settings.`
     };
+  }
+
+  if (nativePlugin?.requestCorePermissions && ['microphone', 'camera', 'location', 'notifications', 'bg_microphone'].includes(id)) {
+    try {
+      const alias = id === 'bg_microphone' ? 'microphone' : id;
+      const nativeResult = await nativePlugin.requestCorePermissions({ alias });
+      const resolvedStatus = (nativeResult?.[id] || nativeResult?.[alias] || 'prompt') as PermissionStatusState;
+      localStorage.setItem(`${STORAGE_KEY_PREFIX}${id}`, resolvedStatus);
+      if (id === 'microphone' || id === 'bg_microphone') {
+        localStorage.setItem(MIC_STORAGE_KEY, resolvedStatus);
+      }
+      if (resolvedStatus === 'granted') {
+        return {
+          success: true,
+          status: 'granted',
+          message: `${def.name} granted natively.`
+        };
+      }
+    } catch (err) {
+      console.warn('[Permissions] Native prompt fallback to WebView:', err);
+    }
   }
 
   if (id === 'microphone') {
@@ -505,10 +557,13 @@ export async function handlePermissionAction(id: string): Promise<{
  * Universal Android Settings Intent Helper (Safe - does not break web navigation)
  */
 export function openAndroidSettings(action?: string): void {
-  // Graceful no-crash implementation: avoid destructive window.location.href navigations
   try {
+    const nativePlugin = getNativeZuzuPlugin();
+    if (nativePlugin?.openSystemSettings) {
+      nativePlugin.openSystemSettings({ action: action || '' });
+      return;
+    }
     if (typeof window !== 'undefined' && (window as any).Capacitor?.isNativePlatform?.()) {
-      // If running inside native Capacitor Android wrapper
       (window as any).Capacitor?.Plugins?.App?.openUrl?.({
         url: 'package:com.zuzu.ai.assistant'
       });
@@ -519,5 +574,5 @@ export function openAndroidSettings(action?: string): void {
 }
 
 export function openAndroidAppSettingsGuide(): void {
-  openAndroidSettings();
+  openAndroidSettings('android.settings.APPLICATION_DETAILS_SETTINGS');
 }

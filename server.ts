@@ -1,6 +1,8 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { generateIntelligentAnswer } from './src/utils/aiEngine.ts';
@@ -45,6 +47,91 @@ const CURATED_PREMADE_VOICES = [
   { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', gender: 'female', category: 'premade', description: 'Clear narrative female voice' }
 ];
 
+// ---------------- PERSISTENT NUSU ACCOUNT CLOUD STORE ----------------
+const DATA_DIR = path.resolve(__dirname, 'data');
+const NUSU_DB_PATH = path.join(DATA_DIR, 'nusu_accounts.json');
+
+interface NusuAccountRecord {
+  accountId: string; // e.g., NU-482915
+  displayName: string;
+  passwordSalt: string;
+  passwordHash: string;
+  sessionToken: string;
+  createdAt: number;
+  lastSyncedAt: number;
+  snapshot: {
+    chatHistory: any[];
+    voiceSessions: any[];
+    memories: any[];
+    settings: Record<string, any>;
+    savedAt?: number;
+  };
+}
+
+function readNusuStore(): Record<string, NusuAccountRecord> {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(NUSU_DB_PATH)) {
+      return {};
+    }
+    const raw = fs.readFileSync(NUSU_DB_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (err) {
+    console.warn('[NUSU Store] Read warning:', err);
+    return {};
+  }
+}
+
+function writeNusuStore(store: Record<string, NusuAccountRecord>): void {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const tmpPath = `${NUSU_DB_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), 'utf-8');
+  fs.renameSync(tmpPath, NUSU_DB_PATH);
+}
+
+function hashNusuPassword(password: string, salt?: string): { salt: string; hash: string } {
+  const actualSalt = salt || crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, actualSalt, 64).toString('hex');
+  return { salt: actualSalt, hash: derived };
+}
+
+function verifyNusuPassword(password: string, salt: string, storedHash: string): boolean {
+  const derived = crypto.scryptSync(password, salt, 64);
+  const storedBuf = Buffer.from(storedHash, 'hex');
+  if (derived.length !== storedBuf.length) return false;
+  return crypto.timingSafeEqual(derived, storedBuf);
+}
+
+function generateUniqueNusuId(existing: Record<string, NusuAccountRecord>): string {
+  for (let i = 0; i < 30; i++) {
+    const digits = crypto.randomInt(100000, 999999);
+    const candidate = `NU-${digits}`;
+    if (!existing[candidate]) return candidate;
+  }
+  return `NU-${Date.now().toString().slice(-6)}`;
+}
+
+function compareSemver(a: string, b: string): number {
+  const pa = a.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = b.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const va = pa[i] || 0;
+    const vb = pb[i] || 0;
+    if (va > vb) return 1;
+    if (va < vb) return -1;
+  }
+  return 0;
+}
+
+const LATEST_APP_VERSION = '3.6.2';
+const LATEST_VERSION_CODE = 362;
+const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.6.0';
+
 // Endpoint: Configuration check (Voice IDs, API key availability)
 app.get('/api/config', (req, res) => {
   res.json({
@@ -53,32 +140,205 @@ app.get('/api/config', (req, res) => {
     femaleVoiceId: process.env.ELEVENLABS_FEMALE_VOICE_ID || DEFAULT_FEMALE_VOICE_ID,
     hasElevenLabsKey: Boolean(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_API_KEY.trim().length > 0),
     hasGeminiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0),
-    version: 'v3.6.0 (Latest Release)',
+    version: `v${LATEST_APP_VERSION} (Latest Release)`,
+    versionCode: LATEST_VERSION_CODE,
     targetCompatibility: 'Android 9.0 (Pie) through Android 16'
   });
 });
 
-// Endpoint: System update & status checking
+// Endpoint: System update & Force Update checking
 app.get('/api/system/check-update', (req, res) => {
+  const installedVersion = typeof req.query.installedVersion === 'string' ? req.query.installedVersion : LATEST_APP_VERSION;
+  const installedCode = req.query.versionCode ? parseInt(String(req.query.versionCode), 10) : LATEST_VERSION_CODE;
+  const forceRequiredByMin = compareSemver(installedVersion, MIN_SUPPORTED_VERSION) < 0 || (!Number.isNaN(installedCode) && installedCode < 360);
+  const hasNewerVersion = compareSemver(installedVersion, LATEST_APP_VERSION) < 0 || (!Number.isNaN(installedCode) && installedCode < LATEST_VERSION_CODE);
+  const forceFlag = process.env.ZUZU_FORCE_UPDATE === 'true' || forceRequiredByMin;
+
   res.json({
     appName: 'Zuzu AI',
-    currentVersion: 'v3.6.0',
-    latestVersion: 'v3.6.0',
-    buildTag: 'Build 360-Production',
+    currentVersion: `v${LATEST_APP_VERSION}`,
+    latestVersion: `v${LATEST_APP_VERSION}`,
+    versionCode: LATEST_VERSION_CODE,
+    minSupportedVersion: `v${MIN_SUPPORTED_VERSION}`,
+    buildTag: 'Build 362-Production',
     releaseDate: 'November 2026',
-    status: 'up_to_date',
+    status: hasNewerVersion ? 'update_available' : 'up_to_date',
+    updateRequired: hasNewerVersion,
+    forceUpdate: forceFlag,
+    otaAvailable: true,
     targetCompatibility: 'Android 9.0 (Pie) through Android 16',
-    downloadUrl: '/apk/zuzu-ai-v3.6.0.apk',
+    downloadUrl: 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
+    apkDownloadUrl: 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
+    websiteUrl: 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
     downloadAvailable: true,
-    message: 'Zuzu AI is running the latest production build (v3.6.0). All system modules, dual voice engines, Bengali LED marquee, and 4-style 3D dot-matrix orbs are fully optimized and up-to-date.',
+    message: forceFlag
+      ? `Critical update required (v${LATEST_APP_VERSION}). Please update Zuzu AI to continue with Background Wake-Word, Anti-Theft Face Guard & NUSU Cloud Sync.`
+      : `Zuzu AI is running the latest production build (v${LATEST_APP_VERSION}). Foreground Service, Wake Word, Anti-Theft Face Guard & NUSU Cloud Sync are active.`,
     changelogSummary: [
-      'Universal transparent 3D character overlay with free roaming & dynamic actions',
-      'Dual 3D robot companions (Male Robot & soft Light Pink Female Robot) with color customization',
-      'New 3D Orbs: Glowing Globe, Fluid Particle Sphere, Siri Aura Glass & Dot Matrix',
-      '9 Theme Presets including Aura/RGB Hacking & Plush Cozy texture',
-      'Multimodal Screen Assistant with live screen reading & visual contextual intelligence',
-      'Target Android compatibility expanded to Android 9.0 through Android 16'
+      '100% Reliable Android Foreground Service with boot persistence & battery exemption controls',
+      'Always-On Wake Word background listener ("Wake up Zuzu") with seamless voice handoff',
+      'Anti-Theft Smart Face Recognition Guard with 3-strike strict Master PIN lock screen',
+      'Custom NUSU Account (NU-XXXXXX) cloud sync preserving chats, memories & settings across reinstalls',
+      'Mandatory Force Update system with direct APK download & OTA verification'
     ]
+  });
+});
+
+// ---------------- NUSU ACCOUNT API ENDPOINTS ----------------
+
+// Register a new NUSU Account (generates unique NU-XXXXXX ID)
+app.post('/api/nusu/register', (req, res) => {
+  try {
+    const { password, displayName = 'Zuzu User', initialSnapshot } = req.body || {};
+    if (!password || typeof password !== 'string' || password.trim().length < 4) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 4 characters long.' });
+    }
+
+    const store = readNusuStore();
+    const accountId = generateUniqueNusuId(store);
+    const { salt, hash } = hashNusuPassword(password.trim());
+    const sessionToken = crypto.randomBytes(24).toString('hex');
+    const now = Date.now();
+
+    const record: NusuAccountRecord = {
+      accountId,
+      displayName: String(displayName).trim() || 'Zuzu User',
+      passwordSalt: salt,
+      passwordHash: hash,
+      sessionToken,
+      createdAt: now,
+      lastSyncedAt: now,
+      snapshot: {
+        chatHistory: Array.isArray(initialSnapshot?.chatHistory) ? initialSnapshot.chatHistory : [],
+        voiceSessions: Array.isArray(initialSnapshot?.voiceSessions) ? initialSnapshot.voiceSessions : [],
+        memories: Array.isArray(initialSnapshot?.memories) ? initialSnapshot.memories : [],
+        settings: initialSnapshot?.settings && typeof initialSnapshot.settings === 'object' ? initialSnapshot.settings : {},
+        savedAt: now
+      }
+    };
+
+    store[accountId] = record;
+    writeNusuStore(store);
+
+    return res.json({
+      success: true,
+      accountId,
+      displayName: record.displayName,
+      token: sessionToken,
+      lastSyncedAt: now,
+      message: `NUSU Account ${accountId} created and synced successfully!`
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Registration failed.' });
+  }
+});
+
+// Login to existing NUSU Account (NU-XXXXXX + Password) & restore full memory snapshot
+app.post('/api/nusu/login', (req, res) => {
+  try {
+    const { accountId, password } = req.body || {};
+    const normalizedId = String(accountId || '').trim().toUpperCase();
+    if (!/^NU-\d{6}$/.test(normalizedId)) {
+      return res.status(400).json({ success: false, error: 'Enter a valid NUSU ID (format: NU-XXXXXX).' });
+    }
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ success: false, error: 'Password is required.' });
+    }
+
+    const store = readNusuStore();
+    const record = store[normalizedId];
+    if (!record) {
+      return res.status(404).json({ success: false, error: `No NUSU Account found for ${normalizedId}.` });
+    }
+
+    if (!verifyNusuPassword(password.trim(), record.passwordSalt, record.passwordHash)) {
+      return res.status(401).json({ success: false, error: 'Incorrect password for this NUSU Account.' });
+    }
+
+    // Rotate/issue fresh token on login
+    const newToken = crypto.randomBytes(24).toString('hex');
+    record.sessionToken = newToken;
+    store[normalizedId] = record;
+    writeNusuStore(store);
+
+    return res.json({
+      success: true,
+      accountId: record.accountId,
+      displayName: record.displayName,
+      token: newToken,
+      lastSyncedAt: record.lastSyncedAt,
+      snapshot: record.snapshot,
+      message: `Signed in as ${record.accountId}. All memories and chats restored!`
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Login failed.' });
+  }
+});
+
+// Sync local data (chats, voice sessions, memories, settings, face enrollment) to NUSU Account
+app.post('/api/nusu/sync', (req, res) => {
+  try {
+    const { accountId, token, snapshot } = req.body || {};
+    const normalizedId = String(accountId || '').trim().toUpperCase();
+    const store = readNusuStore();
+    const record = store[normalizedId];
+
+    if (!record) {
+      return res.status(404).json({ success: false, error: 'NUSU Account not found.' });
+    }
+    if (!token || record.sessionToken !== token) {
+      return res.status(401).json({ success: false, error: 'Session expired. Please sign in again.' });
+    }
+
+    const now = Date.now();
+    record.lastSyncedAt = now;
+    record.snapshot = {
+      chatHistory: Array.isArray(snapshot?.chatHistory) ? snapshot.chatHistory : record.snapshot.chatHistory,
+      voiceSessions: Array.isArray(snapshot?.voiceSessions) ? snapshot.voiceSessions : record.snapshot.voiceSessions,
+      memories: Array.isArray(snapshot?.memories) ? snapshot.memories : record.snapshot.memories,
+      settings: snapshot?.settings && typeof snapshot.settings === 'object'
+        ? { ...record.snapshot.settings, ...snapshot.settings }
+        : record.snapshot.settings,
+      savedAt: now
+    };
+
+    store[normalizedId] = record;
+    writeNusuStore(store);
+
+    return res.json({
+      success: true,
+      accountId: record.accountId,
+      lastSyncedAt: now,
+      stats: {
+        chatCount: record.snapshot.chatHistory.length,
+        voiceCount: record.snapshot.voiceSessions.length,
+        memoryCount: record.snapshot.memories.length
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Cloud sync failed.' });
+  }
+});
+
+// Check NUSU Account metadata status
+app.get('/api/nusu/status/:accountId', (req, res) => {
+  const normalizedId = String(req.params.accountId || '').trim().toUpperCase();
+  const store = readNusuStore();
+  const record = store[normalizedId];
+  if (!record) {
+    return res.status(404).json({ exists: false });
+  }
+  return res.json({
+    exists: true,
+    accountId: record.accountId,
+    displayName: record.displayName,
+    lastSyncedAt: record.lastSyncedAt,
+    stats: {
+      chatCount: record.snapshot.chatHistory.length,
+      voiceCount: record.snapshot.voiceSessions.length,
+      memoryCount: record.snapshot.memories.length,
+      faceEnrolled: Boolean(record.snapshot.settings?.ownerFaceEnrolled)
+    }
   });
 });
 

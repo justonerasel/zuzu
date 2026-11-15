@@ -23,6 +23,7 @@ import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import { generateIntelligentAnswer } from '../utils/aiEngine';
 import { apiFetch, directGeminiGenerateContent } from '../utils/apiConfig';
 import { ParticleOrb, OrbState } from './ParticleOrb';
+import { setMicBusyForActiveSession } from '../utils/backgroundService';
 
 interface VoiceViewProps {
   settings: AppSettings;
@@ -150,6 +151,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       }
 
       recognition.onstart = () => {
+        setMicBusyForActiveSession(true);
         setIsListening(true);
         setStatusMessage(`Listening to your voice...`);
         playHapticSound('listen_start');
@@ -165,6 +167,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
       recognition.onerror = (event: any) => {
         console.warn('Speech recognition event error:', event.error);
+        setMicBusyForActiveSession(false);
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           setShowPermissionModal(true);
           setErrorNotice('Android microphone permission is required for voice conversation.');
@@ -175,6 +178,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       };
 
       recognition.onend = () => {
+        setMicBusyForActiveSession(false);
         setIsListening(false);
         if (isCancelledRef.current) return;
 
@@ -188,9 +192,11 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         }
       };
 
+      setMicBusyForActiveSession(true);
       recognition.start();
     } catch (err: any) {
       console.error('Failed to start speech recognition:', err);
+      setMicBusyForActiveSession(false);
       setIsListening(false);
       setErrorNotice(err.message || 'Microphone activation failed');
     }

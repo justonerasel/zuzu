@@ -1,0 +1,144 @@
+{
+  "entities": {
+    "NusuAccount": {
+      "title": "NUSU Account Identity",
+      "description": "Publicly addressable account metadata using unique NU-XXXXXX identifier without exposing raw PII or chat data.",
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Unique NUSU identifier in format NU-XXXXXX",
+          "pattern": "^NU-[0-9]{6}$",
+          "minLength": 9,
+          "maxLength": 9
+        },
+        "fullName": {
+          "type": "string",
+          "description": "User full name or username",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "phoneMasked": {
+          "type": "string",
+          "description": "Masked display phone/identifier (no raw PII stored on root document)",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "passwordSalt": {
+          "type": "string",
+          "description": "Random hex salt for password key derivation",
+          "pattern": "^[a-f0-9]+$",
+          "minLength": 16,
+          "maxLength": 64
+        },
+        "passwordHash": {
+          "type": "string",
+          "description": "Salted SHA-256/PBKDF2 password digest",
+          "pattern": "^[a-f0-9]+$",
+          "minLength": 64,
+          "maxLength": 128
+        },
+        "vaultVerifier": {
+          "type": "string",
+          "description": "SHA-256 hash of ('verify::' + vaultId) used by Firestore Rules to authorize vault access",
+          "pattern": "^[a-f0-9]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last update timestamp"
+        }
+      },
+      "required": [
+        "accountId",
+        "fullName",
+        "phoneMasked",
+        "passwordSalt",
+        "passwordHash",
+        "vaultVerifier",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "NusuVault": {
+      "title": "NUSU Persistent Memory & Backup Vault",
+      "description": "Encrypted/capability-keyed backup containing user phone identifier, chat history, voice sessions, assistant memories, and security settings.",
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "pattern": "^NU-[0-9]{6}$",
+          "minLength": 9,
+          "maxLength": 9
+        },
+        "phone": {
+          "type": "string",
+          "description": "User phone number or identifier stored strictly inside private vault",
+          "minLength": 3,
+          "maxLength": 40
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "chatHistory": {
+          "type": "array",
+          "description": "Persisted text chat messages"
+        },
+        "voiceSessions": {
+          "type": "array",
+          "description": "Persisted voice conversation sessions"
+        },
+        "memories": {
+          "type": "array",
+          "description": "Persisted Zuzu AI long-term memories"
+        },
+        "settings": {
+          "type": "object",
+          "description": "Persisted app settings, wake word config, Master PIN hash, and owner face descriptor"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "accountId",
+        "phone",
+        "fullName",
+        "chatHistory",
+        "voiceSessions",
+        "memories",
+        "settings",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/nusu_accounts/{nusuId}": {
+      "schema": {
+        "$ref": "#/entities/NusuAccount"
+      },
+      "description": "NUSU Account identity lookup document keyed by NU-XXXXXX."
+    },
+    "/nusu_accounts/{nusuId}/vault/{vaultId}": {
+      "schema": {
+        "$ref": "#/entities/NusuVault"
+      },
+      "description": "Private capability-protected vault storing user PII, chat histories, voice sessions, memories, and settings across uninstall/reinstall."
+    }
+  }
+}

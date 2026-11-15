@@ -70,7 +70,28 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lastWeatherCountry: 'Bangladesh',
   lastWeatherLat: 23.8103,
   lastWeatherLon: 90.4125,
-  lastWeatherIsGPS: false
+  lastWeatherIsGPS: false,
+
+  // Background Service & Always-On Wake Word
+  foregroundServiceEnabled: true,
+  wakeWordEnabled: true,
+  wakeWordPhrase: 'wake up zuzu',
+
+  // Anti-Theft Smart Face Recognition & Master PIN
+  antiTheftEnabled: false,
+  masterPinHash: '',
+  ownerFaceEnrolled: false,
+  ownerFaceDescriptor: undefined,
+  securityMaxAttempts: 3,
+  securityCheckIntervalSec: 12,
+
+  // NUSU Account Persistence
+  nusuAccountId: undefined,
+  nusuFullName: undefined,
+  nusuPhone: undefined,
+  nusuToken: undefined,
+  nusuVaultKey: undefined,
+  nusuLastSyncedAt: undefined
 };
 
 
@@ -523,3 +544,66 @@ export function clearAllMemories(): void {
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify([]));
 }
 
+export interface ZuzuBackupSnapshot {
+  chatHistory: ChatMessage[];
+  voiceSessions: VoiceSession[];
+  memories: UserMemory[];
+  settings: Partial<AppSettings>;
+  savedAt: number;
+}
+
+/**
+ * Exports all isolated stores for persistent NUSU Account cloud backup
+ */
+export function getAllBackupPayload(): ZuzuBackupSnapshot {
+  const settings = getAppSettings();
+  // Strip local-only session tokens/vault capability key from cloud-synced settings blob
+  const {
+    nusuToken: _omitToken,
+    nusuVaultKey: _omitVaultKey,
+    ...syncableSettings
+  } = settings;
+  return {
+    chatHistory: getChatMessages(),
+    voiceSessions: getVoiceSessions(),
+    memories: getMemories(),
+    settings: syncableSettings,
+    savedAt: Date.now()
+  };
+}
+
+/**
+ * Restores full chat history, voice sessions, long-term memories & settings after login/reinstall
+ */
+export function restoreAllBackupPayload(
+  snapshot: Partial<ZuzuBackupSnapshot>,
+  sessionOverrides?: Partial<AppSettings>
+): AppSettings {
+  if (Array.isArray(snapshot.chatHistory)) {
+    const validChats = snapshot.chatHistory.filter(m => m && m.conversation_type === 'text');
+    localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(validChats));
+  }
+  if (Array.isArray(snapshot.voiceSessions)) {
+    const validVoice = snapshot.voiceSessions.filter(s => s && s.conversation_type === 'voice');
+    localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify(validVoice));
+  }
+  if (Array.isArray(snapshot.memories)) {
+    localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(snapshot.memories));
+  }
+  if (snapshot.settings && typeof snapshot.settings === 'object') {
+    const current = getAppSettings();
+    const merged: AppSettings = {
+      ...DEFAULT_SETTINGS,
+      ...snapshot.settings,
+      nusuAccountId: sessionOverrides?.nusuAccountId || current.nusuAccountId || snapshot.settings.nusuAccountId,
+      nusuFullName: sessionOverrides?.nusuFullName || current.nusuFullName || snapshot.settings.nusuFullName,
+      nusuPhone: sessionOverrides?.nusuPhone || current.nusuPhone || snapshot.settings.nusuPhone,
+      nusuToken: sessionOverrides?.nusuToken || current.nusuToken,
+      nusuVaultKey: sessionOverrides?.nusuVaultKey || current.nusuVaultKey,
+      nusuLastSyncedAt: Date.now()
+    };
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(merged));
+    return merged;
+  }
+  return getAppSettings();
+}

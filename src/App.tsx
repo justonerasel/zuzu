@@ -20,8 +20,13 @@ import { MinimizedVoiceOverlay } from './components/MinimizedVoiceOverlay';
 import { ImageCreatorView } from './components/ImageCreatorView';
 import { FirstLaunchPermissionModal } from './components/FirstLaunchPermissionModal';
 import { ApiKeyModal } from './components/ApiKeyModal';
-import { stopSpeaking } from './utils/audio';
-import { apiFetch } from './utils/apiConfig';
+import { MasterPinLockOverlay } from './components/MasterPinLockOverlay';
+import { ForceUpdateOverlay, ForceUpdatePayload } from './components/ForceUpdateOverlay';
+import { stopSpeaking, speakText, playHapticSound } from './utils/audio';
+import { apiFetch, APP_VERSION, APP_VERSION_CODE } from './utils/apiConfig';
+import { syncBackgroundServicesWithSettings } from './utils/backgroundService';
+import { isSecurityLocked, runSilentFaceSecurityCheck } from './utils/faceGuard';
+import { syncNusuCloudNow } from './utils/nusuAccount';
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => getAppSettings());
@@ -31,6 +36,13 @@ export default function App() {
   const [textMessageCount, setTextMessageCount] = useState(0);
   const [voiceSessionCount, setVoiceSessionCount] = useState(0);
   const [isBackendConnected, setIsBackendConnected] = useState(true);
+
+  // Security Lock State (Anti-Theft Master PIN)
+  const [securityLocked, setSecurityLockedState] = useState<boolean>(() => isSecurityLocked());
+
+  // Force Update Overlay State
+  const [forceUpdateInfo, setForceUpdateInfo] = useState<ForceUpdatePayload | null>(null);
+  const [isForceUpdatePreview, setIsForceUpdatePreview] = useState(false);
 
   // First-launch permission flow state (Requirement 3)
   const [showFirstLaunch, setShowFirstLaunch] = useState(() => {
@@ -45,7 +57,7 @@ export default function App() {
     onResume?: () => void;
   }>({ isOpen: false });
 
-  // Initialize and perform safe legacy migration on initial mount
+  // Initialize, check Force Update & perform safe legacy migration on initial mount
   useEffect(() => {
     performHistoryMigration();
     updateCounts();
@@ -55,7 +67,136 @@ export default function App() {
       .then(res => res.json())
       .then(() => setIsBackendConnected(true))
       .catch(() => setIsBackendConnected(false));
+
+    // Check Force Update policy
+    apiFetch(`/api/system/check-update?installedVersion=${encodeURIComponent(APP_VERSION)}&versionCode=${APP_VERSION_CODE}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data?.forceUpdate) {
+          setIsForceUpdatePreview(false);
+          setForceUpdateInfo({
+            latestVersion: data.latestVersion || `v${APP_VERSION}`,
+            minSupportedVersion: data.minSupportedVersion,
+            apkDownloadUrl: data.apkDownloadUrl || data.downloadUrl || 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
+            websiteUrl: data.websiteUrl || 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
+            message: data.message || 'A required Zuzu AI update is available.',
+            changelogSummary: data.changelogSummary
+          });
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  // Sync Foreground Service & Always-On Wake Word Listener with Settings
+  useEffect(() => {
+    syncBackgroundServicesWithSettings(settings);
+  }, [
+    settings.foregroundServiceEnabled,
+    settings.wakeWordEnabled,
+    settings.wakeWordPhrase,
+    settings.recognitionLanguage
+  ]);
+
+  // Listen for Always-On Wake Word triggers ("Wake up Zuzu")
+  useEffect(() => {
+    const onWakeTriggered = (e: Event) => {
+      if (isSecurityLocked()) return;
+      const detail = (e as CustomEvent)?.detail || {};
+      const remaining = typeof detail.remainingCommand === 'string' ? detail.remainingCommand : '';
+
+      playHapticSound('switch');
+      setIsVoiceMinimized(false);
+      setActiveTab('voice');
+
+      const name = settings.userNickname || 'Boss';
+      const reply = remaining
+        ? `Yes ${name}, I'm awake! Hearing: ${remaining}`
+        : `Yes ${name}, I am awake and listening!`;
+
+      speakText({
+        text: reply,
+        voiceIdentity: settings.activeIdentity,
+        customVoiceId: settings.activeIdentity === 'female' ? settings.elevenLabsFemaleVoiceId : settings.elevenLabsMaleVoiceId,
+        customApiKey: settings.customElevenLabsApiKey,
+        stability: settings.stability,
+        similarityBoost: settings.similarityBoost,
+        speechRate: settings.speechRate,
+        volume: settings.volume,
+        voiceStyleId: settings.selectedVoiceStyleId
+      });
+    };
+
+    window.addEventListener('zuzu-wake-word-triggered', onWakeTriggered);
+    return () => window.removeEventListener('zuzu-wake-word-triggered', onWakeTriggered);
+  }, [
+    settings.activeIdentity,
+    settings.userNickname,
+    settings.elevenLabsFemaleVoiceId,
+    settings.elevenLabsMaleVoiceId,
+    settings.customElevenLabsApiKey,
+    settings.stability,
+    settings.similarityBoost,
+    settings.speechRate,
+    settings.volume,
+    settings.selectedVoiceStyleId
+  ]);
+
+  // Listen for Anti-Theft Security Lock changes + run silent background face scans when armed
+  useEffect(() => {
+    const onLockChange = (e: Event) => {
+      const locked = Boolean((e as CustomEvent)?.detail?.locked);
+      setSecurityLockedState(locked);
+    };
+    window.addEventListener('zuzu-security-lock-changed', onLockChange);
+
+    if (!settings.antiTheftEnabled || !settings.ownerFaceEnrolled || !settings.masterPinHash || securityLocked) {
+      return () => window.removeEventListener('zuzu-security-lock-changed', onLockChange);
+    }
+
+    const intervalMs = Math.max(8000, (settings.securityCheckIntervalSec || 12) * 1000);
+    const timer = setInterval(() => {
+      if (!isSecurityLocked() && document.visibilityState === 'visible') {
+        runSilentFaceSecurityCheck(settings.ownerFaceDescriptor, settings.securityMaxAttempts || 3)
+          .then(res => {
+            if (res.lockedTriggered) {
+              setSecurityLockedState(true);
+            }
+          })
+          .catch(() => {});
+      }
+    }, intervalMs);
+
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('zuzu-security-lock-changed', onLockChange);
+    };
+  }, [
+    settings.antiTheftEnabled,
+    settings.ownerFaceEnrolled,
+    settings.ownerFaceDescriptor,
+    settings.masterPinHash,
+    settings.securityMaxAttempts,
+    settings.securityCheckIntervalSec,
+    securityLocked
+  ]);
+
+  // Auto-sync NUSU Account Firebase cloud backup in background when signed in
+  useEffect(() => {
+    if (!settings.nusuAccountId || !settings.nusuVaultKey) return;
+    const syncTimer = setTimeout(() => {
+      syncNusuCloudNow(settings).catch(() => {});
+    }, 3500);
+    return () => clearTimeout(syncTimer);
+  }, [
+    textMessageCount,
+    voiceSessionCount,
+    settings.nusuAccountId,
+    settings.nusuVaultKey,
+    settings.ownerFaceEnrolled,
+    settings.masterPinHash,
+    settings.userNickname,
+    settings.activePersonality
+  ]);
 
   // Update counts whenever tab switches or sessions update
   const updateCounts = () => {
@@ -96,6 +237,22 @@ export default function App() {
   const handleCloseMinimizedVoice = () => {
     stopSpeaking();
     setIsVoiceMinimized(false);
+  };
+
+  const handlePreviewForceUpdate = () => {
+    setIsForceUpdatePreview(true);
+    setForceUpdateInfo({
+      latestVersion: `v${APP_VERSION}`,
+      minSupportedVersion: 'v3.6.0',
+      apkDownloadUrl: 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
+      websiteUrl: 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
+      message: 'A mandatory Zuzu AI update is ready with Foreground Wake-Word Persistence, Anti-Theft Face Guard, and NUSU Cloud Sync.',
+      changelogSummary: [
+        'Android Foreground Service & Battery Optimization persistence',
+        'Always-On "Wake up Zuzu" listener & Anti-Theft 3-strike Master PIN lock',
+        'NUSU Account (NU-XXXXXX) cross-reinstall cloud backup'
+      ]
+    });
   };
 
   return (
@@ -153,6 +310,7 @@ export default function App() {
           <SettingsView
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
+            onPreviewForceUpdate={handlePreviewForceUpdate}
           />
         )}
 
@@ -207,6 +365,29 @@ export default function App() {
         onSaveKey={(newKey) => handleUpdateSettings({ customGeminiApiKey: newKey })}
         pendingActionName={apiKeyModalConfig.actionName}
         onSuccessResume={apiKeyModalConfig.onResume}
+      />
+
+      {/* Mandatory Force Update Overlay ("Update Required") */}
+      <ForceUpdateOverlay
+        isOpen={Boolean(forceUpdateInfo)}
+        updateInfo={forceUpdateInfo}
+        isPreview={isForceUpdatePreview}
+        onDismissPreview={() => {
+          setForceUpdateInfo(null);
+          setIsForceUpdatePreview(false);
+        }}
+        onStartOtaUpdate={() => {
+          setForceUpdateInfo(null);
+          setIsForceUpdatePreview(false);
+          setActiveTab('updates');
+        }}
+      />
+
+      {/* Strict Anti-Theft Master PIN Lock Screen */}
+      <MasterPinLockOverlay
+        isOpen={securityLocked && Boolean(settings.masterPinHash)}
+        masterPinHash={settings.masterPinHash}
+        onUnlocked={() => setSecurityLockedState(false)}
       />
     </AndroidFrame>
   );

@@ -1,7 +1,7 @@
 // Zuzu AI - Root Android App Version & Build Configuration
 ext {
-    versionCode = 360
-    versionName = "3.6.0"
+    versionCode = 362
+    versionName = "3.6.2"
     applicationId = "com.zuzu.ai.assistant"
     appName = "Zuzu AI"
     compileSdkVersion = 34

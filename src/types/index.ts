@@ -159,6 +159,27 @@ export interface AppSettings {
   lastWeatherLat?: number;
   lastWeatherLon?: number;
   lastWeatherIsGPS?: boolean;
+
+  // Background Service & Always-On Wake Word
+  foregroundServiceEnabled: boolean;
+  wakeWordEnabled: boolean;
+  wakeWordPhrase: string;
+
+  // Anti-Theft Smart Face Recognition & Master PIN Lock
+  antiTheftEnabled: boolean;
+  masterPinHash: string;
+  ownerFaceEnrolled: boolean;
+  ownerFaceDescriptor?: number[];
+  securityMaxAttempts: number;
+  securityCheckIntervalSec: number;
+
+  // Custom NUSU Account Persistence (NU-XXXXXX + Firebase Firestore)
+  nusuAccountId?: string;
+  nusuFullName?: string;
+  nusuPhone?: string;
+  nusuToken?: string;
+  nusuVaultKey?: string;
+  nusuLastSyncedAt?: number;
 }
 
 export type ActiveTab = 'dashboard' | 'chat' | 'voice' | 'history' | 'settings' | 'updates' | 'image_creator';
