@@ -1,49 +1,151 @@
-name: Build Zuzu AI APK
+name: Build Zuzu AI Android APK
 
 on:
   push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-apk:
+    name: Build Android Debug APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
 
-      - name: Set up JDK 17
+      - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
           java-version: '17'
+          distribution: 'temurin'
 
-      - name: Install Dependencies
+      - name: Accept Android SDK Licenses
+        run: |
+          if [ -n "$ANDROID_HOME" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          elif command -v sdkmanager >/dev/null 2>&1; then
+            yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          fi
+
+      - name: Install Project Dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Build Web Assets
-        run: npm run build
-
-      - name: Sync Capacitor Android
-        run: npx cap sync android
-
-      - name: Grant Execute Permission for Gradle
-        run: chmod +x android/gradlew
-
-      - name: Build Debug APK
+      - name: Verify TypeScript & Build Web Assets
         run: |
-          cd android
-          ./gradlew assembleDebug --stacktrace
+          npm run lint
+          npm run build
+          test -f dist/index.html
 
-      - name: Upload APK Artifact
+      - name: Setup Android Platform, Native Bridge & Permissions
+        env:
+          CI: 'true'
+        run: |
+          if [ ! -f "capacitor.config.json" ]; then
+            echo '{"appId":"com.zuzu.ai.assistant","appName":"Zuzu AI","webDir":"dist","server":{"androidScheme":"https"}}' > capacitor.config.json
+          fi
+          rm -rf android
+          npx cap add android
+          if [ -d "native-android/app/src/main/java" ]; then
+            mkdir -p android/app/src/main/java
+            cp -rv native-android/app/src/main/java/* android/app/src/main/java/
+          fi
+          npx cap sync android
+          python3 - <<'PY'
+          import os, re, xml.etree.ElementTree as ET
+
+          # 1. Add required Android permissions, Foreground Service & Boot Receiver
+          p = "android/app/src/main/AndroidManifest.xml"
+          assert os.path.exists(p), "Missing android/app/src/main/AndroidManifest.xml"
+          s = open(p, encoding="utf-8").read()
+          perms = [
+              "android.permission.INTERNET",
+              "android.permission.ACCESS_NETWORK_STATE",
+              "android.permission.RECORD_AUDIO",
+              "android.permission.MODIFY_AUDIO_SETTINGS",
+              "android.permission.VIBRATE",
+              "android.permission.FOREGROUND_SERVICE",
+              "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+              "android.permission.FOREGROUND_SERVICE_CAMERA",
+              "android.permission.WAKE_LOCK",
+              "android.permission.RECEIVE_BOOT_COMPLETED",
+              "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.SYSTEM_ALERT_WINDOW",
+              "android.permission.WRITE_SETTINGS",
+              "android.permission.CAMERA",
+              "android.permission.ACCESS_FINE_LOCATION",
+              "android.permission.ACCESS_COARSE_LOCATION",
+              "android.permission.READ_CONTACTS",
+              "android.permission.CALL_PHONE",
+              "android.permission.READ_MEDIA_IMAGES",
+              "android.permission.READ_EXTERNAL_STORAGE",
+              "android.permission.BLUETOOTH_CONNECT",
+          ]
+          add = ""
+          for x in perms:
+              if x not in s:
+                  add += '    <uses-permission android:name="%s" />\n' % x
+          if add:
+              s = s.replace("</manifest>", add + "</manifest>")
+
+          if "ZuzuForegroundService" not in s:
+              svc = "\n".join([
+                  '        <service',
+                  '            android:name=".ZuzuForegroundService"',
+                  '            android:enabled="true"',
+                  '            android:exported="false"',
+                  '            android:foregroundServiceType="microphone" />',
+                  '        <receiver',
+                  '            android:name=".ZuzuBootReceiver"',
+                  '            android:enabled="true"',
+                  '            android:exported="true">',
+                  '            <intent-filter>',
+                  '                <action android:name="android.intent.action.BOOT_COMPLETED" />',
+                  '                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />',
+                  '                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />',
+                  '            </intent-filter>',
+                  '        </receiver>',
+                  '    </application>',
+              ])
+              s = s.replace("</application>", svc)
+          if 'android:usesCleartextTraffic="true"' not in s:
+              s = s.replace("<application", '<application android:usesCleartextTraffic="true"')
+
+          open(p, "w", encoding="utf-8").write(s)
+          ET.parse(p)
+          print("AndroidManifest.xml patched and XML-validated successfully")
+
+          # 2. Configure versionCode 363 and versionName 3.6.3 in android/app/build.gradle
+          g = "android/app/build.gradle"
+          assert os.path.exists(g), "Missing android/app/build.gradle"
+          txt = open(g, encoding="utf-8").read()
+          txt = re.sub(r'versionCode\s+\d+', 'versionCode 363', txt)
+          txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.6.3"', txt)
+          open(g, "w", encoding="utf-8").write(txt)
+          print("Updated android/app/build.gradle to versionCode 363 and versionName 3.6.3")
+          PY
+          test -f android/app/src/main/assets/public/index.html
+
+      - name: Build Debug APK with Gradle
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Package Versioned APK Output
+        run: |
+          mkdir -p apk-output
+          cp -v android/app/build/outputs/apk/debug/*.apk apk-output/Zuzu-AI-v3.6.3-b363-debug.apk
+          ls -lh apk-output/
+
+      - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Zuzu-AI-Debug-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          
+          name: Zuzu-AI-v3.6.3-APK
+          path: apk-output/Zuzu-AI-v3.6.3-b363-debug.apk
+          if-no-files-found: error
