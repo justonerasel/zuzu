@@ -1,8 +1,10 @@
 import { VoiceIdentity } from '../types';
 import { apiFetch } from './apiConfig';
+import { getNativeZuzuPlugin } from './permission';
 
 let currentAudio: HTMLAudioElement | null = null;
-let currentUtterance: SpeechSynthesisUtterance | null = null;
+let nativeTtsHandles: Array<{ remove: () => Promise<void> | void }> = [];
+let browserSpeechFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Audio context for sound effects and analysis
 let audioCtx: AudioContext | null = null;
@@ -30,47 +32,44 @@ export function playHapticSound(type: 'switch' | 'listen_start' | 'listen_stop' 
     const now = ctx.currentTime;
 
     if (type === 'switch') {
-      // Pleasant futuristic dual-tone chime
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(523.25, now); // C5
-      osc.frequency.exponentialRampToValueAtTime(783.99, now + 0.15); // G5
-      gain.gain.setValueAtTime(0.12, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc.frequency.setValueAtTime(523.25, now);
+      osc.frequency.exponentialRampToValueAtTime(783.99, now + 0.15);
+      gain.gain.setValueAtTime(0.08, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
       osc.start(now);
-      osc.stop(now + 0.35);
+      osc.stop(now + 0.3);
     } else if (type === 'listen_start') {
-      // Android Assistant activation chime
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(440, now);
-      osc.frequency.exponentialRampToValueAtTime(880, now + 0.12);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+      osc.frequency.exponentialRampToValueAtTime(780, now + 0.1);
+      gain.gain.setValueAtTime(0.06, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
       osc.start(now);
-      osc.stop(now + 0.25);
+      osc.stop(now + 0.18);
     } else if (type === 'listen_stop') {
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(659.25, now);
-      osc.frequency.exponentialRampToValueAtTime(329.63, now + 0.15);
-      gain.gain.setValueAtTime(0.08, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+      osc.frequency.setValueAtTime(580, now);
+      osc.frequency.exponentialRampToValueAtTime(329.63, now + 0.12);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
       osc.start(now);
-      osc.stop(now + 0.2);
+      osc.stop(now + 0.16);
     } else if (type === 'message_sent') {
       osc.type = 'sine';
       osc.frequency.setValueAtTime(600, now);
-      osc.frequency.exponentialRampToValueAtTime(900, now + 0.08);
-      gain.gain.setValueAtTime(0.06, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+      osc.frequency.exponentialRampToValueAtTime(860, now + 0.07);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
       osc.start(now);
-      osc.stop(now + 0.15);
+      osc.stop(now + 0.12);
     }
 
-    // Android vibration API
     if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      if (type === 'switch') navigator.vibrate([30, 50, 40]);
-      else navigator.vibrate(25);
+      if (type === 'switch') navigator.vibrate([25, 40, 30]);
+      else navigator.vibrate(20);
     }
-  } catch (err) {
+  } catch {
     // Non-fatal if audio context not permitted
   }
 }
@@ -90,7 +89,28 @@ export interface SpeakOptions {
   onError?: (error: any) => void;
 }
 
+function clearNativeTtsListeners(): void {
+  nativeTtsHandles.forEach((h) => {
+    try {
+      h?.remove?.();
+    } catch {}
+  });
+  nativeTtsHandles = [];
+}
+
 export function stopSpeaking(): void {
+  if (browserSpeechFallbackTimer) {
+    clearTimeout(browserSpeechFallbackTimer);
+    browserSpeechFallbackTimer = null;
+  }
+  clearNativeTtsListeners();
+  const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin?.stopNativeSpeak) {
+    try {
+      nativePlugin.stopNativeSpeak().catch(() => {});
+    } catch {}
+  }
+
   if (currentAudio) {
     try {
       currentAudio.pause();
@@ -101,12 +121,100 @@ export function stopSpeaking(): void {
   if (typeof window !== 'undefined' && window.speechSynthesis) {
     try {
       window.speechSynthesis.cancel();
-      currentUtterance = null;
     } catch {}
   }
 }
 
-// Speak via ElevenLabs backend TTS or high-fidelity Web Speech fallback
+function cleanTextForSpeech(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, 'Code block omitted.')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[*_#~]/g, '')
+    .trim();
+}
+
+async function speakWithDeviceFallback(params: {
+  text: string;
+  voiceIdentity: VoiceIdentity;
+  speechRate: number;
+  volume: number;
+  voiceStyleId?: string;
+  onStart?: () => void;
+  onEnd?: () => void;
+  onError?: (err: any) => void;
+}): Promise<void> {
+  const cleanText = cleanTextForSpeech(params.text);
+  if (!cleanText) {
+    params.onEnd?.();
+    return;
+  }
+
+  const isBengali = /[\u0980-\u09FF]/.test(cleanText);
+  const safeRate = Math.max(0.75, Math.min(1.5, params.speechRate));
+  const pitch =
+    params.voiceIdentity === 'male'
+      ? params.voiceStyleId === 'george_warm'
+        ? 0.92
+        : 0.85
+      : params.voiceStyleId === 'kore_firm'
+      ? 1.12
+      : params.voiceStyleId === 'aria_expressive'
+      ? 1.25
+      : 1.18;
+
+  // 1. Try Native Android TextToSpeech on Capacitor APK (reliable even when WebView speechSynthesis is muted)
+  const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin?.speakNative) {
+    try {
+      clearNativeTtsListeners();
+      let doneCalled = false;
+      const done = () => {
+        if (doneCalled) return;
+        doneCalled = true;
+        clearNativeTtsListeners();
+        params.onEnd?.();
+      };
+
+      if (nativePlugin.addListener) {
+        nativeTtsHandles.push(
+          await nativePlugin.addListener('nativeTtsStart', () => {
+            params.onStart?.();
+          })
+        );
+        nativeTtsHandles.push(
+          await nativePlugin.addListener('nativeTtsEnd', () => {
+            done();
+          })
+        );
+        nativeTtsHandles.push(
+          await nativePlugin.addListener('nativeTtsError', () => {
+            done();
+          })
+        );
+      }
+
+      params.onStart?.();
+      await nativePlugin.speakNative({
+        text: cleanText,
+        language: isBengali ? 'bn-BD' : 'en-US',
+        rate: safeRate,
+        pitch
+      });
+      return;
+    } catch (nativeErr) {
+      clearNativeTtsListeners();
+      console.warn('[Zuzu Audio] Native Android TTS unavailable, using browser speech:', nativeErr);
+    }
+  }
+
+  // 2. Web / Browser speechSynthesis fallback
+  speakWithBrowserSpeech({
+    ...params,
+    text: cleanText
+  });
+}
+
+// Speak via ElevenLabs backend TTS (when API key set), Native Android TTS, or Browser Speech fallback
 export async function speakText(options: SpeakOptions): Promise<void> {
   const {
     text,
@@ -129,7 +237,7 @@ export async function speakText(options: SpeakOptions): Promise<void> {
   const safeVolume = Math.max(0, Math.min(1, volume));
 
   try {
-    // Step 1: Attempt ElevenLabs TTS via secure backend proxy
+    // Only hit /api/tts if custom ElevenLabs key exists OR backend has one configured
     const response = await apiFetch('/api/tts', {
       method: 'POST',
       body: JSON.stringify({
@@ -144,7 +252,6 @@ export async function speakText(options: SpeakOptions): Promise<void> {
 
     const contentType = response.headers.get('content-type') || '';
 
-    // If binary audio returned from ElevenLabs
     if (contentType.includes('audio/mpeg') || contentType.includes('audio/')) {
       const blob = await response.blob();
       const audioUrl = URL.createObjectURL(blob);
@@ -159,28 +266,23 @@ export async function speakText(options: SpeakOptions): Promise<void> {
         currentAudio = null;
         onEnd?.();
       };
-      audio.onerror = (e) => {
-        console.warn('ElevenLabs audio playback failed, falling back to browser speech:', e);
+      audio.onerror = () => {
         URL.revokeObjectURL(audioUrl);
         currentAudio = null;
-        speakWithBrowserSpeech({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
+        speakWithDeviceFallback({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
       };
 
       await audio.play();
       return;
     }
 
-    // If fallback JSON returned (e.g., no ElevenLabs key configured)
-    const json = await response.json();
-    console.log('[Zuzu Audio] TTS server response:', json.message || json);
-    speakWithBrowserSpeech({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
-  } catch (err) {
-    console.warn('[Zuzu Audio] Network or TTS fetch error. Using browser speech synthesis:', err);
-    speakWithBrowserSpeech({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
+    await response.json().catch(() => null);
+    await speakWithDeviceFallback({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
+  } catch {
+    await speakWithDeviceFallback({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
   }
 }
 
-// High-fidelity Browser Speech Synthesis calibrated for Male & Female Zuzu
 function speakWithBrowserSpeech({
   text,
   voiceIdentity,
@@ -201,21 +303,14 @@ function speakWithBrowserSpeech({
   onError?: (err: any) => void;
 }): void {
   if (typeof window === 'undefined' || !window.speechSynthesis) {
-    onError?.(new Error('SpeechSynthesis not supported on this device.'));
+    onEnd?.();
     return;
   }
 
   window.speechSynthesis.cancel();
 
-  // Strip excessive markdown formatting before speaking
-  const cleanText = text
-    .replace(/```[\s\S]*?```/g, 'Code block omitted.')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/[*_#~]/g, '')
-    .trim();
-
+  const cleanText = cleanTextForSpeech(text);
   const utterance = new SpeechSynthesisUtterance(cleanText);
-  currentUtterance = utterance;
 
   const isBengali = /[\u0980-\u09FF]/.test(cleanText);
   const voices = window.speechSynthesis.getVoices();
@@ -226,60 +321,60 @@ function speakWithBrowserSpeech({
   utterance.rate = safeRate;
   utterance.volume = safeVolume;
 
-  // Male Zuzu parameters
   if (voiceIdentity === 'male') {
-    // Style specific pitch calibration
-    if (voiceStyleId === 'george_warm') {
-      utterance.pitch = 0.92;
-    } else {
-      utterance.pitch = 0.85; // Deep Brian style
-    }
-
+    utterance.pitch = voiceStyleId === 'george_warm' ? 0.92 : 0.85;
     if (isBengali) {
       const bnVoice = voices.find(v => v.lang.startsWith('bn') && (v.name.includes('Male') || v.name.includes('David') || v.name.includes('Natural')));
       if (bnVoice) utterance.voice = bnVoice;
       utterance.lang = 'bn-BD';
     } else {
-      const maleVoice = voices.find(v => 
+      const maleVoice = voices.find(v =>
         (v.name.includes('Male') || v.name.includes('David') || v.name.includes('Guy') || v.name.includes('George') || v.name.includes('Daniel') || v.name.includes('Natural')) &&
-        (v.lang.startsWith('en'))
+        v.lang.startsWith('en')
       ) || voices.find(v => v.lang.startsWith('en'));
       if (maleVoice) utterance.voice = maleVoice;
     }
-  } 
-  // Female Zuzu parameters
-  else {
-    // Style specific pitch calibration: Kore firm vs Sarah soft vs Aria expressive
-    if (voiceStyleId === 'kore_firm') {
-      utterance.pitch = 1.12; // Kore: Firm, confident, melodic tone
-    } else if (voiceStyleId === 'aria_expressive') {
-      utterance.pitch = 1.28; // Radiant energetic
-    } else {
-      utterance.pitch = 1.20; // Sarah soft
-    }
-
+  } else {
+    utterance.pitch = voiceStyleId === 'kore_firm' ? 1.12 : voiceStyleId === 'aria_expressive' ? 1.28 : 1.2;
     if (isBengali) {
       const bnVoice = voices.find(v => v.lang.startsWith('bn') && (v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Natural')));
       if (bnVoice) utterance.voice = bnVoice;
       utterance.lang = 'bn-BD';
     } else {
-      const femaleVoice = voices.find(v => 
+      const femaleVoice = voices.find(v =>
         (v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Samantha') || v.name.includes('Jenny') || v.name.includes('Victoria') || v.name.includes('Google US English')) &&
-        (v.lang.startsWith('en'))
+        v.lang.startsWith('en')
       ) || voices.find(v => v.lang.startsWith('en'));
       if (femaleVoice) utterance.voice = femaleVoice;
     }
   }
 
-  utterance.onstart = () => onStart?.();
-  utterance.onend = () => {
-    currentUtterance = null;
+  let ended = false;
+  const finish = () => {
+    if (ended) return;
+    ended = true;
+    if (browserSpeechFallbackTimer) {
+      clearTimeout(browserSpeechFallbackTimer);
+      browserSpeechFallbackTimer = null;
+    }
     onEnd?.();
   };
+
+  utterance.onstart = () => onStart?.();
+  utterance.onend = () => finish();
   utterance.onerror = (e) => {
-    currentUtterance = null;
+    if (ended) return;
+    ended = true;
+    if (browserSpeechFallbackTimer) {
+      clearTimeout(browserSpeechFallbackTimer);
+      browserSpeechFallbackTimer = null;
+    }
     onError?.(e);
   };
+
+  // Safety guard if mobile WebView swallows onend
+  const estMs = Math.max(4000, Math.min(25000, cleanText.length * 85));
+  browserSpeechFallbackTimer = setTimeout(() => finish(), estMs);
 
   window.speechSynthesis.speak(utterance);
 }

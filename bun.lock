@@ -8,6 +8,7 @@
         "@capacitor/android": "^6.2.0",
         "@capacitor/cli": "^6.2.0",
         "@capacitor/core": "^6.2.0",
+        "@capacitor/status-bar": "^6.0.0",
         "@firebase/eslint-plugin-security-rules": "^0.0.2",
         "@google/genai": "^2.4.0",
         "@mediapipe/tasks-vision": "^1.2.3",
@@ -46,6 +47,8 @@
     "@capacitor/cli": ["@capacitor/cli@6.2.3", "", { "dependencies": { "@ionic/cli-framework-output": "^2.2.5", "@ionic/utils-fs": "^3.1.6", "@ionic/utils-subprocess": "2.1.11", "@ionic/utils-terminal": "^2.3.3", "commander": "^9.3.0", "debug": "^4.3.4", "env-paths": "^2.2.0", "kleur": "^4.1.4", "native-run": "^2.0.0", "open": "^8.4.0", "plist": "^3.0.5", "prompts": "^2.4.2", "rimraf": "^4.4.1", "semver": "^7.3.7", "tar": "^6.1.11", "tslib": "^2.4.0", "xml2js": "^0.5.0" }, "bin": { "cap": "bin/capacitor", "capacitor": "bin/capacitor" } }, "sha512-jqmqpe8K/kdw2/imsii+taG7qsv0bbYKsxwrOfcgPpm+omxBGg4j81Hf9FIvlxB3zV2EAORPBKeUfCkkV+o83A=="],
 
     "@capacitor/core": ["@capacitor/core@6.2.3", "", { "dependencies": { "tslib": "^2.1.0" } }, "sha512-zajW/Fu1RFi42CC6KDjjgOIJ57hCl0Mo9FixpWpm6wXYAsFOU04dk+CBLvRt6rtO3sd6Lce4xxu68Pvi1oR99w=="],
+
+    "@capacitor/status-bar": ["@capacitor/status-bar@6.0.3", "", { "peerDependencies": { "@capacitor/core": "^6.0.0" } }, "sha512-nFlgSmtx6Zwaw0tEvZgQsWHBeOfWWB/AvEoCApopLT4mHkBVoSrwkLvy2PjZs5wxCbsmqvQczr3XCyTwaDZVQg=="],
 
     "@emnapi/core": ["@emnapi/core@2.0.0-beta.2", "", { "dependencies": { "@emnapi/wasi-threads": "2.2.0", "tslib": "^2.4.0" } }, "sha512-MzCVoWtcg4Pm2B3je5mMvYMvj3MmBKw+fU7vbsJc9/iT8ip6/eYIHo/Dsm/mr+wsHB6SEyJDuxB09Yy6r/8+4A=="],
 

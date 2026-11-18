@@ -20,13 +20,14 @@ import { MinimizedVoiceOverlay } from './components/MinimizedVoiceOverlay';
 import { ImageCreatorView } from './components/ImageCreatorView';
 import { FirstLaunchPermissionModal } from './components/FirstLaunchPermissionModal';
 import { ApiKeyModal } from './components/ApiKeyModal';
-import { MasterPinLockOverlay } from './components/MasterPinLockOverlay';
 import { ForceUpdateOverlay, ForceUpdatePayload } from './components/ForceUpdateOverlay';
 import { stopSpeaking, speakText, playHapticSound } from './utils/audio';
 import { apiFetch, APP_VERSION, APP_VERSION_CODE } from './utils/apiConfig';
-import { syncBackgroundServicesWithSettings } from './utils/backgroundService';
-import { isSecurityLocked, runSilentFaceSecurityCheck } from './utils/faceGuard';
-import { syncNusuCloudNow } from './utils/nusuAccount';
+import { syncBackgroundServicesWithSettings, setMicBusyForActiveSession } from './utils/backgroundService';
+import { buildSmartWakeGreeting, getCachedWeatherSummary, refreshWeatherCacheSilently } from './utils/greetingHelper';
+import { Capacitor } from '@capacitor/core';
+import { StatusBar, Style } from '@capacitor/status-bar';
+import { syncSuCloudNow } from './utils/suAccount';
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => getAppSettings());
@@ -36,9 +37,6 @@ export default function App() {
   const [textMessageCount, setTextMessageCount] = useState(0);
   const [voiceSessionCount, setVoiceSessionCount] = useState(0);
   const [isBackendConnected, setIsBackendConnected] = useState(true);
-
-  // Security Lock State (Anti-Theft Master PIN)
-  const [securityLocked, setSecurityLockedState] = useState<boolean>(() => isSecurityLocked());
 
   // Force Update Overlay State (only shown when server signals genuine required update)
   const [forceUpdateInfo, setForceUpdateInfo] = useState<ForceUpdatePayload | null>(null);
@@ -56,10 +54,15 @@ export default function App() {
     onResume?: () => void;
   }>({ isOpen: false });
 
-  // Initialize, check Force Update & perform safe legacy migration on initial mount
+  // Initialize, configure edge-to-edge StatusBar, check Force Update & perform legacy migration on initial mount
   useEffect(() => {
     performHistoryMigration();
     updateCounts();
+
+    if (Capacitor.isNativePlatform()) {
+      StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
+      StatusBar.setStyle({ style: Style.Light }).catch(() => {});
+    }
 
     // Verify backend connectivity
     apiFetch('/api/config')
@@ -85,31 +88,48 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Sync Foreground Service & Always-On Wake Word Listener with Settings
+  // Sync Foreground Service, Always-On Wake Word & Custom Audio Triggers with Settings
   useEffect(() => {
     syncBackgroundServicesWithSettings(settings);
   }, [
     settings.foregroundServiceEnabled,
     settings.wakeWordEnabled,
     settings.wakeWordPhrase,
+    settings.customTriggersEnabled,
+    settings.customAudioTriggers,
     settings.recognitionLanguage
   ]);
 
-  // Listen for Always-On Wake Word triggers ("Wake up Zuzu")
+  // Listen for Always-On Wake Word, Mouth Whistle (শিস) & Finger Snap triggers
   useEffect(() => {
-    const onWakeTriggered = (e: Event) => {
-      if (isSecurityLocked()) return;
+    const onWakeTriggered = async (e: Event) => {
       const detail = (e as CustomEvent)?.detail || {};
-      const remaining = typeof detail.remainingCommand === 'string' ? detail.remainingCommand : '';
+      const remaining = typeof detail.remainingCommand === 'string' ? detail.remainingCommand.trim() : '';
 
       playHapticSound('switch');
       setIsVoiceMinimized(false);
       setActiveTab('voice');
 
-      const name = settings.userNickname || 'Boss';
-      const reply = remaining
-        ? `Yes ${name}, I'm awake! Hearing: ${remaining}`
-        : `Yes ${name}, I am awake and listening!`;
+      if (remaining) {
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('zuzu-auto-start-voice', {
+            detail: { remainingCommand: remaining, greetingSpoken: true }
+          }));
+        }, 250);
+        return;
+      }
+
+      // Pause background mic cleanly BEFORE Zuzu speaks greeting
+      setMicBusyForActiveSession(true);
+
+      const weather = await refreshWeatherCacheSilently(settings).catch(() => getCachedWeatherSummary());
+      const reply = buildSmartWakeGreeting(settings, { weather });
+
+      // Ensure VoiceView is mounted before dispatching display event
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      window.dispatchEvent(new CustomEvent('zuzu-wake-greeting', {
+        detail: { greetingText: reply, triggerLabel: detail.triggerLabel || '' }
+      }));
 
       speakText({
         text: reply,
@@ -120,7 +140,17 @@ export default function App() {
         similarityBoost: settings.similarityBoost,
         speechRate: settings.speechRate,
         volume: settings.volume,
-        voiceStyleId: settings.selectedVoiceStyleId
+        voiceStyleId: settings.selectedVoiceStyleId,
+        onEnd: () => {
+          window.dispatchEvent(new CustomEvent('zuzu-auto-start-voice', {
+            detail: { remainingCommand: '', greetingSpoken: true, greetingText: reply }
+          }));
+        },
+        onError: () => {
+          window.dispatchEvent(new CustomEvent('zuzu-auto-start-voice', {
+            detail: { remainingCommand: '', greetingSpoken: true, greetingText: reply }
+          }));
+        }
       });
     };
 
@@ -129,6 +159,7 @@ export default function App() {
   }, [
     settings.activeIdentity,
     settings.userNickname,
+    settings.recognitionLanguage,
     settings.elevenLabsFemaleVoiceId,
     settings.elevenLabsMaleVoiceId,
     settings.customElevenLabsApiKey,
@@ -139,79 +170,33 @@ export default function App() {
     settings.selectedVoiceStyleId
   ]);
 
-  // Listen for Anti-Theft Security Lock changes + run silent background face scans when armed
+  // Auto-sync SU-ID Account Firebase cloud backup in background when local data changes
   useEffect(() => {
-    const onLockChange = (e: Event) => {
-      const locked = Boolean((e as CustomEvent)?.detail?.locked);
-      setSecurityLockedState(locked);
-    };
-    window.addEventListener('zuzu-security-lock-changed', onLockChange);
-
-    if (!settings.antiTheftEnabled || !settings.ownerFaceEnrolled || !settings.masterPinHash || securityLocked) {
-      return () => window.removeEventListener('zuzu-security-lock-changed', onLockChange);
-    }
-
-    const intervalMs = Math.max(8000, (settings.securityCheckIntervalSec || 12) * 1000);
-    const timer = setInterval(() => {
-      if (!isSecurityLocked() && document.visibilityState === 'visible') {
-        runSilentFaceSecurityCheck(
-          settings.ownerFaceDescriptor,
-          settings.securityMaxAttempts || 3,
-          settings.ownerFaceProfiles
-        )
-          .then(res => {
-            if (res.lockedTriggered) {
-              setSecurityLockedState(true);
-            }
-          })
-          .catch(() => {});
-      }
-    }, intervalMs);
-
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener('zuzu-security-lock-changed', onLockChange);
-    };
-  }, [
-    settings.antiTheftEnabled,
-    settings.ownerFaceEnrolled,
-    settings.ownerFaceDescriptor,
-    settings.ownerFaceProfiles,
-    settings.masterPinHash,
-    settings.securityMaxAttempts,
-    settings.securityCheckIntervalSec,
-    securityLocked
-  ]);
-
-  // Auto-sync NUSU Account Firebase cloud backup in background when local data changes
-  useEffect(() => {
-    if (!settings.nusuAccountId || !settings.nusuVaultKey) return;
+    if (!settings.suAccountId || !settings.suVaultKey) return;
     let syncTimer: ReturnType<typeof setTimeout> | null = null;
 
     const triggerDebouncedSync = () => {
       if (syncTimer) clearTimeout(syncTimer);
       syncTimer = setTimeout(() => {
         const latest = getAppSettings();
-        if (latest.nusuAccountId && latest.nusuVaultKey) {
-          syncNusuCloudNow(latest).catch(() => {});
+        if (latest.suAccountId && latest.suVaultKey) {
+          syncSuCloudNow(latest).catch(() => {});
         }
       }, 3000);
     };
 
-    window.addEventListener('zuzu-nusu-data-changed', triggerDebouncedSync);
+    window.addEventListener('zuzu-su-data-changed', triggerDebouncedSync);
     triggerDebouncedSync();
 
     return () => {
       if (syncTimer) clearTimeout(syncTimer);
-      window.removeEventListener('zuzu-nusu-data-changed', triggerDebouncedSync);
+      window.removeEventListener('zuzu-su-data-changed', triggerDebouncedSync);
     };
   }, [
     textMessageCount,
     voiceSessionCount,
-    settings.nusuAccountId,
-    settings.nusuVaultKey,
-    settings.ownerFaceEnrolled,
-    settings.masterPinHash,
+    settings.suAccountId,
+    settings.suVaultKey,
     settings.userNickname,
     settings.activePersonality
   ]);
@@ -378,18 +363,6 @@ export default function App() {
           setForceUpdateInfo(null);
           setActiveTab('updates');
         }}
-      />
-
-      {/* Strict Anti-Theft Master PIN Lock Screen */}
-      <MasterPinLockOverlay
-        isOpen={securityLocked && Boolean(settings.masterPinHash)}
-        masterPinHash={settings.masterPinHash}
-        ownerFaceEnrolled={settings.ownerFaceEnrolled}
-        ownerFaceProfiles={settings.ownerFaceProfiles}
-        ownerFaceDescriptor={settings.ownerFaceDescriptor}
-        securityRecoveryHints={settings.securityRecoveryHints}
-        onResetMasterPin={(newHash) => handleUpdateSettings({ masterPinHash: newHash })}
-        onUnlocked={() => setSecurityLockedState(false)}
       />
     </AndroidFrame>
   );

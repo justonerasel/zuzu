@@ -14,8 +14,7 @@ import { AppSettings, ChatMessage, VoiceIdentity } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { getChatMessages, saveChatMessage, clearChatHistory, getMemories, saveMemory } from '../utils/storage';
 import { playHapticSound } from '../utils/audio';
-import { generateIntelligentAnswer } from '../utils/aiEngine';
-import { apiFetch, directGeminiGenerateContent } from '../utils/apiConfig';
+import { sendUnifiedAiChat } from '../utils/apiConfig';
 
 interface ChatViewProps {
   settings: AppSettings;
@@ -29,6 +28,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [apiErrorBanner, setApiErrorBanner] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeIdentity = VOICE_IDENTITIES[settings.activeIdentity];
@@ -48,6 +48,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
     if (!text || isLoading) return;
 
     playHapticSound('message_sent');
+    setApiErrorBanner(null);
 
     // 1. Strictly create text-only user message
     const userMsg: ChatMessage = {
@@ -62,12 +63,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
 
     // Save strictly to Chat History
     saveChatMessage(userMsg);
-    setMessages(prev => [...prev, userMsg]);
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
     setInputText('');
     setIsLoading(true);
 
     try {
-      // Check for user-directed memory instruction
       const activeMemories = settings.memoryEnabled ? getMemories() : [];
       if (settings.memoryEnabled) {
         const lowerText = text.toLowerCase().trim();
@@ -93,50 +94,32 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
         }
       }
 
-      // 2. Fetch AI response via backend proxy
-      const conversationContext = [...messages, userMsg].map(m => ({
+      const conversationContext = updatedMessages.map(m => ({
         sender: m.sender,
         text: m.text
       }));
 
-      const res = await apiFetch('/api/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          messages: conversationContext,
-          personality: settings.activePersonality,
-          voiceIdentity: settings.activeIdentity,
-          customPersonalityPrompt: settings.customPersonalityPrompt,
-          customGeminiKey: settings.customGeminiApiKey,
-          isVoiceMode: false, // Explicitly text mode
-          memories: activeMemories,
-          memoryEnabled: settings.memoryEnabled
-        })
+      const aiResult = await sendUnifiedAiChat({
+        messages: conversationContext,
+        settings,
+        memories: activeMemories,
+        isVoiceMode: false
       });
 
-      const data = await res.json();
-      let replyText = data.reply;
-
-      // If backend returned empty or greeting placeholder on a substantive question,
-      // generate intelligent, context-specific answer
-      if (!replyText || replyText.trim().length === 0) {
-        replyText = generateIntelligentAnswer({
-          userQuestion: text,
-          conversationHistory: messages,
-          personality: settings.activePersonality,
-          voiceIdentity: settings.activeIdentity,
-          customPersonalityPrompt: settings.customPersonalityPrompt,
-          isVoiceMode: false,
-          memories: activeMemories,
-          memoryEnabled: settings.memoryEnabled
-        });
+      if (aiResult.isError) {
+        setApiErrorBanner(aiResult.reply);
+        playHapticSound('listen_stop');
+        if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
+          onRequestApiKeyModal('Text Chat');
+        }
+        return;
       }
 
-      // 3. Strictly create text-only assistant response
       const assistantMsg: ChatMessage = {
         id: `chat-ai-${Date.now()}`,
         conversation_type: 'text',
         sender: 'assistant',
-        text: replyText.trim(),
+        text: aiResult.reply,
         timestamp: Date.now(),
         voiceIdentity: settings.activeIdentity,
         personality: settings.activePersonality
@@ -145,47 +128,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
       saveChatMessage(assistantMsg);
       setMessages(prev => [...prev, assistantMsg]);
     } catch (err: any) {
-      console.warn('Text Chat Network fallback:', err);
-      const activeMemories = settings.memoryEnabled ? getMemories() : [];
-      let fallbackReply = '';
-
-      // Emergency Direct Gemini API Call if user has configured custom Gemini key
-      if (settings.customGeminiApiKey && settings.customGeminiApiKey.trim().length > 0) {
-        try {
-          fallbackReply = await directGeminiGenerateContent(
-            settings.customGeminiApiKey,
-            text,
-            `You are Zuzu AI, an intelligent AI assistant. Personality: ${settings.activePersonality}. Voice identity: ${settings.activeIdentity}. Language: Bengali & English.`
-          );
-        } catch (directErr) {
-          console.warn('[Zuzu AI] Direct Gemini fallback failed, using local engine:', directErr);
-        }
-      }
-
-      if (!fallbackReply) {
-        fallbackReply = generateIntelligentAnswer({
-          userQuestion: text,
-          conversationHistory: messages,
-          personality: settings.activePersonality,
-          voiceIdentity: settings.activeIdentity,
-          customPersonalityPrompt: settings.customPersonalityPrompt,
-          isVoiceMode: false,
-          memories: activeMemories,
-          memoryEnabled: settings.memoryEnabled
-        });
-      }
-
-      const fallbackMsg: ChatMessage = {
-        id: `chat-ai-${Date.now()}`,
-        conversation_type: 'text',
-        sender: 'assistant',
-        text: fallbackReply,
-        timestamp: Date.now(),
-        voiceIdentity: settings.activeIdentity,
-        personality: settings.activePersonality
-      };
-      saveChatMessage(fallbackMsg);
-      setMessages(prev => [...prev, fallbackMsg]);
+      setApiErrorBanner(err?.message || 'Could not complete request. Please check your connection and Gemini API key.');
+      playHapticSound('listen_stop');
     } finally {
       setIsLoading(false);
     }
@@ -354,6 +298,22 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
 
         <div ref={messagesEndRef} />
       </div>
+
+      {apiErrorBanner && (
+        <div className="mx-3 mb-2 p-2.5 rounded-xl bg-rose-950/90 border border-rose-500/40 text-rose-200 text-[11px] flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+            <span>{apiErrorBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setApiErrorBanner(null)}
+            className="text-rose-300 hover:text-white text-xs font-bold px-1"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Input Field Area */}
       <form

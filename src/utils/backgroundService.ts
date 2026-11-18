@@ -1,11 +1,12 @@
-import { AppSettings } from '../types';
-import { playHapticSound } from './audio';
+import { AppSettings, CustomAudioTrigger } from '../types';
+import { extractAcousticFrameFeatures, matchAcousticFrame } from './audioTriggers';
 
 /**
- * Zuzu AI Background Foreground Service & Always-On Wake Word Engine
+ * Zuzu AI Background Foreground Service, Always-On Wake Word & Custom Audio Triggers
  * - Bridges to Android ZuzuForegroundService (Silent NotificationChannel + WakeLock + boot persistence)
- * - Uses silent Web Audio Voice Activity Detection (VAD) gating before waking SpeechRecognition
- *   so Android's recognizer does NOT play a continuous "tun-tun-tun" chime loop during silence.
+ * - Uses silent Web Audio Voice Activity Detection (VAD) + Acoustic Trigger Matching (mouth whistle / finger snap)
+ *   before waking SpeechRecognition so Android's recognizer does NOT play a continuous "tun-tun-tun" chime loop.
+ * - On Native Android APK, also bridges to lightweight AudioRecord monitor when custom triggers are active.
  */
 
 let foregroundActive = false;
@@ -16,16 +17,23 @@ let keepAliveOsc: OscillatorNode | null = null;
 
 let wakeRecognition: any = null;
 let wakeListenerShouldRun = false;
+let customTriggersActive = false;
+let activeCustomTriggers: CustomAudioTrigger[] = [];
 let micBusyInActiveSession = false;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let visibilityHooked = false;
 
-// Silent VAD gate state (prevents SpeechRecognition start/stop "tun-tun-tun" chime loops)
+// Silent VAD & Acoustic Trigger Gate state
 let vadAudioCtx: AudioContext | null = null;
 let vadStream: MediaStream | null = null;
-let vadRafId: number | null = null;
 let vadCheckTimer: ReturnType<typeof setInterval> | null = null;
 let consecutiveNoSpeechCount = 0;
+let lastAcousticTriggerAt = 0;
+const whistleStreakMap = new Map<string, number>();
+
+// Native Android AudioRecord trigger listener handle
+let nativeTriggerHandle: { remove: () => Promise<void> | void } | null = null;
+let nativeMonitorRunning = false;
 
 let currentWakeConfig: { phrase: string; lang: string } = {
   phrase: 'wake up zuzu',
@@ -36,6 +44,19 @@ function isNativeAndroid(): boolean {
   if (typeof window === 'undefined') return false;
   const cap = (window as any).Capacitor;
   return Boolean(cap?.isNativePlatform?.());
+}
+
+function getZuzuNativePlugin(): any | null {
+  if (typeof window === 'undefined') return null;
+  const cap = (window as any).Capacitor;
+  if (cap?.isNativePlatform?.() && cap?.Plugins?.ZuzuNative) {
+    return cap.Plugins.ZuzuNative;
+  }
+  return null;
+}
+
+function shouldRunAnyBackgroundMic(): boolean {
+  return wakeListenerShouldRun || (customTriggersActive && activeCustomTriggers.length > 0);
 }
 
 function ensureVisibilityHook(): void {
@@ -53,20 +74,11 @@ function ensureVisibilityHook(): void {
           keepAliveAudioCtx.resume().catch(() => {});
         }
       }
-      if (wakeListenerShouldRun && !micBusyInActiveSession && !wakeRecognition && !vadCheckTimer) {
+      if (shouldRunAnyBackgroundMic() && !micBusyInActiveSession && !wakeRecognition && !vadCheckTimer) {
         scheduleWakeMonitor(500);
       }
     }
   });
-}
-
-function getZuzuNativePlugin(): any | null {
-  if (typeof window === 'undefined') return null;
-  const cap = (window as any).Capacitor;
-  if (cap?.isNativePlatform?.() && cap?.Plugins?.ZuzuNative) {
-    return cap.Plugins.ZuzuNative;
-  }
-  return null;
 }
 
 export function isForegroundServiceActive(): boolean {
@@ -96,7 +108,6 @@ export async function startZuzuForegroundService(wakeWordPhrase = 'Wake up Zuzu'
     }
   }
 
-  // Web/WebView WakeLock (strictly zero audible output)
   try {
     if (!wakeLockSentinel && typeof navigator !== 'undefined' && (navigator as any).wakeLock?.request) {
       wakeLockSentinel = await (navigator as any).wakeLock.request('screen').catch(() => null);
@@ -151,11 +162,74 @@ export async function stopZuzuForegroundService(): Promise<void> {
   } catch {}
 }
 
-function stopSilentVadGate(): void {
-  if (vadRafId !== null) {
-    cancelAnimationFrame(vadRafId);
-    vadRafId = null;
+function stopNativeTriggerMonitor(): void {
+  const nativePlugin = getZuzuNativePlugin();
+  if (nativeTriggerHandle) {
+    try {
+      nativeTriggerHandle.remove();
+    } catch {}
+    nativeTriggerHandle = null;
   }
+  if (nativeMonitorRunning && nativePlugin?.stopAudioTriggerMonitor) {
+    nativePlugin.stopAudioTriggerMonitor().catch(() => {});
+  }
+  nativeMonitorRunning = false;
+}
+
+async function startNativeTriggerMonitor(): Promise<boolean> {
+  const nativePlugin = getZuzuNativePlugin();
+  if (!nativePlugin?.startAudioTriggerMonitor || !customTriggersActive || activeCustomTriggers.length === 0) {
+    return false;
+  }
+
+  const cachedMic = localStorage.getItem('zuzu_mic_permission_status');
+  if (cachedMic !== 'granted') return false;
+
+  try {
+    if (!nativeTriggerHandle && nativePlugin.addListener) {
+      nativeTriggerHandle = await nativePlugin.addListener('nativeAudioTriggerDetected', (data: any) => {
+        if (micBusyInActiveSession || !shouldRunAnyBackgroundMic()) return;
+        const now = Date.now();
+        if (now - lastAcousticTriggerAt < 2500) return;
+        lastAcousticTriggerAt = now;
+        nativeMonitorRunning = false;
+        stopSilentVadGate();
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate([20, 30, 20]);
+        }
+        window.dispatchEvent(
+          new CustomEvent('zuzu-wake-word-triggered', {
+            detail: {
+              triggerType: data?.kind || 'custom',
+              triggerLabel: data?.label || 'Custom Sound',
+              transcript: data?.label || 'Custom Sound Trigger',
+              remainingCommand: '',
+              triggeredAt: now
+            }
+          })
+        );
+      });
+    }
+
+    await nativePlugin.startAudioTriggerMonitor({
+      triggers: activeCustomTriggers.map(t => ({
+        id: t.id,
+        label: t.label,
+        kind: t.kind,
+        peakHz: t.peakHz,
+        crestFactor: t.crestFactor,
+        rmsThreshold: t.rmsThreshold,
+        sensitivity: t.sensitivity
+      }))
+    });
+    nativeMonitorRunning = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stopSilentVadGate(): void {
   if (vadCheckTimer) {
     clearInterval(vadCheckTimer);
     vadCheckTimer = null;
@@ -170,11 +244,12 @@ function stopSilentVadGate(): void {
     try { vadAudioCtx.close(); } catch {}
     vadAudioCtx = null;
   }
+  whistleStreakMap.clear();
 }
 
 /**
- * Pause always-on wake-word mic while Dashboard/Voice active turn is recording,
- * then auto-resume seamlessly when the active session stops.
+ * Pause always-on wake-word & custom audio trigger mic while active voice/recording session is busy,
+ * then auto-resume seamlessly when the active session ends.
  */
 export function setMicBusyForActiveSession(busy: boolean): void {
   micBusyInActiveSession = busy;
@@ -184,13 +259,14 @@ export function setMicBusyForActiveSession(busy: boolean): void {
       restartTimer = null;
     }
     stopSilentVadGate();
+    stopNativeTriggerMonitor();
     if (wakeRecognition) {
       try {
         wakeRecognition.abort();
       } catch {}
       wakeRecognition = null;
     }
-  } else if (wakeListenerShouldRun) {
+  } else if (shouldRunAnyBackgroundMic()) {
     scheduleWakeMonitor(700);
   }
 }
@@ -222,45 +298,55 @@ function matchesWakePhrase(transcript: string, customPhrase: string): { matched:
 }
 
 function scheduleWakeMonitor(delayMs = 1200): void {
-  if (!wakeListenerShouldRun || micBusyInActiveSession) return;
+  if (!shouldRunAnyBackgroundMic() || micBusyInActiveSession) return;
   if (restartTimer) clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
     restartTimer = null;
-    if (wakeListenerShouldRun && !micBusyInActiveSession) {
+    if (shouldRunAnyBackgroundMic() && !micBusyInActiveSession) {
       startSilentVadOrRecognition();
     }
   }, delayMs);
 }
 
 /**
- * Monitors ambient speech quietly via Web Audio AnalyserNode without invoking OS SpeechRecognizer
- * until human voice energy is actually detected—preventing continuous Android "tun-tun-tun" chimes.
+ * Monitors ambient microphone quietly via Web Audio AnalyserNode (or native AudioRecord on APK)
+ * matching both custom audio triggers (whistle / snap) AND vocal onset before opening OS SpeechRecognizer.
  */
 async function startSilentVadOrRecognition(): Promise<void> {
-  if (typeof window === 'undefined' || !wakeListenerShouldRun || micBusyInActiveSession || wakeRecognition) {
+  if (typeof window === 'undefined' || !shouldRunAnyBackgroundMic() || micBusyInActiveSession || wakeRecognition) {
     return;
   }
 
   const cachedMic = localStorage.getItem('zuzu_mic_permission_status');
   if (cachedMic !== 'granted') return;
 
-  const SpeechRecognitionClass =
-    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-  if (!SpeechRecognitionClass) return;
+  // On native Android APK, if custom triggers are active and wake-word speech isn't exclusively needed (or alongside),
+  // prefer native AudioRecord monitor when WebView getUserMedia shouldn't conflict with hardware AudioRecord.
+  const hasTriggers = customTriggersActive && activeCustomTriggers.length > 0;
+  if (isNativeAndroid() && hasTriggers && !wakeListenerShouldRun) {
+    await startNativeTriggerMonitor();
+    return;
+  }
 
-  // Use silent VAD gate on native Android or when Web Audio + getUserMedia are available
+  // Use Web Audio AnalyserNode for unified acoustic trigger matching (whistle/snap) + silent speech VAD gate
   if (navigator.mediaDevices?.getUserMedia && !vadCheckTimer) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        },
+        audio: hasTriggers
+          ? {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false
+            }
+          : {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            },
         video: false
       });
 
-      if (!wakeListenerShouldRun || micBusyInActiveSession) {
+      if (!shouldRunAnyBackgroundMic() || micBusyInActiveSession) {
         stream.getTracks().forEach((t) => { try { t.stop(); } catch {} });
         return;
       }
@@ -270,37 +356,66 @@ async function startSilentVadOrRecognition(): Promise<void> {
         const ctx = new AudioCtx();
         const source = ctx.createMediaStreamSource(stream);
         const analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.2;
         source.connect(analyser);
 
         vadStream = stream;
         vadAudioCtx = ctx;
-        const data = new Uint8Array(analyser.frequencyBinCount);
+        const timeData = new Uint8Array(analyser.fftSize);
+        const freqData = new Uint8Array(analyser.frequencyBinCount);
         let speechHits = 0;
 
         vadCheckTimer = setInterval(() => {
-          if (!wakeListenerShouldRun || micBusyInActiveSession) {
+          if (!shouldRunAnyBackgroundMic() || micBusyInActiveSession) {
             stopSilentVadGate();
             return;
           }
-          analyser.getByteTimeDomainData(data);
-          let sumSq = 0;
-          for (let i = 0; i < data.length; i++) {
-            const norm = (data[i] - 128) / 128;
-            sumSq += norm * norm;
-          }
-          const rms = Math.sqrt(sumSq / data.length);
-          if (rms > 0.032) {
-            speechHits++;
-            if (speechHits >= 2) {
-              // Speech activity detected: release VAD stream briefly and verify wake phrase
-              stopSilentVadGate();
-              bootWakeRecognitionCycle();
+
+          analyser.getByteTimeDomainData(timeData);
+          analyser.getByteFrequencyData(freqData);
+          const features = extractAcousticFrameFeatures(timeData, freqData, ctx.sampleRate);
+
+          // 1. Check Custom Audio Triggers (Mouth Whistle / Finger Snap / Custom Sound)
+          if (customTriggersActive && activeCustomTriggers.length > 0) {
+            const now = Date.now();
+            if (now - lastAcousticTriggerAt > 2800) {
+              const hit = matchAcousticFrame(features, activeCustomTriggers, whistleStreakMap);
+              if (hit) {
+                lastAcousticTriggerAt = now;
+                stopSilentVadGate();
+                if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                  navigator.vibrate([20, 30, 20]);
+                }
+                window.dispatchEvent(
+                  new CustomEvent('zuzu-wake-word-triggered', {
+                    detail: {
+                      triggerType: hit.trigger.kind,
+                      triggerLabel: hit.trigger.label,
+                      transcript: hit.trigger.label,
+                      remainingCommand: '',
+                      triggeredAt: now
+                    }
+                  })
+                );
+                return;
+              }
             }
-          } else {
-            speechHits = Math.max(0, speechHits - 1);
           }
-        }, 160);
+
+          // 2. Check Human Vocal Onset for Wake Word ("Wake up Zuzu")
+          if (wakeListenerShouldRun) {
+            if (features.rms > 0.055 && features.tonalityRatio < 4.5) {
+              speechHits++;
+              if (speechHits >= 2) {
+                stopSilentVadGate();
+                bootWakeRecognitionCycle();
+              }
+            } else {
+              speechHits = Math.max(0, speechHits - 1);
+            }
+          }
+        }, 120);
         return;
       } else {
         stream.getTracks().forEach((t) => { try { t.stop(); } catch {} });
@@ -310,8 +425,14 @@ async function startSilentVadOrRecognition(): Promise<void> {
     }
   }
 
-  // Fallback for environments without AudioContext VAD (never tight-loop on Android)
-  if (!isNativeAndroid()) {
+  // Native fallback when custom triggers are active and WebView mic was unavailable
+  if (isNativeAndroid() && hasTriggers) {
+    await startNativeTriggerMonitor();
+    return;
+  }
+
+  // Browser fallback when Web Audio API unavailable
+  if (!isNativeAndroid() && wakeListenerShouldRun) {
     bootWakeRecognitionCycle();
   }
 }
@@ -350,10 +471,13 @@ function bootWakeRecognitionCycle(): void {
             recognition.abort();
           } catch {}
           wakeRecognition = null;
-          playHapticSound('switch');
+          if (typeof navigator !== 'undefined' && navigator.vibrate) {
+            navigator.vibrate([20, 30, 20]);
+          }
           window.dispatchEvent(
             new CustomEvent('zuzu-wake-word-triggered', {
               detail: {
+                triggerType: 'voice',
                 transcript: text.trim(),
                 remainingCommand: hit.remainingCommand,
                 triggeredAt: Date.now()
@@ -372,13 +496,13 @@ function bootWakeRecognitionCycle(): void {
         return;
       }
       consecutiveNoSpeechCount++;
-      const backoffMs = Math.min(8000, 1500 + consecutiveNoSpeechCount * 1000);
+      const backoffMs = Math.min(15000, 3000 + consecutiveNoSpeechCount * 2000);
       scheduleWakeMonitor(backoffMs);
     };
 
     recognition.onend = () => {
       wakeRecognition = null;
-      const delayMs = isNativeAndroid() ? 900 : 1200;
+      const delayMs = isNativeAndroid() ? 2200 : 1500;
       scheduleWakeMonitor(delayMs);
     };
 
@@ -395,20 +519,26 @@ export async function syncBackgroundServicesWithSettings(settings: AppSettings):
     lang: settings.recognitionLanguage || 'en-US'
   };
 
+  customTriggersActive = settings.customTriggersEnabled !== false;
+  activeCustomTriggers = Array.isArray(settings.customAudioTriggers) ? settings.customAudioTriggers : [];
+
   if (settings.foregroundServiceEnabled) {
     await startZuzuForegroundService(currentWakeConfig.phrase);
   } else {
     await stopZuzuForegroundService();
   }
 
-  if (settings.wakeWordEnabled) {
-    wakeListenerShouldRun = true;
-    if (!micBusyInActiveSession && !wakeRecognition && !vadCheckTimer) {
+  wakeListenerShouldRun = Boolean(settings.wakeWordEnabled);
+
+  if (shouldRunAnyBackgroundMic()) {
+    if (nativeMonitorRunning) {
+      await startNativeTriggerMonitor();
+    } else if (!micBusyInActiveSession && !wakeRecognition && !vadCheckTimer) {
       startSilentVadOrRecognition();
     }
   } else {
-    wakeListenerShouldRun = false;
     stopSilentVadGate();
+    stopNativeTriggerMonitor();
     if (restartTimer) {
       clearTimeout(restartTimer);
       restartTimer = null;
@@ -424,7 +554,9 @@ export async function syncBackgroundServicesWithSettings(settings: AppSettings):
 
 export function stopAllBackgroundServices(): void {
   wakeListenerShouldRun = false;
+  customTriggersActive = false;
   stopSilentVadGate();
+  stopNativeTriggerMonitor();
   if (restartTimer) {
     clearTimeout(restartTimer);
     restartTimer = null;

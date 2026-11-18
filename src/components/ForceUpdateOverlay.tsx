@@ -31,7 +31,7 @@ export const ForceUpdateOverlay: React.FC<ForceUpdateOverlayProps> = ({
   return (
     <div className="fixed inset-0 z-[110] bg-slate-950/75 backdrop-blur-xl flex items-center justify-center p-5 select-none animate-fade-in">
       <div className="w-full max-w-sm rounded-3xl bg-white border border-purple-200 p-6 text-center shadow-2xl text-slate-800 relative overflow-hidden">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mx-auto mb-3.5 flex items-center justify-center overflow-hidden">
+        <div className="w-20 h-20 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mx-auto mb-3.5 flex items-center justify-center overflow-hidden">
           <img
             src="/zuzu-logo.png"
             alt="Zuzu AI"

@@ -9,7 +9,6 @@ import {
   RotateCcw, 
   Play, 
   Globe2, 
-  Smartphone, 
   FileText,
   UserCheck,
   CheckCircle2,
@@ -31,30 +30,23 @@ import {
   Smile,
   Activity,
   Palette,
-  Lock,
   Code2,
   Heart,
   Bot,
   Search,
   Zap,
   Disc,
-  Layers,
   Sparkle,
   Radio,
   MapPin,
   GraduationCap,
   Github,
-  Camera,
-  Phone,
   RefreshCw,
   Sliders,
   Eye,
   EyeOff,
   VolumeX,
-  Moon,
-  Upload,
-  ScanFace,
-  HelpCircle
+  Moon
 } from 'lucide-react';
 import { 
   AppSettings, 
@@ -94,7 +86,6 @@ import {
   PERMISSION_DEFINITIONS, 
   PermissionDefinition, 
   PermissionStatusState, 
-  PermissionCategoryId,
   checkAllPermissions, 
   handlePermissionAction, 
   openAndroidSettings,
@@ -106,28 +97,18 @@ import {
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { THEME_PRESETS, isValidHexColor, getThemeDetails } from '../utils/theme';
 import { 
-  registerNusuAccount, 
-  loginNusuAccount, 
-  syncNusuCloudNow, 
-  logoutNusuAccount 
-} from '../utils/nusuAccount';
-import { 
-  SECURITY_HINT_QUESTIONS,
-  MAX_OWNER_FACE_PROFILES,
-  extractFaceProfilesFromFiles,
-  hashMasterPin,
-  verifyMasterPin,
-  hashSecurityAnswer,
-  verifySecurityHints,
-  setSecurityLocked, 
-  getFailedSecurityAttempts 
-} from '../utils/faceGuard';
-import { FaceScannerModal } from './FaceScannerModal';
+  registerSuAccount, 
+  loginSuAccount, 
+  syncSuCloudNow, 
+  logoutSuAccount 
+} from '../utils/suAccount';
 import { 
   syncBackgroundServicesWithSettings, 
-  isForegroundServiceActive 
+  isForegroundServiceActive,
+  setMicBusyForActiveSession
 } from '../utils/backgroundService';
-import { OwnerFaceProfile } from '../types';
+import { recordCustomAudioTrigger } from '../utils/audioTriggers';
+import type { CustomAudioTrigger, CustomAudioTriggerKind } from '../types';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -142,7 +123,7 @@ export type SettingsCategoryId =
   | 'orb_animation'
   | 'theme'
   | 'permissions'
-  | 'security_guard'
+  | 'background_wake'
   | 'about_developer';
 
 interface CategoryCardInfo {
@@ -255,9 +236,9 @@ const CATEGORIES: CategoryCardInfo[] = [
   {
     id: 'permissions',
     title: 'Permissions Center',
-    subtitle: '17 Android permissions • Core, System, Media & Hardware access status',
+    subtitle: 'Essential Android permissions • Microphone & Notification access',
     icon: ShieldCheck,
-    badge: '17 Permissions',
+    badge: '2 Essential',
     colorTheme: {
       bg: 'bg-teal-50/70 hover:bg-teal-50',
       border: 'border-teal-200/80',
@@ -268,11 +249,11 @@ const CATEGORIES: CategoryCardInfo[] = [
     }
   },
   {
-    id: 'security_guard',
-    title: 'Background AI & Face Guard',
-    subtitle: 'Foreground Service, Wake Word "Wake up Zuzu" & Anti-Theft PIN',
-    icon: Lock,
-    badge: 'Guard',
+    id: 'background_wake',
+    title: 'Background Service & Wake Word',
+    subtitle: 'Silent foreground service & Always-On "Wake up Zuzu" listener',
+    icon: Radio,
+    badge: 'Wake Word',
     colorTheme: {
       bg: 'bg-indigo-50/70 hover:bg-indigo-50',
       border: 'border-indigo-200/80',
@@ -396,9 +377,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [micState, setMicState] = useState<MicrophonePermissionState>('prompt');
   const [isTestingMic, setIsTestingMic] = useState(false);
 
-  // Permissions Center State (14 Android Permissions)
+  // Permissions Center State (Microphone & Notifications)
   const [permissionStatuses, setPermissionStatuses] = useState<Record<string, PermissionStatusState>>({});
-  const [permCategoryFilter, setPermCategoryFilter] = useState<PermissionCategoryId>('all');
   const [isCheckingPermissions, setIsCheckingPermissions] = useState(false);
   const [permActionLoadingId, setPermActionLoadingId] = useState<string | null>(null);
   const [permNotice, setPermNotice] = useState<string | null>(null);
@@ -427,17 +407,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [newMemCategory, setNewMemCategory] = useState<MemoryCategory>('personal');
   const [memError, setMemError] = useState<string | null>(null);
 
-  // NUSU Account State (NU-XXXXXX + Firebase Firestore)
-  const [nusuMode, setNusuMode] = useState<'login' | 'register'>('login');
-  const [nusuIdInput, setNusuIdInput] = useState(settings.nusuAccountId || '');
-  const [nusuFullNameInput, setNusuFullNameInput] = useState(settings.nusuFullName || settings.userNickname || '');
-  const [nusuPhoneInput, setNusuPhoneInput] = useState(settings.nusuPhone || '');
-  const [nusuPasswordInput, setNusuPasswordInput] = useState('');
-  const [nusuConfirmPasswordInput, setNusuConfirmPasswordInput] = useState('');
-  const [showNusuPassword, setShowNusuPassword] = useState(false);
-  const [newlyCreatedNusuId, setNewlyCreatedNusuId] = useState<string | null>(null);
-  const [nusuLoading, setNusuLoading] = useState(false);
-  const [nusuStatusMsg, setNusuStatusMsg] = useState<string | null>(null);
+  // SU-ID Account State (Custom Username + Firebase Firestore)
+  const [suMode, setSuMode] = useState<'login' | 'register'>('login');
+  const [suUsernameInput, setSuUsernameInput] = useState(settings.suUsername || settings.suAccountId || '');
+  const [suFullNameInput, setSuFullNameInput] = useState(settings.suFullName || settings.userNickname || '');
+  const [suPhoneInput, setSuPhoneInput] = useState(settings.suPhone || '');
+  const [suPasswordInput, setSuPasswordInput] = useState('');
+  const [suConfirmPasswordInput, setSuConfirmPasswordInput] = useState('');
+  const [showSuPassword, setShowSuPassword] = useState(false);
+  const [newlyCreatedSuId, setNewlyCreatedSuId] = useState<string | null>(null);
+  const [suLoading, setSuLoading] = useState(false);
+  const [suStatusMsg, setSuStatusMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (settings.userNickname) {
@@ -445,26 +425,65 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     }
   }, [settings.userNickname]);
 
-  // Background Service, Wake Word & Anti-Theft Face Guard State
+  // Background Service & Wake Word & Custom Audio Triggers State
   const [wakeWordDraft, setWakeWordDraft] = useState(settings.wakeWordPhrase || 'wake up zuzu');
-  const [pinDraft, setPinDraft] = useState('');
-  const [faceGuardLoading, setFaceGuardLoading] = useState(false);
-  const [faceGuardStatus, setFaceGuardStatus] = useState<string | null>(null);
-  const [faceScannerMode, setFaceScannerMode] = useState<'enroll' | 'verify' | null>(null);
+  const [bgServiceStatus, setBgServiceStatus] = useState<string | null>(null);
+  const [recordingTriggerKind, setRecordingTriggerKind] = useState<CustomAudioTriggerKind | null>(null);
+  const [recordingProgress, setRecordingProgress] = useState(0);
+  const [customTriggerLabel, setCustomTriggerLabel] = useState('');
 
-  // Security Recovery Hints & Reset PIN State
-  const [hint1Question, setHint1Question] = useState<string>(
-    settings.securityRecoveryHints?.[0]?.question || SECURITY_HINT_QUESTIONS[1]
-  );
-  const [hint1AnswerDraft, setHint1AnswerDraft] = useState('');
-  const [hint2Question, setHint2Question] = useState<string>(
-    settings.securityRecoveryHints?.[1]?.question || SECURITY_HINT_QUESTIONS[3]
-  );
-  const [hint2AnswerDraft, setHint2AnswerDraft] = useState('');
-  const [showPinResetBox, setShowPinResetBox] = useState(false);
-  const [resetHintAnswers, setResetHintAnswers] = useState<string[]>(['', '']);
-  const [resetCurrentPinInput, setResetCurrentPinInput] = useState('');
-  const [resetNewPinInput, setResetNewPinInput] = useState('');
+  const handleRecordAudioTrigger = async (kind: CustomAudioTriggerKind) => {
+    if (recordingTriggerKind) return;
+    setRecordingTriggerKind(kind);
+    setRecordingProgress(0);
+    setBgServiceStatus(
+      kind === 'whistle'
+        ? 'Listening (2.2s)... Please whistle clearly into your mic!'
+        : kind === 'snap'
+        ? 'Listening (2.2s)... Snap your fingers sharply near the mic!'
+        : 'Listening (2.2s)... Make your custom trigger sound now!'
+    );
+    playHapticSound('listen_start');
+    setMicBusyForActiveSession(true);
+
+    try {
+      const trigger = await recordCustomAudioTrigger(kind, customTriggerLabel, (pct) => {
+        setRecordingProgress(pct);
+      });
+      const existing = Array.isArray(settings.customAudioTriggers) ? settings.customAudioTriggers : [];
+      const nextTriggers: CustomAudioTrigger[] = [trigger, ...existing].slice(0, 8);
+      const updated = {
+        ...settings,
+        customTriggersEnabled: true,
+        customAudioTriggers: nextTriggers
+      };
+      onUpdateSettings({
+        customTriggersEnabled: true,
+        customAudioTriggers: nextTriggers
+      });
+      setCustomTriggerLabel('');
+      setBgServiceStatus(`Saved "${trigger.label}" (${trigger.peakHz} Hz) — active for silent background wake-up!`);
+      playHapticSound('message_sent');
+      await syncBackgroundServicesWithSettings(updated);
+    } catch (err: any) {
+      setBgServiceStatus(err?.message || 'Could not record audio trigger.');
+      playHapticSound('listen_stop');
+    } finally {
+      setRecordingTriggerKind(null);
+      setRecordingProgress(0);
+      setMicBusyForActiveSession(false);
+    }
+  };
+
+  const handleDeleteAudioTrigger = async (id: string) => {
+    const existing = Array.isArray(settings.customAudioTriggers) ? settings.customAudioTriggers : [];
+    const nextTriggers = existing.filter(t => t.id !== id);
+    const updated = { ...settings, customAudioTriggers: nextTriggers };
+    onUpdateSettings({ customAudioTriggers: nextTriggers });
+    setBgServiceStatus('Custom audio trigger removed.');
+    playHapticSound('listen_stop');
+    await syncBackgroundServicesWithSettings(updated);
+  };
 
   const refreshAllPermissions = async () => {
     setIsCheckingPermissions(true);
@@ -588,7 +607,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
       const data = await res.json();
       const latency = Date.now() - startTime;
-      const model = data.model || 'gemini-3.8-flash';
+      const model = data.model || 'gemini-2.5-flash';
       setAiTestResult(`Success (${latency}ms) • Engine: ${model}`);
       playHapticSound('listen_start');
     } catch (err: any) {
@@ -819,7 +838,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   };
 
   const handleConfirmReset = () => {
-    // Reset general configuration while strictly preserving API keys, NUSU session, memories & chat history
+    // Reset general configuration while strictly preserving API keys, SU-ID session, memories & chat history
     const newSettings: AppSettings = {
       ...DEFAULT_SETTINGS,
       customGeminiApiKey: resetApiKeysToggle ? '' : (settings.customGeminiApiKey || ''),
@@ -827,17 +846,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
       customElevenLabsApiKey: resetApiKeysToggle ? '' : (settings.customElevenLabsApiKey || ''),
       userNickname: settings.userNickname,
       assistantNickname: settings.assistantNickname,
-      nusuAccountId: settings.nusuAccountId,
-      nusuFullName: settings.nusuFullName,
-      nusuPhone: settings.nusuPhone,
-      nusuToken: settings.nusuToken,
-      nusuVaultKey: settings.nusuVaultKey,
-      nusuLastSyncedAt: settings.nusuLastSyncedAt,
-      masterPinHash: settings.masterPinHash,
-      ownerFaceEnrolled: settings.ownerFaceEnrolled,
-      ownerFaceDescriptor: settings.ownerFaceDescriptor,
-      ownerFaceProfiles: settings.ownerFaceProfiles,
-      securityRecoveryHints: settings.securityRecoveryHints
+      suAccountId: settings.suAccountId,
+      suUsername: settings.suUsername,
+      suFullName: settings.suFullName,
+      suPhone: settings.suPhone,
+      suToken: settings.suToken,
+      suVaultKey: settings.suVaultKey,
+      suLastSyncedAt: settings.suLastSyncedAt
     };
     onUpdateSettings(newSettings);
     setCustomHexInput('#FAF5FF');
@@ -913,14 +928,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
             {/* Branding Banner */}
             <div className="p-3.5 bg-gradient-to-r from-purple-100/90 via-indigo-50 to-blue-50 border border-purple-200/80 rounded-2xl shadow-xs flex items-center justify-between text-slate-800">
-              <div className="flex items-center gap-2.5">
+              <div className="flex items-center gap-3">
                 <img
                   src="/zuzu-logo.png"
                   alt="Zuzu AI"
-                  className="w-10 h-10 rounded-xl object-cover shadow-sm border border-purple-200 flex-shrink-0"
+                  className="w-14 h-14 rounded-2xl object-cover shadow-md border border-purple-200 flex-shrink-0"
                 />
                 <div>
-                  <div className="text-xs font-extrabold flex items-center gap-1.5">
+                  <div className="text-sm font-extrabold flex items-center gap-1.5">
                     <span>Zuzu AI</span>
                   </div>
                   <div className="text-[10px] text-slate-500">
@@ -1107,51 +1122,53 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   </div>
                 </div>
 
-                {/* Custom NUSU Account Login & Firebase Cloud Persistent Memory Card */}
+                {/* Custom Username & SU-ID Account Login + Firebase Cloud Persistent Memory Card */}
                 <div className="p-4 bg-white/95 border border-indigo-200 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold">
-                        <UserCheck className="w-4 h-4" />
-                      </div>
+                    <div className="flex items-center gap-2.5">
+                      <img
+                        src="/zuzu-logo.png"
+                        alt="Zuzu AI SU-ID"
+                        className="w-10 h-10 rounded-xl object-cover border border-indigo-200 shadow-xs flex-shrink-0"
+                      />
                       <div>
                         <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <span>NUSU Cloud Account</span>
+                          <span>SU-ID Cloud Account</span>
                           <span className="text-[9px] font-mono font-bold bg-indigo-100 text-indigo-800 px-1.5 py-0.2 rounded">
-                            NU-ID
+                            SU-ID
                           </span>
                         </div>
                         <div className="text-[10px] text-slate-500">
-                          Firebase Firestore backup • Survives APK uninstalls
+                          Firebase Firestore backup • Custom Username login
                         </div>
                       </div>
                     </div>
-                    {settings.nusuAccountId && settings.nusuVaultKey && (
+                    {settings.suAccountId && settings.suVaultKey && (
                       <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
-                        {settings.nusuAccountId}
+                        SU-{settings.suUsername || settings.suAccountId}
                       </span>
                     )}
                   </div>
 
-                  {settings.nusuAccountId && settings.nusuVaultKey ? (
+                  {settings.suAccountId && settings.suVaultKey ? (
                     <div className="space-y-2.5 pt-1 border-t border-slate-100">
-                      {newlyCreatedNusuId && (
+                      {newlyCreatedSuId && (
                         <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-950 space-y-0.5">
-                          <div className="font-extrabold">Save Your NUSU ID: <span className="font-mono text-emerald-700">{newlyCreatedNusuId}</span></div>
-                          <div className="text-[10px] text-emerald-800">Use this ID and your password to restore chats &amp; memories after reinstalling.</div>
+                          <div className="font-extrabold">Account Ready: <span className="font-mono text-emerald-700">{newlyCreatedSuId}</span></div>
+                          <div className="text-[10px] text-emerald-800">Log in anytime using your custom Username and password to restore all chats &amp; memories.</div>
                         </div>
                       )}
 
                       <div className="p-2.5 rounded-xl bg-indigo-50/60 border border-indigo-100 text-[11px] flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <div className="font-bold text-indigo-900 truncate">
-                            {settings.nusuFullName || settings.userNickname || 'Zuzu User'} • <span className="font-mono">{settings.nusuAccountId}</span>
+                            {settings.suFullName || settings.userNickname || 'Zuzu User'} • <span className="font-mono">SU-{settings.suUsername || settings.suAccountId}</span>
                           </div>
-                          {settings.nusuPhone && (
-                            <div className="text-[10px] text-slate-600 truncate">ID / Phone: {settings.nusuPhone}</div>
+                          {settings.suPhone && (
+                            <div className="text-[10px] text-slate-600 truncate">Identifier: {settings.suPhone}</div>
                           )}
                           <div className="text-[10px] text-slate-500">
-                            Last synced: {settings.nusuLastSyncedAt ? new Date(settings.nusuLastSyncedAt).toLocaleString() : 'Just now'}
+                            Last synced: {settings.suLastSyncedAt ? new Date(settings.suLastSyncedAt).toLocaleString() : 'Just now'}
                           </div>
                         </div>
                         <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full flex-shrink-0">
@@ -1162,36 +1179,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
-                          disabled={nusuLoading}
+                          disabled={suLoading}
                           onClick={async () => {
-                            setNusuLoading(true);
-                            setNusuStatusMsg(null);
+                            setSuLoading(true);
+                            setSuStatusMsg(null);
                             try {
-                              const res = await syncNusuCloudNow(settings);
-                              setNusuStatusMsg(res.message);
+                              const res = await syncSuCloudNow(settings);
+                              setSuStatusMsg(res.message);
                               if (res.success && res.lastSyncedAt) {
-                                onUpdateSettings({ nusuLastSyncedAt: res.lastSyncedAt });
+                                onUpdateSettings({ suLastSyncedAt: res.lastSyncedAt });
                                 playHapticSound('message_sent');
                               }
                             } finally {
-                              setNusuLoading(false);
+                              setSuLoading(false);
                             }
                           }}
                           className="py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1 shadow-xs disabled:opacity-50"
                         >
-                          <RefreshCw className={`w-3.5 h-3.5 ${nusuLoading ? 'animate-spin' : ''}`} />
-                          <span>{nusuLoading ? 'Syncing...' : 'Sync Now'}</span>
+                          <RefreshCw className={`w-3.5 h-3.5 ${suLoading ? 'animate-spin' : ''}`} />
+                          <span>{suLoading ? 'Syncing...' : 'Sync Now'}</span>
                         </button>
 
                         <button
                           type="button"
                           onClick={() => {
-                            const next = logoutNusuAccount();
+                            const next = logoutSuAccount();
                             onUpdateSettings(next);
-                            setNewlyCreatedNusuId(null);
-                            setNusuPasswordInput('');
-                            setNusuConfirmPasswordInput('');
-                            setNusuStatusMsg('Signed out of NUSU Account.');
+                            setNewlyCreatedSuId(null);
+                            setSuPasswordInput('');
+                            setSuConfirmPasswordInput('');
+                            setSuStatusMsg('Signed out of SU-ID Account.');
                             playHapticSound('listen_stop');
                           }}
                           className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
@@ -1205,42 +1222,65 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl">
                         <button
                           type="button"
-                          onClick={() => { setNusuMode('login'); setNusuStatusMsg(null); }}
+                          onClick={() => { setSuMode('login'); setSuStatusMsg(null); }}
                           className={`py-1.5 rounded-lg text-[11px] font-bold transition-all ${
-                            nusuMode === 'login' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
+                            suMode === 'login' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
                           }`}
                         >
-                          Login (NU-XXXXXX)
+                          Login (SU-ID)
                         </button>
                         <button
                           type="button"
-                          onClick={() => { setNusuMode('register'); setNusuStatusMsg(null); }}
+                          onClick={() => { setSuMode('register'); setSuStatusMsg(null); }}
                           className={`py-1.5 rounded-lg text-[11px] font-bold transition-all ${
-                            nusuMode === 'register' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
+                            suMode === 'register' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
                           }`}
                         >
-                          Create New ID
+                          Register Custom SU-ID
                         </button>
                       </div>
 
-                      {nusuMode === 'login' ? (
-                        <input
-                          type="text"
-                          value={nusuIdInput}
-                          onChange={(e) => setNusuIdInput(e.target.value.toUpperCase())}
-                          placeholder="Enter NUSU ID (e.g. NU-482915)"
-                          className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
-                        />
+                      {suMode === 'login' ? (
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-semibold text-slate-500 px-0.5">
+                            Username or SU-ID
+                          </label>
+                          <input
+                            type="text"
+                            value={suUsernameInput}
+                            onChange={(e) => setSuUsernameInput(e.target.value)}
+                            placeholder="Enter your Username (e.g. rasel008 or SU-rasel008)"
+                            className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
+                          />
+                        </div>
                       ) : (
                         <>
                           <div className="space-y-1">
                             <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                              Full Name or Username
+                              Choose Custom Username / SU-ID (Letters &amp; Numbers)
+                            </label>
+                            <div className="flex items-center bg-slate-50 rounded-xl border border-slate-200 focus-within:border-indigo-400 overflow-hidden">
+                              <span className="px-2.5 py-2 text-[11px] font-mono font-bold text-indigo-700 bg-indigo-50 border-r border-slate-200">
+                                SU-
+                              </span>
+                              <input
+                                type="text"
+                                value={suUsernameInput.replace(/^su-/i, '')}
+                                onChange={(e) => setSuUsernameInput(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
+                                placeholder="e.g. Rasel008"
+                                className="flex-1 bg-transparent text-xs font-mono text-slate-800 px-2.5 py-2 focus:outline-none"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-semibold text-slate-500 px-0.5">
+                              Full Name (Display Name)
                             </label>
                             <input
                               type="text"
-                              value={nusuFullNameInput}
-                              onChange={(e) => setNusuFullNameInput(e.target.value)}
+                              value={suFullNameInput}
+                              onChange={(e) => setSuFullNameInput(e.target.value)}
                               placeholder="e.g. MD Rasel Hossen"
                               className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                             />
@@ -1248,13 +1288,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                           <div className="space-y-1">
                             <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                              Phone Number / Identifier
+                              Phone Number / Recovery Identifier (Optional)
                             </label>
                             <input
                               type="text"
-                              value={nusuPhoneInput}
-                              onChange={(e) => setNusuPhoneInput(e.target.value)}
-                              placeholder="e.g. +88017XXXXXXXX or username@mail"
+                              value={suPhoneInput}
+                              onChange={(e) => setSuPhoneInput(e.target.value)}
+                              placeholder="e.g. +88017XXXXXXXX or email"
                               className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                             />
                           </div>
@@ -1262,39 +1302,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       )}
 
                       <div className="space-y-1">
-                        {nusuMode === 'register' && (
-                          <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                            Secure Password (min 6 chars)
-                          </label>
-                        )}
+                        <label className="text-[10px] font-semibold text-slate-500 px-0.5">
+                          {suMode === 'register' ? 'Secure Password (min 6 chars)' : 'Password'}
+                        </label>
                         <div className="relative">
                           <input
-                            type={showNusuPassword ? 'text' : 'password'}
-                            value={nusuPasswordInput}
-                            onChange={(e) => setNusuPasswordInput(e.target.value)}
-                            placeholder={nusuMode === 'register' ? 'Create secure password (min 6 chars)' : 'Enter NUSU password'}
+                            type={showSuPassword ? 'text' : 'password'}
+                            value={suPasswordInput}
+                            onChange={(e) => setSuPasswordInput(e.target.value)}
+                            placeholder={suMode === 'register' ? 'Create secure password (min 6 chars)' : 'Enter your SU-ID password'}
                             className="w-full bg-slate-50 text-xs text-slate-800 pl-3 pr-9 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                           />
                           <button
                             type="button"
-                            onClick={() => setShowNusuPassword(v => !v)}
+                            onClick={() => setShowSuPassword(v => !v)}
                             className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                            title={showNusuPassword ? 'Hide password' : 'Show password'}
+                            title={showSuPassword ? 'Hide password' : 'Show password'}
                           >
-                            {showNusuPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            {showSuPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                           </button>
                         </div>
                       </div>
 
-                      {nusuMode === 'register' && (
+                      {suMode === 'register' && (
                         <div className="space-y-1">
                           <label className="text-[10px] font-semibold text-slate-500 px-0.5">
                             Confirm Password
                           </label>
                           <input
-                            type={showNusuPassword ? 'text' : 'password'}
-                            value={nusuConfirmPasswordInput}
-                            onChange={(e) => setNusuConfirmPasswordInput(e.target.value)}
+                            type={showSuPassword ? 'text' : 'password'}
+                            value={suConfirmPasswordInput}
+                            onChange={(e) => setSuConfirmPasswordInput(e.target.value)}
                             placeholder="Re-enter password to confirm"
                             className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                           />
@@ -1303,24 +1341,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                       <button
                         type="button"
-                        disabled={nusuLoading}
+                        disabled={suLoading}
                         onClick={async () => {
-                          setNusuLoading(true);
-                          setNusuStatusMsg(null);
+                          setSuLoading(true);
+                          setSuStatusMsg(null);
                           try {
-                            if (nusuMode === 'register') {
-                              const res = await registerNusuAccount({
-                                fullName: nusuFullNameInput,
-                                phone: nusuPhoneInput,
-                                password: nusuPasswordInput,
-                                confirmPassword: nusuConfirmPasswordInput
+                            if (suMode === 'register') {
+                              const res = await registerSuAccount({
+                                username: suUsernameInput,
+                                fullName: suFullNameInput,
+                                phone: suPhoneInput,
+                                password: suPasswordInput,
+                                confirmPassword: suConfirmPasswordInput
                               });
-                              setNusuStatusMsg(res.message);
-                              if (res.success && res.accountId) {
-                                setNusuIdInput(res.accountId);
-                                setNewlyCreatedNusuId(res.accountId);
-                                setNusuPasswordInput('');
-                                setNusuConfirmPasswordInput('');
+                              setSuStatusMsg(res.message);
+                              if (res.success && res.username) {
+                                setSuUsernameInput(res.username);
+                                setNewlyCreatedSuId(`SU-${res.username}`);
+                                setSuPasswordInput('');
+                                setSuConfirmPasswordInput('');
                                 if (res.fullName) {
                                   setUserNickname(res.fullName);
                                 }
@@ -1332,11 +1371,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                                 playHapticSound('listen_stop');
                               }
                             } else {
-                              const res = await loginNusuAccount(nusuIdInput, nusuPasswordInput);
-                              setNusuStatusMsg(res.message);
+                              const res = await loginSuAccount(suUsernameInput, suPasswordInput);
+                              setSuStatusMsg(res.message);
                               if (res.success) {
-                                setNusuPasswordInput('');
-                                setNewlyCreatedNusuId(null);
+                                setSuPasswordInput('');
+                                setNewlyCreatedSuId(null);
                                 if (res.restoredSettings) {
                                   onUpdateSettings(res.restoredSettings);
                                   if (res.restoredSettings.userNickname) {
@@ -1351,25 +1390,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                               }
                             }
                           } catch (err: any) {
-                            setNusuStatusMsg(err?.message || 'Firebase NUSU connection failed.');
+                            setSuStatusMsg(err?.message || 'Firebase SU-ID connection failed.');
                           } finally {
-                            setNusuLoading(false);
+                            setSuLoading(false);
                           }
                         }}
                         className="w-full py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs disabled:opacity-50"
                       >
-                        {nusuLoading
+                        {suLoading
                           ? 'Connecting to Firebase Cloud...'
-                          : nusuMode === 'register'
-                          ? 'Generate NU-XXXXXX ID & Sign In'
+                          : suMode === 'register'
+                          ? 'Create SU-ID & Sign In'
                           : 'Sign In & Restore All Memory'}
                       </button>
                     </div>
                   )}
 
-                  {nusuStatusMsg && (
+                  {suStatusMsg && (
                     <div className="p-2 rounded-xl bg-indigo-50 border border-indigo-200 text-[11px] text-indigo-900 font-medium">
-                      {nusuStatusMsg}
+                      {suStatusMsg}
                     </div>
                   )}
                 </div>
@@ -1487,7 +1526,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                           <span>Google Gemini</span>
                           <span className="text-[9px] font-mono font-bold bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded">Primary</span>
                         </div>
-                        <div className="text-[10px] text-slate-500">Gemini 3.8 Flash &amp; Image 3.1</div>
+                        <div className="text-[10px] text-slate-500">Gemini 2.5 Flash &amp; Image Generation</div>
                       </div>
                     </div>
 
@@ -1532,6 +1571,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                           type={showGeminiKey ? 'text' : 'password'}
                           value={geminiKeyInput}
                           onChange={(e) => setGeminiKeyInput(e.target.value)}
+                          onBlur={() => {
+                            const trimmed = geminiKeyInput.trim();
+                            if (trimmed !== (settings.customGeminiApiKey || '').trim()) {
+                              onUpdateSettings({ customGeminiApiKey: trimmed });
+                            }
+                          }}
                           placeholder="AIzaSy..."
                           className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2 pr-8 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-400"
                         />
@@ -2099,7 +2144,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                   <div className="space-y-2">
                     {VOICE_MODELS.map((model) => {
-                      const isSelected = (settings.selectedVoiceModelId || 'gemini-3.8-live') === model.id;
+                      const isSelected = (settings.selectedVoiceModelId || 'gemini-2.5-flash-native-audio') === model.id;
                       return (
                         <button
                           key={model.id}
@@ -2622,23 +2667,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             )}
 
             {/* ----------------------------------------------------------- */}
-            {/* 7. PERMISSIONS SUB-PAGE (Requirement 9)                     */}
+            {/* 7. PERMISSIONS SUB-PAGE (Essential Microphone & Notifications) */}
             {/* ----------------------------------------------------------- */}
             {activeCategory === 'permissions' && (
               <div className="space-y-3.5 animate-fade-in text-slate-800">
-                {/* Security Sandbox Explanation Card */}
+                {/* Assistant Permissions Explanation Card */}
                 <div className="p-4 bg-gradient-to-r from-teal-50 via-cyan-50 to-blue-50 border border-teal-200/80 rounded-2xl shadow-xs space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-teal-900 flex items-center gap-1.5">
                       <ShieldCheck className="w-4 h-4 text-teal-600" />
-                      <span>Android Security &amp; Permissions Center</span>
+                      <span>Assistant Permissions Center</span>
                     </span>
                     <span className="text-[9px] font-mono font-bold bg-white text-teal-800 px-2 py-0.5 rounded-full border border-teal-200">
-                      17 Permissions
+                      {PERMISSION_DEFINITIONS.length} Essential
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-600 leading-relaxed">
-                    Android enforces a strict security sandbox. Runtime permissions (like Microphone, Camera, and Gallery) prompt in-app confirmation, while special system permissions (like Overlay and Accessibility) require authorization in Android Settings.
+                    Zuzu AI only requests the two permissions needed for a fast, reliable voice assistant: <strong>Microphone</strong> (for live speech recognition &amp; wake word) and <strong>Notifications</strong> (for silent foreground service stability).
                   </p>
                 </div>
 
@@ -2650,7 +2695,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                     className="flex-1 py-2 px-3 rounded-xl bg-white/90 hover:bg-white text-slate-700 text-xs font-bold border border-teal-200/80 shadow-xs flex items-center justify-center gap-1.5 transition-colors"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${isCheckingPermissions ? 'animate-spin' : ''}`} />
-                    <span>{isCheckingPermissions ? 'Checking Status...' : 'Re-check All Permissions'}</span>
+                    <span>{isCheckingPermissions ? 'Checking Status...' : 'Re-check Permissions'}</span>
                   </button>
 
                   <button
@@ -2679,181 +2724,98 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   </div>
                 )}
 
-                {/* Category Filter Tabs (17 Permissions across 5 categories) */}
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs font-semibold">
-                  {[
-                    { id: 'all', label: `All (17)` },
-                    { id: 'core', label: `Core (4)` },
-                    { id: 'system', label: `System (6)` },
-                    { id: 'hardware', label: `Hardware (2)` },
-                    { id: 'privacy', label: `Privacy (2)` },
-                    { id: 'media', label: `Media (3)` }
-                  ].map(tab => (
-                    <button
-                      key={tab.id}
-                      onClick={() => {
-                        playHapticSound('switch');
-                        setPermCategoryFilter(tab.id as any);
-                      }}
-                      className={`px-3 py-1.5 rounded-xl whitespace-nowrap border transition-all text-[11px] ${
-                        permCategoryFilter === tab.id
-                          ? 'bg-teal-600 text-white font-bold border-teal-600 shadow-xs'
-                          : 'bg-white/80 text-slate-600 border-slate-200 hover:bg-white'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* 17 Permission Cards */}
+                {/* Essential Permission Cards */}
                 <div className="space-y-2.5">
-                  {PERMISSION_DEFINITIONS
-                    .filter(def => permCategoryFilter === 'all' || def.category === permCategoryFilter)
-                    .map(def => {
-                      const status = permissionStatuses[def.id] || (def.isSpecialSystemSetting ? 'system_required' : 'prompt');
-                      const isLoading = permActionLoadingId === def.id;
+                  {PERMISSION_DEFINITIONS.map(def => {
+                    const status = permissionStatuses[def.id] || 'prompt';
+                    const isLoading = permActionLoadingId === def.id;
+                    const Icon = def.id === 'microphone' ? Mic : Radio;
 
-                      const getPermIcon = () => {
-                        switch (def.id) {
-                          case 'microphone': return Mic;
-                          case 'location': return MapPin;
-                          case 'notifications': return Radio;
-                          case 'overlay': return Layers;
-                          case 'accessibility': return UserCheck;
-                          case 'contacts': return User;
-                          case 'phone': return Phone;
-                          case 'camera': return Camera;
-                          case 'photos_videos': return Layers;
-                          case 'files': return FileText;
-                          case 'bg_microphone': return Mic;
-                          case 'flashlight': return Zap;
-                          case 'bluetooth': return Radio;
-                          case 'battery_opt': return Cpu;
-                          case 'write_settings': return Settings;
-                          case 'notification_listener': return ShieldAlert;
-                          case 'screen_capture': return Smartphone;
-                          default: return ShieldCheck;
-                        }
-                      };
-
-                      const Icon = getPermIcon();
-
-                      return (
-                        <div
-                          key={def.id}
-                          className="p-3 bg-white/95 border border-teal-100 rounded-2xl shadow-xs flex items-center justify-between gap-3 text-slate-800"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className="w-8 h-8 rounded-xl bg-teal-50 border border-teal-200/60 text-teal-700 flex items-center justify-center flex-shrink-0 shadow-2xs">
-                              <Icon className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-xs font-bold text-slate-800 truncate">
-                                {def.name}
-                              </div>
-                              <span className="text-[9px] font-mono font-semibold uppercase px-1.5 py-0.2 rounded bg-slate-100 text-slate-500">
-                                {def.category}
-                              </span>
-                            </div>
+                    return (
+                      <div
+                        key={def.id}
+                        className="p-3.5 bg-white/95 border border-teal-100 rounded-2xl shadow-xs flex items-center justify-between gap-3 text-slate-800"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-200/60 text-teal-700 flex items-center justify-center flex-shrink-0 shadow-2xs">
+                            <Icon className="w-4 h-4" />
                           </div>
-
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            {/* Live Status Badge - Strictly Granted or Denied */}
-                            <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold border ${
-                              status === 'granted'
-                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                : 'bg-rose-100 text-rose-800 border-rose-300'
-                            }`}>
-                              {status === 'granted' ? (
-                                <>
-                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                                  <span>GRANTED</span>
-                                </>
-                              ) : (
-                                <>
-                                  <ShieldAlert className="w-2.5 h-2.5 text-rose-600" />
-                                  <span>DENIED</span>
-                                </>
-                              )}
-                            </span>
-
-                            {/* Quick Action Button */}
-                            <button
-                              onClick={() => handlePermAction(def.id)}
-                              disabled={isLoading}
-                              className={`py-1 px-2.5 rounded-xl text-[11px] font-bold flex items-center gap-1 transition-all shadow-xs ${
-                                def.isSpecialSystemSetting
-                                  ? 'bg-purple-100 hover:bg-purple-200 text-purple-800 border border-purple-200'
-                                  : status === 'granted'
-                                  ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                  : 'bg-teal-600 hover:bg-teal-700 text-white'
-                              }`}
-                            >
-                              {isLoading ? (
-                                <RefreshCw className="w-3 h-3 animate-spin" />
-                              ) : def.isSpecialSystemSetting ? (
-                                <ExternalLink className="w-3 h-3" />
-                              ) : status === 'granted' ? (
-                                <Check className="w-3 h-3 text-emerald-600" />
-                              ) : (
-                                <Sparkles className="w-3 h-3" />
-                              )}
-                              <span>
-                                {isLoading
-                                  ? '...'
-                                  : def.isSpecialSystemSetting
-                                  ? 'Settings'
-                                  : status === 'granted'
-                                  ? 'Verified'
-                                  : 'Grant'}
-                              </span>
-                            </button>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-slate-800 truncate">
+                              {def.name}
+                            </div>
+                            <p className="text-[10px] text-slate-500 line-clamp-1 mt-0.5">
+                              {def.whyNeeded}
+                            </p>
                           </div>
                         </div>
-                      );
-                    })}
+
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold border ${
+                            status === 'granted'
+                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                              : 'bg-rose-100 text-rose-800 border-rose-300'
+                          }`}>
+                            {status === 'granted' ? (
+                              <>
+                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                                <span>GRANTED</span>
+                              </>
+                            ) : (
+                              <>
+                                <ShieldAlert className="w-2.5 h-2.5 text-rose-600" />
+                                <span>NEEDED</span>
+                              </>
+                            )}
+                          </span>
+
+                          <button
+                            onClick={() => handlePermAction(def.id)}
+                            disabled={isLoading}
+                            className={`py-1.5 px-2.5 rounded-xl text-[11px] font-bold flex items-center gap-1 transition-all shadow-xs ${
+                              status === 'granted'
+                                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                : 'bg-teal-600 hover:bg-teal-700 text-white'
+                            }`}
+                          >
+                            {isLoading ? (
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                            ) : status === 'granted' ? (
+                              <Check className="w-3 h-3 text-emerald-600" />
+                            ) : (
+                              <Sparkles className="w-3 h-3" />
+                            )}
+                            <span>
+                              {isLoading ? '...' : status === 'granted' ? 'Verified' : 'Grant'}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                {/* Automation Capabilities & Platform Limits (Requirement 9 & 10) */}
-                <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-md space-y-3 mt-4">
+                {/* Assistant Privacy & Lightweight Design Card */}
+                <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-md space-y-2.5 mt-2">
                   <div className="flex items-center gap-2">
                     <ShieldCheck className="w-4 h-4 text-teal-400" />
                     <span className="text-xs font-bold text-teal-300 uppercase tracking-wide">
-                      Automation Capabilities &amp; Platform Limits
+                      Lightweight Voice Assistant Sandbox
                     </span>
                   </div>
-
                   <p className="text-[11px] text-slate-300 leading-relaxed">
-                    Android and platform security architectures impose clear boundaries on what assistants can execute silently:
+                    No camera, location, or screen-lock permissions are requested. Microphone audio is processed solely for voice commands and wake-word detection.
                   </p>
-
-                  <div className="space-y-2 text-[10px]">
-                    <div className="p-2.5 rounded-xl bg-slate-800 border border-slate-700/80">
-                      <div className="font-bold text-emerald-400 mb-0.5">✓ Fully Supported In-App Automations</div>
-                      <div className="text-slate-300">Live 64-district weather forecasts, AI image generation, bilingual Bengali reasoning, custom personality switching, and prompt drafting.</div>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-slate-800 border border-slate-700/80">
-                      <div className="font-bold text-amber-400 mb-0.5">⚠️ Special Android Settings Required</div>
-                      <div className="text-slate-300">Floating over other apps (<code className="text-purple-300">SYSTEM_ALERT_WINDOW</code>) and reading active screen content (<code className="text-purple-300">BIND_ACCESSIBILITY_SERVICE</code>) require manual system authorization.</div>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-slate-800 border border-slate-700/80">
-                      <div className="font-bold text-blue-400 mb-0.5">🔒 Meta &amp; Social Media Platform Restrictions</div>
-                      <div className="text-slate-300">Direct unattended posting or automated comment submission on Facebook/Instagram violates Meta platform terms and Android app sandboxing. Zuzu assists by drafting comments, generating visual captions, and opening direct app intents with user preview.</div>
-                    </div>
-                  </div>
                 </div>
               </div>
             )}
 
             {/* ----------------------------------------------------------- */}
-            {/* 8. SECURITY GUARD & BACKGROUND AI SUB-PAGE                  */}
+            {/* 8. BACKGROUND SERVICE & WAKE WORD SUB-PAGE                  */}
             {/* ----------------------------------------------------------- */}
-            {activeCategory === 'security_guard' && (
+            {activeCategory === 'background_wake' && (
               <div className="space-y-3.5 animate-fade-in text-slate-800">
-                {/* 1. Foreground Service & Battery Exemption */}
+                {/* 1. Silent Foreground Service & Battery Exemption */}
                 <div className="p-4 bg-white/95 border border-indigo-200 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -2862,7 +2824,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       </div>
                       <div>
                         <div className="text-xs font-bold text-slate-800">Android Foreground Service</div>
-                        <div className="text-[10px] text-slate-500">Persistent notification + WakeLock background protection</div>
+                        <div className="text-[10px] text-slate-500">100% silent persistent notification + WakeLock reliability</div>
                       </div>
                     </div>
                     <button
@@ -2872,6 +2834,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         const updated = { ...settings, foregroundServiceEnabled: nextVal };
                         onUpdateSettings({ foregroundServiceEnabled: nextVal });
                         await syncBackgroundServicesWithSettings(updated);
+                        setBgServiceStatus(nextVal ? 'Silent background service active.' : 'Background service paused.');
                         playHapticSound('switch');
                       }}
                       className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
@@ -2886,13 +2849,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                   <div className="flex items-center justify-between p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-100 text-[11px]">
                     <span className="text-slate-700 font-medium">
-                      Service Status: <strong className="text-indigo-800">{isForegroundServiceActive() ? 'Running with WakeLock' : 'Standby'}</strong>
+                      Service Status: <strong className="text-indigo-800">{isForegroundServiceActive() ? 'Running Silently' : 'Standby'}</strong>
                     </span>
                     <button
                       type="button"
                       onClick={() => {
                         openAndroidSettings('android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS');
-                        setFaceGuardStatus('Opening Android Battery Optimization settings...');
+                        setBgServiceStatus('Opening Android Battery Optimization settings...');
                       }}
                       className="px-2.5 py-1 rounded-lg bg-white border border-indigo-200 text-indigo-700 font-bold text-[10px] hover:bg-indigo-100"
                     >
@@ -2910,7 +2873,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       </div>
                       <div>
                         <div className="text-xs font-bold text-slate-800">Always-On Wake Word</div>
-                        <div className="text-[10px] text-slate-500">Hands-free background trigger even while using other tabs</div>
+                        <div className="text-[10px] text-slate-500">Hands-free silent trigger even while using other tabs</div>
                       </div>
                     </div>
                     <button
@@ -2920,6 +2883,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         const updated = { ...settings, wakeWordEnabled: nextVal };
                         onUpdateSettings({ wakeWordEnabled: nextVal });
                         await syncBackgroundServicesWithSettings(updated);
+                        setBgServiceStatus(nextVal ? 'Wake word listener started silently.' : 'Wake word listener stopped.');
                         playHapticSound('switch');
                       }}
                       className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
@@ -2948,7 +2912,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         const updated = { ...settings, wakeWordPhrase: clean };
                         onUpdateSettings({ wakeWordPhrase: clean });
                         await syncBackgroundServicesWithSettings(updated);
-                        setFaceGuardStatus(`Wake phrase updated to "${clean}"`);
+                        setBgServiceStatus(`Wake phrase updated to "${clean}"`);
                         playHapticSound('message_sent');
                       }}
                       className="px-3 py-2 rounded-xl bg-purple-600 text-white text-xs font-bold hover:bg-purple-700"
@@ -2962,425 +2926,158 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                     onClick={() => {
                       window.dispatchEvent(
                         new CustomEvent('zuzu-wake-word-triggered', {
-                          detail: { transcript: settings.wakeWordPhrase || 'Wake up Zuzu', remainingCommand: '' }
+                          detail: { triggerType: 'voice', transcript: settings.wakeWordPhrase || 'Wake up Zuzu', remainingCommand: '' }
                         })
                       );
                     }}
                     className="w-full py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 text-[11px] font-bold"
                   >
-                    Simulate Wake Word Trigger ("{settings.wakeWordPhrase || 'Wake up Zuzu'}")
+                    Test Wake Word Trigger ("{settings.wakeWordPhrase || 'Wake up Zuzu'}")
                   </button>
                 </div>
 
-                {/* 3. Anti-Theft Smart Face Recognition & Master PIN */}
-                <div className="p-4 bg-white/95 border border-rose-200 rounded-2xl shadow-xs space-y-3">
+                {/* 3. Custom Audio Triggers (Mouth Whistle & Finger Snap Detection) */}
+                <div className="p-4 bg-white/95 border border-indigo-200 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center">
-                        <ShieldAlert className="w-4 h-4" />
+                      <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center">
+                        <Volume2 className="w-4 h-4" />
                       </div>
                       <div>
-                        <div className="text-xs font-bold text-slate-800">Anti-Theft Face Guard &amp; PIN</div>
-                        <div className="text-[10px] text-slate-500">Locks screen after 3 unrecognized front-camera detections</div>
+                        <div className="text-xs font-bold text-slate-800">Custom Audio Triggers (Whistle / Snap)</div>
+                        <div className="text-[10px] text-slate-500">Wake Zuzu silently with a mouth whistle (শিস) or finger snap</div>
                       </div>
                     </div>
-
                     <button
                       type="button"
-                      onClick={() => {
-                        if (!settings.antiTheftEnabled) {
-                          if (!settings.ownerFaceEnrolled) {
-                            setFaceGuardStatus('Enroll owner face first before enabling Anti-Theft Guard.');
-                            return;
-                          }
-                          if (!settings.masterPinHash) {
-                            setFaceGuardStatus('Set a 4-6 digit Master PIN first.');
-                            return;
-                          }
-                        }
-                        const next = !settings.antiTheftEnabled;
-                        onUpdateSettings({ antiTheftEnabled: next });
+                      onClick={async () => {
+                        const nextVal = !(settings.customTriggersEnabled !== false);
+                        const updated = { ...settings, customTriggersEnabled: nextVal };
+                        onUpdateSettings({ customTriggersEnabled: nextVal });
+                        await syncBackgroundServicesWithSettings(updated);
+                        setBgServiceStatus(nextVal ? 'Custom whistle & snap detection active.' : 'Custom audio triggers paused.');
                         playHapticSound('switch');
-                        setFaceGuardStatus(next ? 'Anti-Theft Face Guard armed!' : 'Anti-Theft Face Guard paused.');
                       }}
                       className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
-                        settings.antiTheftEnabled
-                          ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                        settings.customTriggersEnabled !== false
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
                           : 'bg-slate-100 text-slate-500 border-slate-200'
                       }`}
                     >
-                      {settings.antiTheftEnabled ? 'Armed' : 'Off'}
+                      {settings.customTriggersEnabled !== false ? 'Active' : 'Off'}
                     </button>
                   </div>
 
-                  {/* Step A: Owner Face Enrollment (Live Camera + Multiple Reference Photos) */}
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-slate-700">1. Owner Biometric Profile (Max {MAX_OWNER_FACE_PROFILES})</span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        settings.ownerFaceEnrolled ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                      }`}>
-                        {settings.ownerFaceEnrolled
-                          ? `${(settings.ownerFaceProfiles?.length || 1)} Enrolled ✓`
-                          : 'Not Enrolled'}
-                      </span>
-                    </div>
+                  <input
+                    type="text"
+                    value={customTriggerLabel}
+                    onChange={(e) => setCustomTriggerLabel(e.target.value)}
+                    placeholder="Optional trigger name (e.g. My Whistle, Double Snap)"
+                    className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
+                  />
 
-                    <p className="text-[10px] text-slate-500 leading-snug">
-                      Add up to 5 front-facing photos (or live poses) for haircuts, glasses, or shave variations.
-                    </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      disabled={Boolean(recordingTriggerKind)}
+                      onClick={() => handleRecordAudioTrigger('whistle')}
+                      className="py-2 px-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 text-indigo-900 border border-indigo-200 text-[11px] font-bold flex flex-col items-center gap-1 transition-colors"
+                    >
+                      <Mic className={`w-3.5 h-3.5 text-indigo-600 ${recordingTriggerKind === 'whistle' ? 'animate-ping' : ''}`} />
+                      <span>Whistle (শিস)</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={Boolean(recordingTriggerKind)}
+                      onClick={() => handleRecordAudioTrigger('snap')}
+                      className="py-2 px-2 rounded-xl bg-purple-50 hover:bg-purple-100 disabled:opacity-50 text-purple-900 border border-purple-200 text-[11px] font-bold flex flex-col items-center gap-1 transition-colors"
+                    >
+                      <Zap className={`w-3.5 h-3.5 text-purple-600 ${recordingTriggerKind === 'snap' ? 'animate-ping' : ''}`} />
+                      <span>Finger Snap</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={Boolean(recordingTriggerKind)}
+                      onClick={() => handleRecordAudioTrigger('custom')}
+                      className="py-2 px-2 rounded-xl bg-slate-50 hover:bg-slate-100 disabled:opacity-50 text-slate-800 border border-slate-200 text-[11px] font-bold flex flex-col items-center gap-1 transition-colors"
+                    >
+                      <Plus className={`w-3.5 h-3.5 text-slate-600 ${recordingTriggerKind === 'custom' ? 'animate-spin' : ''}`} />
+                      <span>Custom Sound</span>
+                    </button>
+                  </div>
 
-                    <div className="grid grid-cols-3 gap-1.5">
-                      <button
-                        type="button"
-                        disabled={faceGuardLoading}
-                        onClick={() => {
-                          setFaceGuardStatus(null);
-                          setFaceScannerMode('enroll');
-                        }}
-                        className="py-2 px-2 rounded-xl bg-slate-900 hover:bg-black text-white text-[11px] font-bold flex items-center justify-center gap-1 disabled:opacity-50"
-                      >
-                        <Camera className="w-3.5 h-3.5" />
-                        <span>Enroll Face</span>
-                      </button>
-
-                      <label className="py-2 px-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer">
-                        <Upload className="w-3.5 h-3.5" />
-                        <span>Upload</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          multiple
-                          className="hidden"
-                          onChange={async (e) => {
-                            const files = e.target.files;
-                            if (!files || files.length === 0) return;
-                            setFaceGuardLoading(true);
-                            setFaceGuardStatus('Analyzing uploaded reference photos via MediaPipe...');
-                            try {
-                              const currentProfiles = settings.ownerFaceProfiles || [];
-                              const res = await extractFaceProfilesFromFiles(files, currentProfiles.length, MAX_OWNER_FACE_PROFILES);
-                              setFaceGuardStatus(res.message);
-                              if (res.added.length > 0) {
-                                const merged = [...currentProfiles, ...res.added].slice(0, MAX_OWNER_FACE_PROFILES);
-                                onUpdateSettings({
-                                  ownerFaceEnrolled: true,
-                                  ownerFaceProfiles: merged,
-                                  ownerFaceDescriptor: merged[0].descriptor
-                                });
-                                playHapticSound('message_sent');
-                              } else {
-                                playHapticSound('listen_stop');
-                              }
-                            } finally {
-                              setFaceGuardLoading(false);
-                              e.target.value = '';
-                            }
-                          }}
+                  {recordingTriggerKind && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[10px] font-bold text-indigo-700">
+                        <span>Recording {recordingTriggerKind} acoustic signature...</span>
+                        <span>{recordingProgress}%</span>
+                      </div>
+                      <div className="w-full h-2 rounded-full bg-indigo-100 overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 transition-all duration-100"
+                          style={{ width: `${recordingProgress}%` }}
                         />
-                      </label>
-
-                      <button
-                        type="button"
-                        disabled={faceGuardLoading || !settings.ownerFaceEnrolled}
-                        onClick={() => {
-                          setFaceGuardStatus(null);
-                          setFaceScannerMode('verify');
-                        }}
-                        className="py-2 px-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-bold flex items-center justify-center gap-1 disabled:opacity-50"
-                      >
-                        <ScanFace className="w-3.5 h-3.5 text-purple-600" />
-                        <span>Verify Face</span>
-                      </button>
+                      </div>
                     </div>
+                  )}
 
-                    {/* Enrolled Reference Photo Strip (up to 5 thumbnails) */}
-                    {settings.ownerFaceProfiles && settings.ownerFaceProfiles.length > 0 && (
-                      <div className="flex items-center gap-2 overflow-x-auto pt-1 pb-0.5">
-                        {settings.ownerFaceProfiles.map((prof: OwnerFaceProfile) => (
-                          <div key={prof.id} className="relative flex-shrink-0 group">
-                            {prof.thumbnail ? (
-                              <img
-                                src={prof.thumbnail}
-                                alt={prof.label}
-                                className="w-12 h-12 rounded-xl object-cover border border-purple-200 shadow-2xs"
-                              />
-                            ) : (
-                              <div className="w-12 h-12 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center text-[10px] font-bold border border-purple-200">
-                                {prof.label.slice(0, 4)}
-                              </div>
-                            )}
+                  {Array.isArray(settings.customAudioTriggers) && settings.customAudioTriggers.length > 0 ? (
+                    <div className="space-y-2 pt-1 border-t border-slate-100">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                        Saved Audio Triggers ({settings.customAudioTriggers.length})
+                      </div>
+                      {settings.customAudioTriggers.map(trig => (
+                        <div
+                          key={trig.id}
+                          className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-slate-800 truncate flex items-center gap-1.5">
+                              <span>{trig.label}</span>
+                              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-800 uppercase">
+                                {trig.kind}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 font-mono">
+                              Peak {trig.peakHz} Hz • Crest {trig.crestFactor}x
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
                             <button
                               type="button"
                               onClick={() => {
-                                const next = (settings.ownerFaceProfiles || []).filter(p => p.id !== prof.id);
-                                onUpdateSettings({
-                                  ownerFaceProfiles: next,
-                                  ownerFaceEnrolled: next.length > 0,
-                                  ownerFaceDescriptor: next[0]?.descriptor
-                                });
-                                playHapticSound('listen_stop');
+                                window.dispatchEvent(
+                                  new CustomEvent('zuzu-wake-word-triggered', {
+                                    detail: { triggerType: trig.kind, triggerLabel: trig.label, transcript: trig.label, remainingCommand: '' }
+                                  })
+                                );
                               }}
-                              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-xs text-[9px] font-bold"
-                              title={`Remove ${prof.label}`}
+                              className="p-1.5 rounded-lg bg-indigo-100 hover:bg-indigo-200 text-indigo-700 transition-colors"
+                              title="Test Trigger Response"
                             >
-                              ×
+                              <Play className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteAudioTrigger(trig.id)}
+                              className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 transition-colors"
+                              title="Delete Trigger"
+                            >
+                              <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Step B: Master PIN & Security Recovery Hints */}
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-slate-700">2. Strict Master PIN (4-6 Digits)</span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        settings.masterPinHash ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                      }`}>
-                        {settings.masterPinHash ? 'PIN Set ✓' : 'No PIN'}
-                      </span>
-                    </div>
-
-                    {!settings.masterPinHash ? (
-                      <div className="flex gap-2">
-                        <input
-                          type="password"
-                          inputMode="numeric"
-                          maxLength={6}
-                          value={pinDraft}
-                          onChange={(e) => setPinDraft(e.target.value.replace(/\D/g, ''))}
-                          placeholder="Enter 4-6 digit Master PIN"
-                          className="flex-1 bg-white text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-rose-400"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (pinDraft.length < 4 || pinDraft.length > 6) {
-                              setFaceGuardStatus('Master PIN must be 4 to 6 digits.');
-                              return;
-                            }
-                            const hashed = hashMasterPin(pinDraft);
-                            onUpdateSettings({ masterPinHash: hashed });
-                            setPinDraft('');
-                            setFaceGuardStatus('Master PIN saved securely! Add Security Hints below for protected PIN reset.');
-                            playHapticSound('message_sent');
-                          }}
-                          className="px-3 py-2 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700"
-                        >
-                          Set PIN
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowPinResetBox((v) => !v);
-                            setResetHintAnswers(['', '']);
-                            setResetCurrentPinInput('');
-                            setResetNewPinInput('');
-                          }}
-                          className="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 text-[11px] font-bold flex items-center gap-1"
-                        >
-                          <RotateCcw className="w-3 h-3" />
-                          <span>Reset PIN</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setSecurityLocked(true, 'Manual Security Lock Test triggered by owner.')}
-                          className="text-[11px] text-rose-700 font-bold hover:underline"
-                        >
-                          Test Lock Screen
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Protected Reset PIN Flow (Verifies Security Hints or Current PIN) */}
-                    {showPinResetBox && settings.masterPinHash && (
-                      <div className="p-2.5 rounded-xl bg-white border border-rose-200 space-y-2 animate-fade-in">
-                        <div className="text-[11px] font-bold text-rose-800">
-                          {(settings.securityRecoveryHints?.length || 0) > 0
-                            ? 'Answer Your Security Hints to Reset PIN:'
-                            : 'Enter Current PIN to Reset:'}
                         </div>
-
-                        {(settings.securityRecoveryHints?.length || 0) > 0 ? (
-                          settings.securityRecoveryHints!.map((hint, idx) => (
-                            <div key={idx} className="space-y-1">
-                              <label className="text-[10px] font-semibold text-slate-600 block">
-                                {hint.question}
-                              </label>
-                              <input
-                                type="text"
-                                value={resetHintAnswers[idx] || ''}
-                                onChange={(e) => {
-                                  const next = [...resetHintAnswers];
-                                  next[idx] = e.target.value;
-                                  setResetHintAnswers(next);
-                                }}
-                                placeholder="Your secret answer..."
-                                className="w-full bg-slate-50 text-xs text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
-                              />
-                            </div>
-                          ))
-                        ) : (
-                          <input
-                            type="password"
-                            inputMode="numeric"
-                            maxLength={6}
-                            value={resetCurrentPinInput}
-                            onChange={(e) => setResetCurrentPinInput(e.target.value.replace(/\D/g, ''))}
-                            placeholder="Current 4-6 digit Master PIN"
-                            className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
-                          />
-                        )}
-
-                        <input
-                          type="password"
-                          inputMode="numeric"
-                          maxLength={6}
-                          value={resetNewPinInput}
-                          onChange={(e) => setResetNewPinInput(e.target.value.replace(/\D/g, ''))}
-                          placeholder="New 4-6 digit Master PIN"
-                          className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
-                        />
-
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setShowPinResetBox(false)}
-                            className="flex-1 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-bold"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const hasHints = (settings.securityRecoveryHints?.length || 0) > 0;
-                              if (hasHints) {
-                                if (!verifySecurityHints(settings.securityRecoveryHints, resetHintAnswers)) {
-                                  setFaceGuardStatus('Security hint answers do not match. PIN reset blocked.');
-                                  playHapticSound('listen_stop');
-                                  return;
-                                }
-                              } else if (!verifyMasterPin(resetCurrentPinInput, settings.masterPinHash)) {
-                                setFaceGuardStatus('Current Master PIN is incorrect.');
-                                playHapticSound('listen_stop');
-                                return;
-                              }
-
-                              if (resetNewPinInput.length < 4 || resetNewPinInput.length > 6) {
-                                setFaceGuardStatus('New Master PIN must be 4 to 6 digits.');
-                                return;
-                              }
-
-                              onUpdateSettings({ masterPinHash: hashMasterPin(resetNewPinInput) });
-                              setShowPinResetBox(false);
-                              setResetNewPinInput('');
-                              setResetCurrentPinInput('');
-                              setResetHintAnswers(['', '']);
-                              setFaceGuardStatus('Master PIN reset successfully!');
-                              playHapticSound('listen_start');
-                            }}
-                            className="flex-1 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold"
-                          >
-                            Confirm Reset
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Security Recovery Hints Setup */}
-                    <div className="pt-2 border-t border-slate-200/70 space-y-2">
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="font-bold text-slate-700 flex items-center gap-1">
-                          <HelpCircle className="w-3.5 h-3.5 text-purple-600" />
-                          <span>Security Recovery Hints</span>
-                        </span>
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
-                          (settings.securityRecoveryHints?.length || 0) >= 2
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-slate-200 text-slate-600'
-                        }`}>
-                          {(settings.securityRecoveryHints?.length || 0) >= 2 ? 'Protected ✓' : 'Configure'}
-                        </span>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <select
-                          value={hint1Question}
-                          onChange={(e) => setHint1Question(e.target.value)}
-                          className="w-full bg-white text-[11px] text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200"
-                        >
-                          {SECURITY_HINT_QUESTIONS.map((q) => (
-                            <option key={q} value={q}>{q}</option>
-                          ))}
-                        </select>
-                        <input
-                          type="text"
-                          value={hint1AnswerDraft}
-                          onChange={(e) => setHint1AnswerDraft(e.target.value)}
-                          placeholder="Answer 1 (e.g. Biryani)"
-                          className="w-full bg-white text-xs text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
-                        />
-
-                        <select
-                          value={hint2Question}
-                          onChange={(e) => setHint2Question(e.target.value)}
-                          className="w-full bg-white text-[11px] text-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-200"
-                        >
-                          {SECURITY_HINT_QUESTIONS.map((q) => (
-                            <option key={q} value={q}>{q}</option>
-                          ))}
-                        </select>
-                        <input
-                          type="text"
-                          value={hint2AnswerDraft}
-                          onChange={(e) => setHint2AnswerDraft(e.target.value)}
-                          placeholder="Answer 2 (e.g. Cat)"
-                          className="w-full bg-white text-xs text-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-200"
-                        />
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (hint1Question === hint2Question) {
-                              setFaceGuardStatus('Choose two different security questions.');
-                              return;
-                            }
-                            if (hint1AnswerDraft.trim().length < 2 || hint2AnswerDraft.trim().length < 2) {
-                              setFaceGuardStatus('Enter both recovery hint answers (at least 2 characters each).');
-                              return;
-                            }
-                            onUpdateSettings({
-                              securityRecoveryHints: [
-                                { question: hint1Question, answerHash: hashSecurityAnswer(hint1AnswerDraft) },
-                                { question: hint2Question, answerHash: hashSecurityAnswer(hint2AnswerDraft) }
-                              ]
-                            });
-                            setHint1AnswerDraft('');
-                            setHint2AnswerDraft('');
-                            setFaceGuardStatus('Security Recovery Hints saved! Thieves cannot reset your PIN without these.');
-                            playHapticSound('message_sent');
-                          }}
-                          className="w-full py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-bold"
-                        >
-                          Save Security Recovery Hints
-                        </button>
-                      </div>
+                      ))}
                     </div>
-
-                    <div className="text-[10px] text-slate-500 pt-0.5">
-                      Failed attempts counter: {getFailedSecurityAttempts()} / {settings.securityMaxAttempts || 3}
+                  ) : (
+                    <div className="p-2.5 rounded-xl bg-slate-50 border border-dashed border-slate-200 text-[11px] text-slate-500 text-center">
+                      No custom sound triggers saved yet. Tap Whistle (শিস) or Finger Snap above to record yours!
                     </div>
-                  </div>
+                  )}
 
-                  {faceGuardStatus && (
-                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] text-rose-900 font-medium">
-                      {faceGuardStatus}
+                  {bgServiceStatus && (
+                    <div className="p-2.5 rounded-xl bg-indigo-50 border border-indigo-200 text-[11px] text-indigo-900 font-medium">
+                      {bgServiceStatus}
                     </div>
                   )}
                 </div>
@@ -3499,7 +3196,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                 </div>
 
                 {/* Official Application Info Card */}
-                <div className="p-4 bg-white/90 border border-slate-200/80 rounded-2xl shadow-xs space-y-2 text-center">
+                <div className="p-4 bg-white/90 border border-slate-200/80 rounded-2xl shadow-xs space-y-2.5 text-center flex flex-col items-center">
+                  <img
+                    src="/zuzu-logo.png"
+                    alt="Zuzu AI"
+                    className="w-16 h-16 rounded-2xl object-cover shadow-md border border-purple-200"
+                  />
                   <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-50 text-purple-700 text-xs font-bold border border-purple-200">
                     <span>Zuzu AI</span>
                     <span className="text-[10px] font-mono opacity-60">• v{APP_VERSION}-android</span>
@@ -3595,35 +3297,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
         </div>
       )}
 
-      {/* Live Front Camera Face Scanner Modal (Enroll up to 5 poses & Real-Time Verify) */}
-      <FaceScannerModal
-        isOpen={faceScannerMode !== null}
-        mode={faceScannerMode || 'verify'}
-        existingProfiles={settings.ownerFaceProfiles || []}
-        legacyDescriptor={settings.ownerFaceDescriptor}
-        lockOnStranger={true}
-        onClose={() => setFaceScannerMode(null)}
-        onEnrolledProfile={(profile) => {
-          const current = settings.ownerFaceProfiles || [];
-          const merged = [...current, profile].slice(0, MAX_OWNER_FACE_PROFILES);
-          onUpdateSettings({
-            ownerFaceEnrolled: true,
-            ownerFaceProfiles: merged,
-            ownerFaceDescriptor: merged[0].descriptor
-          });
-          setFaceGuardStatus(
-            `Enrolled ${profile.label} ✓ (${merged.length}/${MAX_OWNER_FACE_PROFILES} poses active).`
-          );
-        }}
-        onVerifiedSuccess={(detail) => {
-          setFaceScannerMode(null);
-          setFaceGuardStatus(detail);
-        }}
-        onUnrecognizedLocked={(detail) => {
-          setFaceScannerMode(null);
-          setFaceGuardStatus(detail);
-        }}
-      />
     </div>
   );
 };

@@ -1,20 +1,27 @@
 {
   "entities": {
-    "NusuAccount": {
-      "title": "NUSU Account Identity",
-      "description": "Publicly addressable account metadata using unique NU-XXXXXX identifier without exposing raw PII or chat data.",
+    "SuAccount": {
+      "title": "SU-ID Account Identity",
+      "description": "Publicly addressable account metadata using custom lowercase username/SU-ID key without exposing raw PII or chat data.",
       "type": "object",
       "properties": {
         "accountId": {
           "type": "string",
-          "description": "Unique NUSU identifier in format NU-XXXXXX",
-          "pattern": "^NU-[0-9]{6}$",
-          "minLength": 9,
-          "maxLength": 9
+          "description": "Normalized canonical SU-ID lookup key derived from custom alphanumeric username",
+          "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
+          "minLength": 3,
+          "maxLength": 32
+        },
+        "username": {
+          "type": "string",
+          "description": "User's chosen custom Username (letters and numbers, optional _ or -)",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$",
+          "minLength": 3,
+          "maxLength": 32
         },
         "fullName": {
           "type": "string",
-          "description": "User full name or username",
+          "description": "Display full name",
           "minLength": 1,
           "maxLength": 80
         },
@@ -33,7 +40,7 @@
         },
         "passwordHash": {
           "type": "string",
-          "description": "Salted SHA-256/PBKDF2 password digest",
+          "description": "Salted SHA-256 password digest",
           "pattern": "^[a-f0-9]+$",
           "minLength": 64,
           "maxLength": 128
@@ -58,6 +65,7 @@
       },
       "required": [
         "accountId",
+        "username",
         "fullName",
         "phoneMasked",
         "passwordSalt",
@@ -67,16 +75,22 @@
         "updatedAt"
       ]
     },
-    "NusuVault": {
-      "title": "NUSU Persistent Memory & Backup Vault",
-      "description": "Encrypted/capability-keyed backup containing user phone identifier, chat history, voice sessions, assistant memories, and security settings.",
+    "SuVault": {
+      "title": "SU-ID Persistent Memory & Backup Vault",
+      "description": "Capability-keyed backup containing user phone identifier, chat history, voice sessions, assistant memories, and assistant settings.",
       "type": "object",
       "properties": {
         "accountId": {
           "type": "string",
-          "pattern": "^NU-[0-9]{6}$",
-          "minLength": 9,
-          "maxLength": 9
+          "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
+          "minLength": 3,
+          "maxLength": 32
+        },
+        "username": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$",
+          "minLength": 3,
+          "maxLength": 32
         },
         "phone": {
           "type": "string",
@@ -103,7 +117,7 @@
         },
         "settings": {
           "type": "object",
-          "description": "Persisted app settings, wake word config, Master PIN hash, and owner face descriptor"
+          "description": "Persisted app settings, voice identity preferences, and wake word configuration"
         },
         "createdAt": {
           "type": "string",
@@ -116,6 +130,7 @@
       },
       "required": [
         "accountId",
+        "username",
         "phone",
         "fullName",
         "chatHistory",
@@ -128,15 +143,15 @@
     }
   },
   "firestore": {
-    "/nusu_accounts/{nusuId}": {
+    "/su_accounts/{suId}": {
       "schema": {
-        "$ref": "#/entities/NusuAccount"
+        "$ref": "#/entities/SuAccount"
       },
-      "description": "NUSU Account identity lookup document keyed by NU-XXXXXX."
+      "description": "SU-ID Account identity lookup document keyed by normalized custom username."
     },
-    "/nusu_accounts/{nusuId}/vault/{vaultId}": {
+    "/su_accounts/{suId}/vault/{vaultId}": {
       "schema": {
-        "$ref": "#/entities/NusuVault"
+        "$ref": "#/entities/SuVault"
       },
       "description": "Private capability-protected vault storing user PII, chat histories, voice sessions, memories, and settings across uninstall/reinstall."
     }

@@ -31,7 +31,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   };
 
   return (
-    <header className="px-4 py-2.5 bg-white/70 backdrop-blur-xl border-b border-purple-100/70 flex items-center justify-between z-30 select-none shadow-sm shadow-purple-950/5">
+    <header className="px-4 pt-[max(env(safe-area-inset-top,0px),0.65rem)] pb-2.5 bg-white/75 backdrop-blur-xl border-b border-purple-100/70 flex items-center justify-between z-30 select-none shadow-sm shadow-purple-950/5">
       {/* 1. Upper Left: Chat Shortcut */}
       <button
         onClick={onOpenChat}
@@ -48,13 +48,13 @@ export const TopBar: React.FC<TopBarProps> = ({
           <img
             src="/zuzu-logo.png"
             alt="Zuzu AI"
-            className="w-7 h-7 rounded-xl object-cover shadow-md shadow-purple-600/20 border border-purple-200/80"
+            className="w-10 h-10 rounded-xl object-cover shadow-md shadow-purple-600/20 border border-purple-200/80 flex-shrink-0"
           />
           <span className="font-black text-base tracking-tight text-slate-800">
             Zuzu <span className="bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">AI</span>
           </span>
         </div>
-        <div className="text-[10px] text-purple-700/80 font-medium flex items-center gap-1">
+        <div className="text-[10px] text-purple-700/80 font-medium flex items-center gap-1 mt-0.5">
           <span>{currentIdentity.name}</span>
           <span>•</span>
           <span>{personality.emoji} {personality.name}</span>

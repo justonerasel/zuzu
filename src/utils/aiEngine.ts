@@ -94,6 +94,29 @@ export function generateIntelligentAnswer(options: GenerateResponseOptions): str
     }
   }
 
+  // 0.2 Developer / Creator Persona Knowledge (MD. Rasel Hossen)
+  if (
+    lower.includes('who created you') ||
+    lower.includes('who made you') ||
+    lower.includes('who built you') ||
+    lower.includes('who developed you') ||
+    lower.includes('your creator') ||
+    lower.includes('your developer') ||
+    lower.includes('your author') ||
+    lower.includes('your founder') ||
+    lower.includes('who is rasel') ||
+    lower.includes('do you know rasel') ||
+    lower.includes('about rasel') ||
+    lower.includes('rasel hossen') ||
+    lower.includes('md rasel') ||
+    /কে বানিয়েছে|কে বানিয়েছে|কে তৈরি করেছে|ডেভেলপার কে|তৈরি করেছেন কে|রাসেলকে চেনো|রাসেল কে/i.test(q)
+  ) {
+    if (isBengali) {
+      return `আমাকে তৈরি ও ডেভেলপ করেছেন **রাসেল (MD. Rasel Hossen)**! তিনি বাংলাদেশের একজন কম্পিউটার সায়েন্স শিক্ষার্থী এবং ফুল-স্ট্যাক ও অ্যান্ড্রয়েড ডেভেলপার। তাঁর গিটহাব ও টিকটক আইডি হলো @justonerasel। তাঁর দক্ষতা ও ভালোবাসায় তৈরি হয়ে আমি এখন আপনার স্মার্ট এআই সহকারী হিসেবে কাজ করছি!`;
+    }
+    return `I was created and developed by **Rasel (MD. Rasel Hossen)**! He is a Computer Science student and full-stack Android & AI developer from Bangladesh (@justonerasel on GitHub & TikTok). I am proud to be his creation and always ready to help you!`;
+  }
+
   // 1. Identity / Name questions
   if (
     lower.includes('what is your name') ||

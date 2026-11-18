@@ -1,8 +1,0 @@
-{
-  "appId": "com.zuzu.ai.assistant",
-  "appName": "Zuzu AI",
-  "webDir": "dist",
-  "server": {
-    "androidScheme": "https"
-  }
-}

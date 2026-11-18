@@ -47,7 +47,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   };
 
   return (
-    <nav className="h-16 bg-white/85 backdrop-blur-2xl border-t border-purple-100/80 px-2 flex items-center justify-around z-30 select-none relative shadow-lg shadow-purple-950/5">
+    <nav className="min-h-16 pt-1 pb-[max(env(safe-area-inset-bottom,0px),0.25rem)] bg-white/85 backdrop-blur-2xl border-t border-purple-100/80 px-2 flex items-center justify-around z-30 select-none relative shadow-lg shadow-purple-950/5">
       {/* 1. Home */}
       <button
         onClick={() => onSelectTab('dashboard')}

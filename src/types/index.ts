@@ -160,42 +160,37 @@ export interface AppSettings {
   lastWeatherLon?: number;
   lastWeatherIsGPS?: boolean;
 
-  // Background Service & Always-On Wake Word
+  // Background Service & Always-On Wake Word & Custom Audio Triggers
   foregroundServiceEnabled: boolean;
   wakeWordEnabled: boolean;
   wakeWordPhrase: string;
+  customTriggersEnabled: boolean;
+  customAudioTriggers: CustomAudioTrigger[];
 
-  // Anti-Theft Smart Face Recognition & Master PIN Lock
-  antiTheftEnabled: boolean;
-  masterPinHash: string;
-  ownerFaceEnrolled: boolean;
-  ownerFaceDescriptor?: number[];
-  ownerFaceProfiles?: OwnerFaceProfile[];
-  securityRecoveryHints?: SecurityRecoveryHint[];
-  securityMaxAttempts: number;
-  securityCheckIntervalSec: number;
-
-  // Custom NUSU Account Persistence (NU-XXXXXX + Firebase Firestore)
-  nusuAccountId?: string;
-  nusuFullName?: string;
-  nusuPhone?: string;
-  nusuToken?: string;
-  nusuVaultKey?: string;
-  nusuLastSyncedAt?: number;
+  // Custom SU-ID Account Persistence (Custom Username + Firebase Firestore)
+  suAccountId?: string;
+  suUsername?: string;
+  suFullName?: string;
+  suPhone?: string;
+  suToken?: string;
+  suVaultKey?: string;
+  suLastSyncedAt?: number;
 }
 
-export interface OwnerFaceProfile {
+export type CustomAudioTriggerKind = 'whistle' | 'snap' | 'custom';
+
+export interface CustomAudioTrigger {
   id: string;
   label: string;
-  thumbnail: string;
-  descriptor: number[];
+  kind: CustomAudioTriggerKind;
+  peakHz: number;
+  centroidHz: number;
+  tonalityRatio: number;
+  crestFactor: number;
+  rmsThreshold: number;
+  bandProfile: number[];
+  sensitivity: number;
   createdAt: number;
-  source: 'camera' | 'upload';
-}
-
-export interface SecurityRecoveryHint {
-  question: string;
-  answerHash: string;
 }
 
 export type ActiveTab = 'dashboard' | 'chat' | 'voice' | 'history' | 'settings' | 'updates' | 'image_creator';

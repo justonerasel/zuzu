@@ -335,7 +335,7 @@ export const UpdatesView: React.FC<UpdatesViewProps> = ({ onForceUpdateTriggered
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in select-none">
           <div className="bg-white border border-purple-200 rounded-3xl p-6 max-w-sm w-full text-center shadow-2xl relative overflow-hidden text-slate-800">
             {/* Header Icon */}
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mx-auto mb-3 flex items-center justify-center overflow-hidden">
+            <div className="w-20 h-20 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mx-auto mb-3 flex items-center justify-center overflow-hidden">
               <img
                 src="/zuzu-logo.png"
                 alt="Zuzu AI"

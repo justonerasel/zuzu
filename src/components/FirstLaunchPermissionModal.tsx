@@ -1,16 +1,15 @@
 import React, { useState } from 'react';
-import { 
-  ShieldCheck, 
-  Mic, 
-  MapPin, 
-  Sparkles, 
-  CheckCircle2, 
-  X, 
+import {
+  Mic,
+  Bell,
+  Sparkles,
   Lock,
   ChevronRight
 } from 'lucide-react';
-import { requestMicrophonePermission } from '../utils/permission';
-import { playHapticSound } from '../utils/audio';
+import {
+  requestMicrophonePermission,
+  requestNotificationPermission
+} from '../utils/permission';
 
 interface FirstLaunchPermissionModalProps {
   isOpen: boolean;
@@ -23,67 +22,39 @@ export const FirstLaunchPermissionModal: React.FC<FirstLaunchPermissionModalProp
 }) => {
   const [isRequesting, setIsRequesting] = useState(false);
   const [micGranted, setMicGranted] = useState<boolean | null>(null);
-  const [locGranted, setLocGranted] = useState<boolean | null>(null);
+  const [notifGranted, setNotifGranted] = useState<boolean | null>(null);
 
   if (!isOpen) return null;
 
   const handleAllowContinue = async () => {
     setIsRequesting(true);
-    playHapticSound('message_sent');
 
-    // 1. Request Microphone
-    let micOk = false;
+    // 1. Request Microphone cleanly once (syncs native & WebView keys)
     try {
       const micRes = await requestMicrophonePermission();
-      micOk = micRes.success && micRes.state === 'granted';
+      const micOk = micRes.success && micRes.state === 'granted';
       setMicGranted(micOk);
-      localStorage.setItem('zuzu_perm_status_microphone', micOk ? 'granted' : 'denied');
     } catch {
       setMicGranted(false);
-      localStorage.setItem('zuzu_perm_status_microphone', 'denied');
     }
 
-    // 2. Request Location
-    let locOk = false;
-    if (typeof window !== 'undefined' && 'geolocation' in navigator) {
-      try {
-        await new Promise<void>((resolve) => {
-          navigator.geolocation.getCurrentPosition(
-            () => {
-              locOk = true;
-              setLocGranted(true);
-              localStorage.setItem('zuzu_perm_status_location', 'granted');
-              resolve();
-            },
-            () => {
-              locOk = false;
-              setLocGranted(false);
-              localStorage.setItem('zuzu_perm_status_location', 'denied');
-              resolve();
-            },
-            { timeout: 5000, enableHighAccuracy: true }
-          );
-        });
-      } catch {
-        setLocGranted(false);
-        localStorage.setItem('zuzu_perm_status_location', 'denied');
-      }
+    // 2. Request Notifications cleanly once (for Android 13+ silent service & reminders)
+    try {
+      const notifRes = await requestNotificationPermission();
+      setNotifGranted(notifRes.success);
+    } catch {
+      setNotifGranted(false);
     }
 
     setIsRequesting(false);
-    playHapticSound('listen_start');
-
-    // Mark first launch finished in localStorage
     localStorage.setItem('zuzu_first_launch_done', 'true');
 
     setTimeout(() => {
       onFinish();
-    }, 600);
+    }, 550);
   };
 
   const handleNotNow = () => {
-    playHapticSound('listen_stop');
-    // Set first launch flag so user is not prompted again immediately
     localStorage.setItem('zuzu_first_launch_done', 'true');
     onFinish();
   };
@@ -97,7 +68,7 @@ export const FirstLaunchPermissionModal: React.FC<FirstLaunchPermissionModalProp
 
         {/* Modal Header */}
         <div className="flex flex-col items-center text-center">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mb-3 flex items-center justify-center overflow-hidden">
+          <div className="w-20 h-20 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-0.5 shadow-lg shadow-purple-200 mb-3 flex items-center justify-center overflow-hidden">
             <img
               src="/zuzu-logo.png"
               alt="Zuzu AI"
@@ -111,11 +82,11 @@ export const FirstLaunchPermissionModal: React.FC<FirstLaunchPermissionModalProp
           </div>
 
           <h3 className="text-lg font-black text-slate-900 tracking-tight">
-            Enable Permissions for Best Experience
+            Enable Essential Permissions
           </h3>
 
           <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
-            Zuzu AI needs permission to hear your voice commands and provide hyper-local weather and reminders.
+            Zuzu AI only needs Microphone and Notification access for voice chat and silent background listening.
           </p>
         </div>
 
@@ -136,37 +107,37 @@ export const FirstLaunchPermissionModal: React.FC<FirstLaunchPermissionModalProp
                 )}
                 {micGranted === false && (
                   <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.2 rounded-full">
-                    Denied ✗
+                    Declined
                   </span>
                 )}
               </div>
               <p className="text-[10px] text-slate-500 leading-snug mt-0.5">
-                Powers real-time dual-gender voice conversations and continuous hands-free listening.
+                Hear your spoken questions in Bangla &amp; English and respond hands-free.
               </p>
             </div>
           </div>
 
-          {/* 2. Precise Location */}
+          {/* 2. Notifications */}
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl flex items-start gap-3">
             <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <MapPin className="w-5 h-5" />
+              <Bell className="w-5 h-5" />
             </div>
             <div className="flex-1 text-left">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-900">Precise Location</span>
-                {locGranted === true && (
+                <span className="text-xs font-bold text-slate-900">Assistant Notifications</span>
+                {notifGranted === true && (
                   <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded-full">
                     Granted ✓
                   </span>
                 )}
-                {locGranted === false && (
+                {notifGranted === false && (
                   <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.2 rounded-full">
-                    Denied ✗
+                    Declined
                   </span>
                 )}
               </div>
               <p className="text-[10px] text-slate-500 leading-snug mt-0.5">
-                Powers your live weather card and contextual local time &amp; weather forecasts.
+                Keeps the silent Wake Word service alive smoothly with zero sound or vibration.
               </p>
             </div>
           </div>
@@ -175,7 +146,7 @@ export const FirstLaunchPermissionModal: React.FC<FirstLaunchPermissionModalProp
         {/* Security badge */}
         <div className="mt-3.5 flex items-center justify-center gap-1.5 text-[10px] text-slate-500 font-medium">
           <Lock className="w-3 h-3 text-purple-600" />
-          <span>Your data stays private &amp; processed on-device</span>
+          <span>Lightweight, private &amp; asks only what is essential</span>
         </div>
 
         {/* Actions: Allow / Continue and Not Now */}

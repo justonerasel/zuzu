@@ -18,12 +18,13 @@ import androidx.core.app.NotificationCompat;
 
 /**
  * Persistent Silent Android Foreground Service for Zuzu AI.
- * Keeps background Wake-Word listening and Security Guard monitoring alive
- * across Android 9 - Android 16 (API 28 - 36) with ZERO notification sound or vibration.
+ * Keeps background Wake-Word listening alive across Android 9 - Android 16
+ * with IMPORTANCE_MIN, zero sound, and zero vibration.
  */
 public class ZuzuForegroundService extends Service {
-    public static final String CHANNEL_ID = "zuzu_ai_silent_bg_v2";
-    private static final String LEGACY_CHANNEL_ID = "zuzu_ai_foreground_channel";
+    public static final String CHANNEL_ID = "zuzu_ai_silent_guard_v3";
+    private static final String LEGACY_CHANNEL_V1 = "zuzu_ai_foreground_channel";
+    private static final String LEGACY_CHANNEL_V2 = "zuzu_ai_silent_bg_v2";
     public static final int NOTIFICATION_ID = 36101;
     public static final String PREFS_NAME = "ZuzuNativePrefs";
     public static final String KEY_SERVICE_ENABLED = "foreground_enabled";
@@ -82,13 +83,7 @@ public class ZuzuForegroundService extends Service {
         Notification notification = buildSilentNotification(wakeWord);
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                );
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                         NOTIFICATION_ID,
                         notification,
@@ -98,7 +93,6 @@ public class ZuzuForegroundService extends Service {
                 startForeground(NOTIFICATION_ID, notification);
             }
         } catch (Exception e) {
-            // Fallback to basic startForeground if microphone runtime permission isn't granted yet
             try {
                 startForeground(NOTIFICATION_ID, notification);
             } catch (Exception ignored) {}
@@ -130,16 +124,17 @@ public class ZuzuForegroundService extends Service {
         PendingIntent stopPendingIntent = PendingIntent.getService(this, 1, stopIntent, pendingFlags);
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Zuzu AI Active Guard")
-                .setContentText("Silent guard • Listening for \"" + wakeWord + "\"")
+                .setContentTitle("Zuzu AI Assistant")
+                .setContentText("Silent mode • Ready for \"" + wakeWord + "\"")
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setSilent(true)
                 .setSound(null)
-                .setVibrate(new long[]{0L})
+                .setVibrate(null)
                 .setDefaults(0)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setPriority(NotificationCompat.PRIORITY_MIN)
+                .setVisibility(NotificationCompat.VISIBILITY_SECRET)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setContentIntent(contentIntent)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Pause", stopPendingIntent)
@@ -151,10 +146,13 @@ public class ZuzuForegroundService extends Service {
             NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager == null) return;
 
-            // Remove legacy notification channel so Android never keeps old alert sound settings
+            // Delete older channels so Android never keeps old alert sound/vibration caches
             try {
-                if (manager.getNotificationChannel(LEGACY_CHANNEL_ID) != null) {
-                    manager.deleteNotificationChannel(LEGACY_CHANNEL_ID);
+                if (manager.getNotificationChannel(LEGACY_CHANNEL_V1) != null) {
+                    manager.deleteNotificationChannel(LEGACY_CHANNEL_V1);
+                }
+                if (manager.getNotificationChannel(LEGACY_CHANNEL_V2) != null) {
+                    manager.deleteNotificationChannel(LEGACY_CHANNEL_V2);
                 }
             } catch (Exception ignored) {}
 
@@ -162,15 +160,16 @@ public class ZuzuForegroundService extends Service {
             if (existing == null) {
                 NotificationChannel channel = new NotificationChannel(
                         CHANNEL_ID,
-                        "Zuzu AI Background Guard (Silent)",
-                        NotificationManager.IMPORTANCE_LOW
+                        "Zuzu AI Background Assistant (Silent)",
+                        NotificationManager.IMPORTANCE_MIN
                 );
-                channel.setDescription("Silent background listener for Zuzu AI wake-word and anti-theft guard.");
+                channel.setDescription("100% silent background listener for Zuzu AI wake-word.");
                 channel.setSound(null, null);
                 channel.enableVibration(false);
-                channel.setVibrationPattern(new long[]{0L});
+                channel.setVibrationPattern(null);
                 channel.enableLights(false);
                 channel.setShowBadge(false);
+                channel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
                 manager.createNotificationChannel(channel);
             }
         }

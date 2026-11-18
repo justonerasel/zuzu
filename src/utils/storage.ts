@@ -8,9 +8,9 @@ const STORAGE_KEYS = {
   LEGACY_ARCHIVE: 'zuzu_unclassified_archive_v2'
 };
 
-function notifyNusuDataChanged(): void {
+function notifySuDataChanged(): void {
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-    window.dispatchEvent(new CustomEvent('zuzu-nusu-data-changed'));
+    window.dispatchEvent(new CustomEvent('zuzu-su-data-changed'));
   }
 }
 
@@ -35,8 +35,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Voice Options & Live Models Defaults
   selectedVoiceOptionId: 'kore_firm',
   selectedVoiceStyleId: 'kore_firm',
-  selectedVoiceModelId: 'gemini-3.8-live',
-  aiModel: 'gemini-3.8-flash',
+  selectedVoiceModelId: 'gemini-2.5-flash-native-audio',
+  aiModel: 'gemini-2.5-flash',
   stability: 0.5,
   similarityBoost: 0.75,
   speechRate: 1.0,
@@ -78,28 +78,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lastWeatherLon: 90.4125,
   lastWeatherIsGPS: false,
 
-  // Background Service & Always-On Wake Word
+  // Background Service & Always-On Wake Word & Custom Audio Triggers
   foregroundServiceEnabled: true,
   wakeWordEnabled: true,
   wakeWordPhrase: 'wake up zuzu',
+  customTriggersEnabled: true,
+  customAudioTriggers: [],
 
-  // Anti-Theft Smart Face Recognition & Master PIN
-  antiTheftEnabled: false,
-  masterPinHash: '',
-  ownerFaceEnrolled: false,
-  ownerFaceDescriptor: undefined,
-  ownerFaceProfiles: [],
-  securityRecoveryHints: [],
-  securityMaxAttempts: 3,
-  securityCheckIntervalSec: 12,
-
-  // NUSU Account Persistence
-  nusuAccountId: undefined,
-  nusuFullName: undefined,
-  nusuPhone: undefined,
-  nusuToken: undefined,
-  nusuVaultKey: undefined,
-  nusuLastSyncedAt: undefined
+  // SU-ID Account Persistence
+  suAccountId: undefined,
+  suUsername: undefined,
+  suFullName: undefined,
+  suPhone: undefined,
+  suToken: undefined,
+  suVaultKey: undefined,
+  suLastSyncedAt: undefined
 };
 
 
@@ -268,12 +261,12 @@ export function saveChatMessage(message: ChatMessage): void {
   const current = getChatMessages();
   current.push(message);
   localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(current));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
 }
 
 export function clearChatHistory(): void {
   localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify([]));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
 }
 
 // ----------------- VOICE HISTORY STORE (STRICT) -----------------
@@ -305,18 +298,18 @@ export function saveVoiceSession(session: VoiceSession): void {
     sessions.unshift(session);
   }
   localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify(sessions));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
 }
 
 export function deleteVoiceSession(sessionId: string): void {
   const sessions = getVoiceSessions().filter(s => s.id !== sessionId);
   localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify(sessions));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
 }
 
 export function clearVoiceHistory(): void {
   localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify([]));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
 }
 
 // ----------------- SETTINGS STORE -----------------
@@ -340,6 +333,14 @@ export function getAppSettings(): AppSettings {
       combined.elevenLabsFemaleVoiceId = 'EXAVITQu4vr4xnSDxMaL'; // Migrate to Sarah (Free Premade)
       needsResave = true;
     }
+    if (!combined.aiModel || combined.aiModel === 'gemini-3.8-flash') {
+      combined.aiModel = 'gemini-2.5-flash';
+      needsResave = true;
+    }
+    if (!combined.selectedVoiceModelId || combined.selectedVoiceModelId === 'gemini-3.8-live') {
+      combined.selectedVoiceModelId = 'gemini-2.5-flash-native-audio';
+      needsResave = true;
+    }
 
     if (needsResave) {
       localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(combined));
@@ -355,7 +356,7 @@ export function saveAppSettings(settings: Partial<AppSettings>): AppSettings {
   const current = getAppSettings();
   const updated: AppSettings = { ...current, ...settings };
   localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
   return updated;
 }
 
@@ -480,7 +481,7 @@ export function saveMemory(
         updatedAt: now
       };
       localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
-      notifyNusuDataChanged();
+      notifySuDataChanged();
       return { success: true, memory: memories[existingIndex] };
     }
   }
@@ -495,7 +496,7 @@ export function saveMemory(
       updatedAt: now
     };
     localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
-    notifyNusuDataChanged();
+    notifySuDataChanged();
     return { success: true, memory: memories[existingKeyIndex] };
   }
 
@@ -512,7 +513,7 @@ export function saveMemory(
 
   memories.unshift(newMemory);
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
   return { success: true, memory: newMemory };
 }
 
@@ -543,7 +544,7 @@ export function updateMemory(id: string, updates: Partial<UserMemory>): { succes
   };
 
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
   return { success: true };
 }
 
@@ -553,7 +554,7 @@ export function updateMemory(id: string, updates: Partial<UserMemory>): { succes
 export function deleteMemory(id: string): void {
   const memories = getMemories().filter(m => m.id !== id);
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(memories));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
 }
 
 /**
@@ -561,7 +562,7 @@ export function deleteMemory(id: string): void {
  */
 export function clearAllMemories(): void {
   localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify([]));
-  notifyNusuDataChanged();
+  notifySuDataChanged();
 }
 
 export interface ZuzuBackupSnapshot {
@@ -573,14 +574,14 @@ export interface ZuzuBackupSnapshot {
 }
 
 /**
- * Exports all isolated stores for persistent NUSU Account cloud backup
+ * Exports all isolated stores for persistent SU-ID Account cloud backup
  */
 export function getAllBackupPayload(): ZuzuBackupSnapshot {
   const settings = getAppSettings();
   // Strip local-only session tokens/vault capability key from cloud-synced settings blob
   const {
-    nusuToken: _omitToken,
-    nusuVaultKey: _omitVaultKey,
+    suToken: _omitToken,
+    suVaultKey: _omitVaultKey,
     ...syncableSettings
   } = settings;
   return {
@@ -615,12 +616,13 @@ export function restoreAllBackupPayload(
     const merged: AppSettings = {
       ...DEFAULT_SETTINGS,
       ...snapshot.settings,
-      nusuAccountId: sessionOverrides?.nusuAccountId || current.nusuAccountId || snapshot.settings.nusuAccountId,
-      nusuFullName: sessionOverrides?.nusuFullName || current.nusuFullName || snapshot.settings.nusuFullName,
-      nusuPhone: sessionOverrides?.nusuPhone || current.nusuPhone || snapshot.settings.nusuPhone,
-      nusuToken: sessionOverrides?.nusuToken || current.nusuToken,
-      nusuVaultKey: sessionOverrides?.nusuVaultKey || current.nusuVaultKey,
-      nusuLastSyncedAt: Date.now()
+      suAccountId: sessionOverrides?.suAccountId || current.suAccountId || snapshot.settings.suAccountId,
+      suUsername: sessionOverrides?.suUsername || current.suUsername || snapshot.settings.suUsername,
+      suFullName: sessionOverrides?.suFullName || current.suFullName || snapshot.settings.suFullName,
+      suPhone: sessionOverrides?.suPhone || current.suPhone || snapshot.settings.suPhone,
+      suToken: sessionOverrides?.suToken || current.suToken,
+      suVaultKey: sessionOverrides?.suVaultKey || current.suVaultKey,
+      suLastSyncedAt: Date.now()
     };
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(merged));
     return merged;

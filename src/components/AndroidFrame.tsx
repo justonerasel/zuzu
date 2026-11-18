@@ -25,9 +25,9 @@ export const AndroidFrame: React.FC<AndroidFrameProps> = ({
   return (
     <div
       style={theme.containerStyle}
-      className="w-full h-screen min-h-dvh flex flex-col overflow-hidden relative font-sans transition-colors duration-300"
+      className="w-full h-dvh min-h-dvh flex flex-col overflow-hidden relative font-sans transition-colors duration-300"
     >
-      {/* Native System Status Bar Integration: clean edge-to-edge container without simulated phone frames or fake batteries */}
+      {/* Full-screen Edge-to-Edge Container extending smoothly behind status bar, notch, and battery area */}
       <div className="flex-1 flex flex-col overflow-hidden relative w-full h-full">
         {children}
       </div>

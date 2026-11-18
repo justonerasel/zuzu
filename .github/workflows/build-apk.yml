@@ -45,7 +45,7 @@ jobs:
         env:
           CI: 'true'
         run: |
-          if [ ! -f "capacitor.config.json" ]; then
+          if [ ! -f "capacitor.config.ts" ] && [ ! -f "capacitor.config.json" ]; then
             echo '{"appId":"com.zuzu.ai.assistant","appName":"Zuzu AI","webDir":"dist","server":{"androidScheme":"https"}}' > capacitor.config.json
           fi
           rm -rf android
@@ -57,13 +57,12 @@ jobs:
           if [ -d "native-android/app/src/main/res" ]; then
             mkdir -p android/app/src/main/res
             cp -rv native-android/app/src/main/res/* android/app/src/main/res/
-            rm -rf android/app/src/main/res/mipmap-anydpi-v26
           fi
           npx cap sync android
           python3 - <<'PY'
           import os, re, xml.etree.ElementTree as ET
 
-          # 1. Add required Android permissions, Foreground Service & Boot Receiver
+          # 1. Add essential Android assistant permissions, queries, Foreground Service & Boot Receiver
           p = "android/app/src/main/AndroidManifest.xml"
           assert os.path.exists(p), "Missing android/app/src/main/AndroidManifest.xml"
           s = open(p, encoding="utf-8").read()
@@ -75,21 +74,10 @@ jobs:
               "android.permission.VIBRATE",
               "android.permission.FOREGROUND_SERVICE",
               "android.permission.FOREGROUND_SERVICE_MICROPHONE",
-              "android.permission.FOREGROUND_SERVICE_CAMERA",
               "android.permission.WAKE_LOCK",
               "android.permission.RECEIVE_BOOT_COMPLETED",
               "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
               "android.permission.POST_NOTIFICATIONS",
-              "android.permission.SYSTEM_ALERT_WINDOW",
-              "android.permission.WRITE_SETTINGS",
-              "android.permission.CAMERA",
-              "android.permission.ACCESS_FINE_LOCATION",
-              "android.permission.ACCESS_COARSE_LOCATION",
-              "android.permission.READ_CONTACTS",
-              "android.permission.CALL_PHONE",
-              "android.permission.READ_MEDIA_IMAGES",
-              "android.permission.READ_EXTERNAL_STORAGE",
-              "android.permission.BLUETOOTH_CONNECT",
           ]
           add = ""
           for x in perms:
@@ -97,6 +85,20 @@ jobs:
                   add += '    <uses-permission android:name="%s" />\n' % x
           if add:
               s = s.replace("</manifest>", add + "</manifest>")
+
+          if "android.speech.RecognitionService" not in s:
+              queries = "\n".join([
+                  "    <queries>",
+                  "        <intent>",
+                  '            <action android:name="android.speech.RecognitionService" />',
+                  "        </intent>",
+                  "        <intent>",
+                  '            <action android:name="android.intent.action.TTS_SERVICE" />',
+                  "        </intent>",
+                  "    </queries>",
+                  "</manifest>",
+              ])
+              s = s.replace("</manifest>", queries)
 
           if "ZuzuForegroundService" not in s:
               svc = "\n".join([

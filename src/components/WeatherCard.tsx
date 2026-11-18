@@ -133,7 +133,7 @@ export const WeatherCard: React.FC = () => {
 
       setWeather(weatherObj);
 
-      // Save to localStorage for quick restore on app launch
+      // Save to localStorage for quick restore on app launch & smart wake greetings
       try {
         localStorage.setItem(STORAGE_LAST_GPS_KEY, JSON.stringify({
           lat,
@@ -141,6 +141,16 @@ export const WeatherCard: React.FC = () => {
           city: resolvedCity,
           country: resolvedCountry,
           timestamp: Date.now()
+        }));
+        localStorage.setItem('zuzu_cached_weather_v1', JSON.stringify({
+          city: resolvedCity,
+          country: resolvedCountry,
+          temperature: weatherObj.temperature,
+          feelsLike: weatherObj.feelsLike,
+          condition: weatherObj.condition,
+          code: weatherObj.code,
+          isDay: weatherObj.isDay,
+          updatedAt: Date.now()
         }));
       } catch {}
     } catch (err: any) {

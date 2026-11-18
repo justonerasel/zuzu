@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { generateIntelligentAnswer } from './src/utils/aiEngine.ts';
 
 dotenv.config();
@@ -47,12 +47,13 @@ const CURATED_PREMADE_VOICES = [
   { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', gender: 'female', category: 'premade', description: 'Clear narrative female voice' }
 ];
 
-// ---------------- PERSISTENT NUSU ACCOUNT CLOUD STORE ----------------
+// ---------------- PERSISTENT SU-ID ACCOUNT CLOUD STORE ----------------
 const DATA_DIR = path.resolve(__dirname, 'data');
-const NUSU_DB_PATH = path.join(DATA_DIR, 'nusu_accounts.json');
+const SU_DB_PATH = path.join(DATA_DIR, 'su_accounts.json');
 
-interface NusuAccountRecord {
-  accountId: string; // e.g., NU-482915
+interface SuAccountRecord {
+  accountId: string; // canonical lowercase username (e.g., rasel99 -> SU-rasel99)
+  username: string;
   displayName: string;
   passwordSalt: string;
   passwordHash: string;
@@ -68,52 +69,55 @@ interface NusuAccountRecord {
   };
 }
 
-function readNusuStore(): Record<string, NusuAccountRecord> {
+function readSuStore(): Record<string, SuAccountRecord> {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    if (!fs.existsSync(NUSU_DB_PATH)) {
+    if (!fs.existsSync(SU_DB_PATH)) {
       return {};
     }
-    const raw = fs.readFileSync(NUSU_DB_PATH, 'utf-8');
+    const raw = fs.readFileSync(SU_DB_PATH, 'utf-8');
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (err) {
-    console.warn('[NUSU Store] Read warning:', err);
+    console.warn('[SU Store] Read warning:', err);
     return {};
   }
 }
 
-function writeNusuStore(store: Record<string, NusuAccountRecord>): void {
+function writeSuStore(store: Record<string, SuAccountRecord>): void {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-  const tmpPath = `${NUSU_DB_PATH}.tmp`;
+  const tmpPath = `${SU_DB_PATH}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), 'utf-8');
-  fs.renameSync(tmpPath, NUSU_DB_PATH);
+  fs.renameSync(tmpPath, SU_DB_PATH);
 }
 
-function hashNusuPassword(password: string, salt?: string): { salt: string; hash: string } {
+function hashSuPassword(password: string, salt?: string): { salt: string; hash: string } {
   const actualSalt = salt || crypto.randomBytes(16).toString('hex');
   const derived = crypto.scryptSync(password, actualSalt, 64).toString('hex');
   return { salt: actualSalt, hash: derived };
 }
 
-function verifyNusuPassword(password: string, salt: string, storedHash: string): boolean {
+function verifySuPassword(password: string, salt: string, storedHash: string): boolean {
   const derived = crypto.scryptSync(password, salt, 64);
   const storedBuf = Buffer.from(storedHash, 'hex');
   if (derived.length !== storedBuf.length) return false;
   return crypto.timingSafeEqual(derived, storedBuf);
 }
 
-function generateUniqueNusuId(existing: Record<string, NusuAccountRecord>): string {
-  for (let i = 0; i < 30; i++) {
-    const digits = crypto.randomInt(100000, 999999);
-    const candidate = `NU-${digits}`;
-    if (!existing[candidate]) return candidate;
-  }
-  return `NU-${Date.now().toString().slice(-6)}`;
+function normalizeSuUsername(rawInput: string): { displayUsername: string; canonicalId: string } {
+  const displayUsername = String(rawInput || '').trim().replace(/^su-/i, '');
+  return {
+    displayUsername,
+    canonicalId: displayUsername.toLowerCase(),
+  };
+}
+
+function isValidSuUsername(username: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$/.test(username);
 }
 
 function compareSemver(a: string, b: string): number {
@@ -172,37 +176,51 @@ app.get('/api/system/check-update', (req, res) => {
     websiteUrl: 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
     downloadAvailable: true,
     message: forceFlag
-      ? `Critical update required (v${LATEST_APP_VERSION}). Please update Zuzu AI to continue with Background Wake-Word, Anti-Theft Face Guard & NUSU Cloud Sync.`
-      : `Zuzu AI is running the latest production build (v${LATEST_APP_VERSION}). Foreground Service, Wake Word, Anti-Theft Face Guard & NUSU Cloud Sync are active.`,
+      ? `Critical update required (v${LATEST_APP_VERSION}). Please update Zuzu AI to continue with Silent Background Wake-Word, Gemini AI & SU-ID Cloud Sync.`
+      : `Zuzu AI is running the latest production build (v${LATEST_APP_VERSION}). Silent Foreground Service, Wake Word, Gemini Voice & SU-ID Cloud Sync are active.`,
     changelogSummary: [
-      '100% Reliable Android Foreground Service with boot persistence & battery exemption controls',
-      'Always-On Wake Word background listener ("Wake up Zuzu") with seamless voice handoff',
-      'Anti-Theft Smart Face Recognition Guard with 3-strike strict Master PIN lock screen',
-      'Custom NUSU Account (NU-XXXXXX) cloud sync preserving chats, memories & settings across reinstalls',
-      'Mandatory Force Update system with direct APK download & OTA verification'
+      '100% Silent Android Foreground Service with boot persistence & battery exemption controls',
+      'Always-On Wake Word background listener ("Wake up Zuzu") with seamless voice capture',
+      'Reliable Gemini 2.5 Flash bilingual (English & Bangla) text & voice responses',
+      'Custom Username SU-ID Account cloud sync preserving chats, memories & settings across reinstalls',
+      'Edge-to-Edge full-screen display layout & scaled crisp Zuzu AI app icon assets'
     ]
   });
 });
 
-// ---------------- NUSU ACCOUNT API ENDPOINTS ----------------
+// ---------------- SU-ID ACCOUNT API ENDPOINTS ----------------
 
-// Register a new NUSU Account (generates unique NU-XXXXXX ID)
-app.post('/api/nusu/register', (req, res) => {
+// Register a new Custom Username SU-ID Account
+app.post('/api/su/register', (req, res) => {
   try {
-    const { password, displayName = 'Zuzu User', initialSnapshot } = req.body || {};
-    if (!password || typeof password !== 'string' || password.trim().length < 4) {
-      return res.status(400).json({ success: false, error: 'Password must be at least 4 characters long.' });
+    const { username, password, displayName = 'Zuzu User', initialSnapshot } = req.body || {};
+    const { displayUsername, canonicalId } = normalizeSuUsername(username);
+    if (!isValidSuUsername(displayUsername)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username must be 3-32 characters (letters & numbers, starting with a letter or digit).'
+      });
+    }
+    if (!password || typeof password !== 'string' || password.trim().length < 6) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters long.' });
     }
 
-    const store = readNusuStore();
-    const accountId = generateUniqueNusuId(store);
-    const { salt, hash } = hashNusuPassword(password.trim());
+    const store = readSuStore();
+    if (store[canonicalId]) {
+      return res.status(409).json({
+        success: false,
+        error: `Username "${displayUsername}" is already registered.`
+      });
+    }
+
+    const { salt, hash } = hashSuPassword(password.trim());
     const sessionToken = crypto.randomBytes(24).toString('hex');
     const now = Date.now();
 
-    const record: NusuAccountRecord = {
-      accountId,
-      displayName: String(displayName).trim() || 'Zuzu User',
+    const record: SuAccountRecord = {
+      accountId: canonicalId,
+      username: displayUsername,
+      displayName: String(displayName).trim() || displayUsername,
       passwordSalt: salt,
       passwordHash: hash,
       sessionToken,
@@ -217,74 +235,75 @@ app.post('/api/nusu/register', (req, res) => {
       }
     };
 
-    store[accountId] = record;
-    writeNusuStore(store);
+    store[canonicalId] = record;
+    writeSuStore(store);
 
     return res.json({
       success: true,
-      accountId,
+      accountId: canonicalId,
+      username: displayUsername,
       displayName: record.displayName,
       token: sessionToken,
       lastSyncedAt: now,
-      message: `NUSU Account ${accountId} created and synced successfully!`
+      message: `SU-ID SU-${displayUsername} created and synced successfully!`
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'Registration failed.' });
   }
 });
 
-// Login to existing NUSU Account (NU-XXXXXX + Password) & restore full memory snapshot
-app.post('/api/nusu/login', (req, res) => {
+// Login to existing SU-ID Account (Username/SU-ID + Password) & restore full memory snapshot
+app.post('/api/su/login', (req, res) => {
   try {
-    const { accountId, password } = req.body || {};
-    const normalizedId = String(accountId || '').trim().toUpperCase();
-    if (!/^NU-\d{6}$/.test(normalizedId)) {
-      return res.status(400).json({ success: false, error: 'Enter a valid NUSU ID (format: NU-XXXXXX).' });
+    const { username, accountId, password } = req.body || {};
+    const { displayUsername, canonicalId } = normalizeSuUsername(username || accountId);
+    if (!isValidSuUsername(displayUsername)) {
+      return res.status(400).json({ success: false, error: 'Enter a valid Username or SU-ID (3-32 letters/numbers).' });
     }
     if (!password || typeof password !== 'string') {
       return res.status(400).json({ success: false, error: 'Password is required.' });
     }
 
-    const store = readNusuStore();
-    const record = store[normalizedId];
+    const store = readSuStore();
+    const record = store[canonicalId];
     if (!record) {
-      return res.status(404).json({ success: false, error: `No NUSU Account found for ${normalizedId}.` });
+      return res.status(404).json({ success: false, error: `No SU-ID Account found for "${displayUsername}".` });
     }
 
-    if (!verifyNusuPassword(password.trim(), record.passwordSalt, record.passwordHash)) {
-      return res.status(401).json({ success: false, error: 'Incorrect password for this NUSU Account.' });
+    if (!verifySuPassword(password.trim(), record.passwordSalt, record.passwordHash)) {
+      return res.status(401).json({ success: false, error: 'Incorrect password for this SU-ID Account.' });
     }
 
-    // Rotate/issue fresh token on login
     const newToken = crypto.randomBytes(24).toString('hex');
     record.sessionToken = newToken;
-    store[normalizedId] = record;
-    writeNusuStore(store);
+    store[canonicalId] = record;
+    writeSuStore(store);
 
     return res.json({
       success: true,
       accountId: record.accountId,
+      username: record.username,
       displayName: record.displayName,
       token: newToken,
       lastSyncedAt: record.lastSyncedAt,
       snapshot: record.snapshot,
-      message: `Signed in as ${record.accountId}. All memories and chats restored!`
+      message: `Signed in as SU-${record.username}. All memories and chats restored!`
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'Login failed.' });
   }
 });
 
-// Sync local data (chats, voice sessions, memories, settings, face enrollment) to NUSU Account
-app.post('/api/nusu/sync', (req, res) => {
+// Sync local data (chats, voice sessions, memories, settings, face enrollment) to SU-ID Account
+app.post('/api/su/sync', (req, res) => {
   try {
     const { accountId, token, snapshot } = req.body || {};
-    const normalizedId = String(accountId || '').trim().toUpperCase();
-    const store = readNusuStore();
-    const record = store[normalizedId];
+    const { canonicalId } = normalizeSuUsername(accountId);
+    const store = readSuStore();
+    const record = store[canonicalId];
 
     if (!record) {
-      return res.status(404).json({ success: false, error: 'NUSU Account not found.' });
+      return res.status(404).json({ success: false, error: 'SU-ID Account not found.' });
     }
     if (!token || record.sessionToken !== token) {
       return res.status(401).json({ success: false, error: 'Session expired. Please sign in again.' });
@@ -302,12 +321,13 @@ app.post('/api/nusu/sync', (req, res) => {
       savedAt: now
     };
 
-    store[normalizedId] = record;
-    writeNusuStore(store);
+    store[canonicalId] = record;
+    writeSuStore(store);
 
     return res.json({
       success: true,
       accountId: record.accountId,
+      username: record.username,
       lastSyncedAt: now,
       stats: {
         chatCount: record.snapshot.chatHistory.length,
@@ -320,24 +340,24 @@ app.post('/api/nusu/sync', (req, res) => {
   }
 });
 
-// Check NUSU Account metadata status
-app.get('/api/nusu/status/:accountId', (req, res) => {
-  const normalizedId = String(req.params.accountId || '').trim().toUpperCase();
-  const store = readNusuStore();
-  const record = store[normalizedId];
+// Check SU-ID Account metadata status
+app.get('/api/su/status/:accountId', (req, res) => {
+  const { canonicalId } = normalizeSuUsername(req.params.accountId);
+  const store = readSuStore();
+  const record = store[canonicalId];
   if (!record) {
     return res.status(404).json({ exists: false });
   }
   return res.json({
     exists: true,
     accountId: record.accountId,
+    username: record.username,
     displayName: record.displayName,
     lastSyncedAt: record.lastSyncedAt,
     stats: {
       chatCount: record.snapshot.chatHistory.length,
       voiceCount: record.snapshot.voiceSessions.length,
-      memoryCount: record.snapshot.memories.length,
-      faceEnrolled: Boolean(record.snapshot.settings?.ownerFaceEnrolled)
+      memoryCount: record.snapshot.memories.length
     }
   });
 });
@@ -395,74 +415,54 @@ const handleTestAiProvider = async (req: express.Request, res: express.Response)
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
     });
 
-    // 1. Try gemini-3.8-flash first
     try {
       await client.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.5-flash',
         contents: 'Ping test. Reply with "OK" only.',
       });
       const latency = Date.now() - startTime;
       return res.json({
         success: true,
         provider: 'gemini',
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.5-flash',
         latencyMs: latency,
-        message: `Connected successfully (${latency}ms) • gemini-3.8-flash`
+        message: `Connected successfully (${latency}ms) • gemini-2.5-flash`
       });
-    } catch (err38: any) {
-      console.log('[Zuzu AI] gemini-3.8-flash test note:', err38?.message);
+    } catch (err25: any) {
+      console.log('[Zuzu AI] gemini-2.5-flash test note:', err25?.message);
 
-      // 2. Fallback to gemini-2.5-flash
+      // Fallback to Google REST models endpoint verification
       try {
-        await client.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: 'Ping test. Reply with "OK" only.',
-        });
-        const latency = Date.now() - startTime;
-        return res.json({
-          success: true,
-          provider: 'gemini',
-          model: 'gemini-2.5-flash',
-          latencyMs: latency,
-          message: `Connected successfully (${latency}ms) • gemini-2.5-flash`
-        });
-      } catch (err25: any) {
-        console.log('[Zuzu AI] gemini-2.5-flash test note:', err25?.message);
-
-        // 3. Fallback to Google REST models endpoint verification
-        try {
-          const restRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmedKey)}`);
-          if (restRes.ok) {
-            const latency = Date.now() - startTime;
-            return res.json({
-              success: true,
-              provider: 'gemini',
-              model: 'gemini-verified',
-              latencyMs: latency,
-              message: `Connected successfully (${latency}ms) • Google Gemini Key Verified`
-            });
-          }
-        } catch {
-          // ignore network error on fallback
+        const restRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmedKey)}`);
+        if (restRes.ok) {
+          const latency = Date.now() - startTime;
+          return res.json({
+            success: true,
+            provider: 'gemini',
+            model: 'gemini-2.5-flash',
+            latencyMs: latency,
+            message: `Connected successfully (${latency}ms) • Google Gemini Key Verified`
+          });
         }
-
-        // Clean user-friendly message
-        const rawErr = err25?.message || err38?.message || 'Failed to authenticate with Google Gemini API.';
-        let userMessage = rawErr;
-        if (rawErr.includes('API_KEY_INVALID') || rawErr.includes('API key not valid')) {
-          userMessage = 'Invalid API Key. Please verify your key in Google AI Studio.';
-        } else if (rawErr.includes('RESOURCE_EXHAUSTED') || rawErr.includes('429')) {
-          userMessage = 'Google AI Studio quota reached for this key.';
-        } else if (rawErr.includes('PERMISSION_DENIED') || rawErr.includes('403')) {
-          userMessage = 'Permission denied. Ensure the Generative Language API is enabled.';
-        }
-
-        return res.status(400).json({
-          success: false,
-          provider: 'gemini',
-          error: userMessage
-        });
+      } catch {
+        // ignore network error on fallback
       }
+
+      const rawErr = err25?.message || 'Failed to authenticate with Google Gemini API.';
+      let userMessage = rawErr;
+      if (rawErr.includes('API_KEY_INVALID') || rawErr.includes('API key not valid')) {
+        userMessage = 'Invalid API Key. Please verify your key in Google AI Studio.';
+      } else if (rawErr.includes('RESOURCE_EXHAUSTED') || rawErr.includes('429')) {
+        userMessage = 'Google AI Studio quota reached for this key.';
+      } else if (rawErr.includes('PERMISSION_DENIED') || rawErr.includes('403')) {
+        userMessage = 'Permission denied. Ensure the Generative Language API is enabled.';
+      }
+
+      return res.status(400).json({
+        success: false,
+        provider: 'gemini',
+        error: userMessage
+      });
     }
   }
 
@@ -616,7 +616,7 @@ app.post('/api/generate-caption', async (req, res) => {
     });
 
     const response = await clientAi.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-2.5-flash',
       contents: {
         parts: [
           {
@@ -714,6 +714,11 @@ Always remain in character as ${identityName}.
 Your official application name is strictly "Zuzu AI".
 The user may affectionately call you by their custom nickname "${assistantNickname || 'Zuzu'}". If they do, respond warmly as ${assistantNickname}.
 The user's preferred name/nickname is "${userNickname || 'Friend'}".
+
+CREATOR & DEVELOPER IDENTITY (MANDATORY KNOWLEDGE):
+- Your creator, author, and lead developer is **Rasel (MD. Rasel Hossen)**, a Computer Science student and full-stack Android & AI developer from Bangladesh (GitHub & TikTok: @justonerasel).
+- Whenever anyone asks "Who created you?", "Who built you?", "Who made you?", "Who is your developer?", "Do you know Rasel?", "Who is Rasel?", "তোমাকে কে বানিয়েছে?", or "তোমার ডেভেলপার কে?", you must proudly and accurately answer that Zuzu AI was created and developed by **Rasel (MD. Rasel Hossen)**, matching the user's language (English or Bengali).
+
 Language capability: Fluent in Bengali (বাংলা) and English. If the user addresses you in Bengali, respond naturally in Bengali. If in English, respond in English. If code or technical question, provide clear, concise answers.
 
 NATURAL HUMAN CONVERSATIONAL EXPRESSIONS & FILLERS:
@@ -768,6 +773,28 @@ GUIDELINES FOR GF MODE:
       systemInstruction += `\n\nUSER PERSISTENT LONG-TERM MEMORY (Stored locally on device):\n${formattedMemories}\nGuideline: Act upon these personal preferences, name, and facts seamlessly when relevant. Do not contradict verified memories.`;
     }
 
+    let lastCloudError: { status: number; message: string } | null = null;
+
+    if (defaultProvider === 'local') {
+      const answer = generateIntelligentAnswer({
+        userQuestion: latestUserMsg,
+        conversationHistory: messages,
+        personality,
+        voiceIdentity,
+        customPersonalityPrompt,
+        isVoiceMode,
+        memories,
+        memoryEnabled
+      });
+      return res.json({
+        reply: answer,
+        model: 'zuzu-neural-engine',
+        isCloudAI: false,
+        hasGeminiKey: Boolean(effectiveGeminiKey && effectiveGeminiKey !== 'MY_GEMINI_API_KEY'),
+        hasGrokKey: Boolean(effectiveGrokKey)
+      });
+    }
+
     // 1. Try Grok if default provider is grok
     if (defaultProvider === 'grok' && effectiveGrokKey) {
       try {
@@ -780,8 +807,9 @@ GUIDELINES FOR GF MODE:
             provider: 'xai_grok'
           });
         }
-      } catch (grokErr) {
-        console.warn('[Zuzu AI] Grok primary attempt failed, evaluating fallback...');
+      } catch (grokErr: any) {
+        lastCloudError = { status: 502, message: grokErr?.message || 'xAI Grok request failed.' };
+        console.warn('[Zuzu AI] Grok primary attempt failed:', lastCloudError.message);
       }
     }
 
@@ -814,45 +842,53 @@ GUIDELINES FOR GF MODE:
         const contents = formattedContents.length > 0 ? formattedContents : [{ role: 'user', parts: [{ text: latestUserMsg || 'Hello' }] }];
 
         const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(() => reject(new Error('timeout')), 12000);
+          timeoutHandle = setTimeout(() => reject(new Error('Gemini request timed out after 20s.')), 20000);
         });
 
-        let response: any = null;
-        try {
-          response = await Promise.race([
-            clientAi.models.generateContent({
-              model: 'gemini-3.8-flash',
-              contents: contents,
-              config: {
-                systemInstruction: systemInstruction,
-              }
-            }),
-            timeoutPromise
-          ]);
-        } catch (err38) {
-          console.log('[Zuzu AI] 3.8-flash chat attempt note, trying 2.5-flash fallback');
-          response = await clientAi.models.generateContent({
+        const response: any = await Promise.race([
+          clientAi.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: contents,
             config: {
               systemInstruction: systemInstruction,
             }
-          });
-        }
+          }),
+          timeoutPromise
+        ]);
 
         if (timeoutHandle) clearTimeout(timeoutHandle);
 
-        if (response?.text && response.text.trim().length > 0) {
+        const replyText = response?.text?.trim();
+        if (replyText && replyText.length > 0) {
           return res.json({ 
-            reply: response.text.trim(), 
-            model: 'gemini-flash',
+            reply: replyText, 
+            model: 'gemini-2.5-flash',
             isCloudAI: true,
             provider: 'google_gemini'
           });
         }
+
+        lastCloudError = { status: 502, message: 'Gemini returned an empty response. Please try rephrasing your question.' };
       } catch (geminiError: any) {
         if (timeoutHandle) clearTimeout(timeoutHandle);
-        console.log('[Zuzu AI] Gemini chat fallback reached:', geminiError?.message);
+        const rawErr = geminiError?.message || 'Google Gemini request failed.';
+        let status = 502;
+        let friendly = rawErr;
+        if (/API_KEY_INVALID|API key not valid/i.test(rawErr)) {
+          status = 401;
+          friendly = 'Invalid Gemini API Key. Please verify your key in Settings > Zuzu AI.';
+        } else if (/RESOURCE_EXHAUSTED|429|quota/i.test(rawErr)) {
+          status = 429;
+          friendly = 'Gemini API quota exceeded. Please wait a moment or check Google AI Studio limits.';
+        } else if (/PERMISSION_DENIED|403/i.test(rawErr)) {
+          status = 403;
+          friendly = 'Gemini API access denied (403). Enable Generative Language API for this key.';
+        } else if (/timeout|fetch failed|ENOTFOUND|ECONNREFUSED/i.test(rawErr)) {
+          status = 503;
+          friendly = 'Could not reach Google Gemini servers. Check your internet connection.';
+        }
+        lastCloudError = { status, message: friendly };
+        console.warn('[Zuzu AI] Gemini chat error:', rawErr);
       }
     }
 
@@ -868,12 +904,22 @@ GUIDELINES FOR GF MODE:
             provider: 'xai_grok'
           });
         }
-      } catch (grokFallbackErr) {
-        console.warn('[Zuzu AI] Grok fallback also unreachable');
+      } catch (grokFallbackErr: any) {
+        console.warn('[Zuzu AI] Grok fallback error:', grokFallbackErr?.message);
       }
     }
 
-    // 4. Local Neural Reasoning Engine fallback
+    // 4. If a cloud API key was configured and failed, surface the error clearly instead of masking it with a static intro!
+    if (lastCloudError) {
+      return res.status(lastCloudError.status).json({
+        success: false,
+        error: lastCloudError.message,
+        isCloudAI: false,
+        provider: 'google_gemini'
+      });
+    }
+
+    // 5. Local Neural Reasoning Engine (when no API key is configured)
     const answer = generateIntelligentAnswer({
       userQuestion: latestUserMsg,
       conversationHistory: messages,
@@ -889,23 +935,15 @@ GUIDELINES FOR GF MODE:
       reply: answer,
       model: 'zuzu-neural-engine',
       isCloudAI: false,
-      hasGeminiKey: Boolean(effectiveGeminiKey && effectiveGeminiKey !== 'MY_GEMINI_API_KEY'),
-      hasGrokKey: Boolean(effectiveGrokKey)
+      requiresKey: true,
+      hasGeminiKey: false,
+      hasGrokKey: false
     });
   } catch (error: any) {
     console.error('Chat API Error:', error);
-    const fallbackAnswer = generateIntelligentAnswer({
-      userQuestion: req.body?.messages?.slice(-1)[0]?.text || 'Hello',
-      conversationHistory: req.body?.messages || [],
-      personality: req.body?.personality || 'Normal',
-      voiceIdentity: req.body?.voiceIdentity || 'male',
-      memories: req.body?.memories || [],
-      memoryEnabled: req.body?.memoryEnabled ?? true
-    });
-
-    res.json({ 
-      reply: fallbackAnswer,
-      model: 'zuzu-neural-engine-safe',
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Chat service error.',
       isCloudAI: false
     });
   }

@@ -301,3 +301,191 @@ export function getPersonalizedGreeting(settings: AppSettings, localDate: Date =
   };
   return enFlirty[timeSlot][seed] || enFlirty[timeSlot][0];
 }
+
+export interface CachedWeatherSummary {
+  city: string;
+  country?: string;
+  temperature: number;
+  feelsLike?: number;
+  condition: string;
+  code?: number;
+  isDay?: boolean;
+  updatedAt: number;
+}
+
+const CACHED_WEATHER_STORAGE_KEY = 'zuzu_cached_weather_v1';
+const LAST_GPS_STORAGE_KEY = 'zuzu_last_gps_weather';
+
+export function getCachedWeatherSummary(): CachedWeatherSummary | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(CACHED_WEATHER_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.temperature === 'number' && typeof parsed?.condition === 'string') {
+      return parsed as CachedWeatherSummary;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function mapWeatherCodeToText(code: number): string {
+  switch (code) {
+    case 0: return 'Clear Sky';
+    case 1: return 'Mainly Clear';
+    case 2: return 'Partly Cloudy';
+    case 3: return 'Overcast';
+    case 45:
+    case 48: return 'Foggy Mist';
+    case 51:
+    case 53:
+    case 55: return 'Light Drizzle';
+    case 61:
+    case 63:
+    case 65: return 'Rain Shower';
+    case 71:
+    case 73:
+    case 75: return 'Snow Flurries';
+    case 80:
+    case 81:
+    case 82: return 'Heavy Rain Showers';
+    case 95:
+    case 96:
+    case 99: return 'Thunderstorm';
+    default: return 'Partly Cloudy';
+  }
+}
+
+/**
+ * Fetches live Open-Meteo weather quietly using saved GPS coordinates if cache is stale (> 20m).
+ * Resolves within ~1.6s max so wake greetings stay snappy.
+ */
+export async function refreshWeatherCacheSilently(settings?: AppSettings): Promise<CachedWeatherSummary | null> {
+  const existing = getCachedWeatherSummary();
+  if (existing && Date.now() - existing.updatedAt < 1200000) {
+    return existing;
+  }
+
+  let lat = settings?.lastWeatherLat;
+  let lon = settings?.lastWeatherLon;
+  let city = settings?.lastWeatherCity || 'Dhaka';
+  let country = settings?.lastWeatherCountry || '';
+
+  try {
+    const rawGps = localStorage.getItem(LAST_GPS_STORAGE_KEY);
+    if (rawGps) {
+      const gps = JSON.parse(rawGps);
+      if (typeof gps?.lat === 'number' && typeof gps?.lon === 'number') {
+        lat = gps.lat;
+        lon = gps.lon;
+        if (gps.city) city = gps.city;
+        if (gps.country) country = gps.country;
+      }
+    }
+  } catch {}
+
+  if (typeof lat !== 'number' || typeof lon !== 'number') {
+    return existing;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1600);
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,is_day,weather_code&timezone=auto`;
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return existing;
+    const data = await res.json();
+    const current = data?.current;
+    if (!current || typeof current.temperature_2m !== 'number') return existing;
+
+    const summary: CachedWeatherSummary = {
+      city,
+      country,
+      temperature: Math.round(current.temperature_2m),
+      feelsLike: typeof current.apparent_temperature === 'number' ? Math.round(current.apparent_temperature) : undefined,
+      condition: mapWeatherCodeToText(Number(current.weather_code ?? 2)),
+      code: Number(current.weather_code ?? 2),
+      isDay: current.is_day === 1,
+      updatedAt: Date.now()
+    };
+    try {
+      localStorage.setItem(CACHED_WEATHER_STORAGE_KEY, JSON.stringify(summary));
+    } catch {}
+    return summary;
+  } catch {
+    return existing;
+  }
+}
+
+export interface SmartWakeGreetingOptions {
+  weather?: CachedWeatherSummary | null;
+  localDate?: Date;
+}
+
+/**
+ * Generates dynamic, intelligent spoken & display greeting when Zuzu AI wakes up
+ * via wake-word, mouth whistle, finger snap, or microphone tap.
+ */
+export function buildSmartWakeGreeting(
+  settings: AppSettings,
+  options: SmartWakeGreetingOptions = {}
+): string {
+  const now = options.localDate || new Date();
+  const isBengali = settings.recognitionLanguage === 'bn-BD';
+  const weather = options.weather !== undefined ? options.weather : getCachedWeatherSummary();
+
+  const hours24 = now.getHours();
+  const hour12 = hours24 % 12 || 12;
+  const mins = String(now.getMinutes()).padStart(2, '0');
+  const amPm = hours24 >= 12 ? 'PM' : 'AM';
+  const timeTextEn = `${hour12}:${mins} ${amPm}`;
+
+  if (isBengali) {
+    const bnDays = ['রবিবার', 'সোমবার', 'মঙ্গলবার', 'বুধবার', 'বৃহস্পতিবার', 'শুক্রবার', 'শনিবার'];
+    const bnMonths = ['জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন', 'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'];
+    const dayBn = bnDays[now.getDay()];
+    const monthBn = bnMonths[now.getMonth()];
+    const dateBn = `${dayBn}, ${now.getDate()} ${monthBn}`;
+
+    let periodBn = 'সকাল';
+    if (hours24 >= 12 && hours24 < 16) periodBn = 'দুপুর';
+    else if (hours24 >= 16 && hours24 < 19) periodBn = 'বিকেল';
+    else if (hours24 >= 19 || hours24 < 5) periodBn = 'রাত';
+
+    const parts = [
+      `হ্যাঁ বস!`,
+      `এখন সময় ${periodBn} ${hour12}টা বেজে ${mins} মিনিট।`,
+      `আজ ${dateBn}।`
+    ];
+
+    if (weather) {
+      const cityLabel = weather.city || 'আপনার এলাকায়';
+      parts.push(`বর্তমানে ${cityLabel}-এর তাপমাত্রা ${weather.temperature} ডিগ্রি সেলসিয়াস এবং আবহাওয়া ${weather.condition}।`);
+    }
+
+    parts.push('আজ আমি আপনাকে কীভাবে সাহায্য করতে পারি?');
+    return parts.join(' ');
+  }
+
+  const enDays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const enMonths = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const dayEn = enDays[now.getDay()];
+  const dateEn = `${dayEn}, ${enMonths[now.getMonth()]} ${now.getDate()}`;
+
+  const parts = [
+    `Yes Boss!`,
+    `Now time is ${timeTextEn}.`,
+    `Today is ${dateEn}.`
+  ];
+
+  if (weather) {
+    const loc = weather.city ? ` in ${weather.city}` : '';
+    parts.push(`Current weather${loc} is ${weather.temperature}°C and ${weather.condition}.`);
+  }
+
+  parts.push('How can I assist you today?');
+  return parts.join(' ');
+}

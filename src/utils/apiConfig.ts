@@ -1,7 +1,11 @@
+import { AppSettings, UserMemory } from '../types';
+import { generateIntelligentAnswer } from './aiEngine';
+import { getAppSettings } from './storage';
+
 /**
  * Centralized API configuration and network resilience helper for Zuzu AI.
  * Handles seamless routing between Web preview (relative path) and Android APK (remote Cloud Run endpoint),
- * with intelligent direct-API fallback for custom Google Gemini and xAI Grok keys.
+ * with direct multi-turn Google Gemini API support and clear error surfacing.
  */
 
 // Current Application Build Version (Keep synchronized across Gradle, Server, UI & CI)
@@ -11,9 +15,6 @@ export const APP_VERSION_CODE = 363;
 // Deployed Cloud Run Production Backend URL for Android APK
 export const DEFAULT_REMOTE_BACKEND_URL = 'https://ais-dev-requvmmuycwborvooarj55-817905745905.asia-east1.run.app';
 
-/**
- * Returns the effective API Base URL depending on runtime environment (Android APK vs Web).
- */
 export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') {
     return '';
@@ -26,7 +27,9 @@ export function getApiBaseUrl(): string {
   }
 
   // 2. Running inside native Android / Capacitor container
-  const isCapacitor = 
+  const cap = (window as any).Capacitor;
+  const isCapacitor =
+    Boolean(cap?.isNativePlatform?.()) ||
     window.location.protocol === 'capacitor:' ||
     window.location.protocol === 'ionic:' ||
     (window.location.hostname === 'localhost' && window.location.port !== '3000' && window.location.port !== '5173');
@@ -39,15 +42,12 @@ export function getApiBaseUrl(): string {
   return '';
 }
 
-/**
- * Robust fetch wrapper that resolves endpoints, handles timeouts, and sets standard headers.
- */
 export async function apiFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
   const baseUrl = getApiBaseUrl();
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const fullUrl = baseUrl ? `${baseUrl}${cleanEndpoint}` : cleanEndpoint;
 
-  const timeoutMs = 15000;
+  const timeoutMs = 20000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -73,10 +73,23 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}): Pro
   }
 }
 
-/**
- * Direct Google Generative Language API key validation.
- * Bypasses intermediate proxies to directly confirm whether an API key is recognized and active at Google.
- */
+export function formatGeminiFriendlyError(rawMessage: string, status?: number): string {
+  const msg = rawMessage || '';
+  if (/API_KEY_INVALID|API key not valid/i.test(msg)) {
+    return 'Invalid Gemini API Key. Please double-check your key in Settings > Zuzu AI.';
+  }
+  if (/RESOURCE_EXHAUSTED|quota/i.test(msg) || status === 429) {
+    return 'Gemini API quota exceeded (429). Please wait a moment or check Google AI Studio billing/limits.';
+  }
+  if (/PERMISSION_DENIED/i.test(msg) || status === 403) {
+    return 'Gemini API access denied (403). Please ensure Generative Language API is enabled for this key.';
+  }
+  if (/Failed to fetch|NetworkError|timeout|ENOTFOUND/i.test(msg)) {
+    return 'Network error: Unable to reach Google Gemini servers. Check your internet connection.';
+  }
+  return msg || `Google Gemini API error${status ? ` (${status})` : ''}.`;
+}
+
 export async function validateGeminiKeyDirectly(apiKey: string): Promise<{
   success: boolean;
   message: string;
@@ -89,7 +102,6 @@ export async function validateGeminiKeyDirectly(apiKey: string): Promise<{
 
   const startTime = Date.now();
   try {
-    // Check Google's official models list endpoint
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmed)}`;
     const res = await fetch(url, {
       method: 'GET',
@@ -108,30 +120,15 @@ export async function validateGeminiKeyDirectly(apiKey: string): Promise<{
 
     const errData = await res.json().catch(() => ({}));
     const rawMsg = errData?.error?.message || `Google API error ${res.status}`;
-
-    if (rawMsg.includes('API_KEY_INVALID') || rawMsg.includes('API key not valid')) {
-      return { success: false, message: 'Invalid API Key. Please verify your key in Google AI Studio.' };
-    }
-    if (rawMsg.includes('RESOURCE_EXHAUSTED') || res.status === 429) {
-      return { success: false, message: 'API Quota exceeded for this key in Google AI Studio.' };
-    }
-    if (res.status === 403) {
-      return { success: false, message: 'Access forbidden. Please ensure Generative Language API is enabled for this key.' };
-    }
-
-    return { success: false, message: rawMsg };
+    return { success: false, message: formatGeminiFriendlyError(rawMsg, res.status) };
   } catch (netErr: any) {
     return {
       success: false,
-      message: `Network error: Could not reach Google Gemini servers (${netErr.message || 'Check connection'}).`
+      message: formatGeminiFriendlyError(netErr?.message || 'Network unreachable')
     };
   }
 }
 
-/**
- * Unified AI Provider Key Validator.
- * Tries server-side proxy first, and gracefully falls back to direct API verification if offline or in APK.
- */
 export async function validateAiKey(
   provider: 'gemini' | 'grok',
   apiKey: string
@@ -154,44 +151,31 @@ export async function validateAiKey(
       body: JSON.stringify({ provider, apiKey: trimmed, customGeminiKey: trimmed })
     });
 
-    if (res.ok) {
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
       const data = await res.json();
-      if (data.success) {
+      if (res.ok && data.success) {
         return {
           success: true,
-          model: data.model || 'Google Gemini',
+          model: data.model || 'gemini-2.5-flash',
           latencyMs: data.latencyMs,
           message: data.message || `Valid ✓ Connected to ${provider === 'gemini' ? 'Google Gemini' : 'xAI Grok'}`
         };
-      } else {
-        // If server responded with failure, check if direct validation can confirm
-        if (provider === 'gemini') {
-          const directCheck = await validateGeminiKeyDirectly(trimmed);
-          if (directCheck.success) {
-            return {
-              success: true,
-              model: 'gemini-verified',
-              latencyMs: directCheck.latencyMs,
-              message: directCheck.message
-            };
-          }
-        }
-        return {
-          success: false,
-          message: data.error || 'Failed to authenticate API Key.'
-        };
+      }
+      if (data?.error && provider === 'grok') {
+        return { success: false, message: data.error };
       }
     }
   } catch (err: any) {
-    console.warn('[Zuzu AI] Backend validation ping failed, falling back to direct API check:', err);
+    console.warn('[Zuzu AI] Backend validation ping unreachable, using direct API check:', err);
   }
 
-  // 2. Direct fallback for Gemini if backend was unreachable
+  // 2. Direct fallback for Gemini (essential inside standalone Android APK)
   if (provider === 'gemini') {
     const directResult = await validateGeminiKeyDirectly(trimmed);
     return {
       success: directResult.success,
-      model: directResult.success ? 'Google Gemini (Direct Verified)' : undefined,
+      model: directResult.success ? 'gemini-2.5-flash' : undefined,
       latencyMs: directResult.latencyMs,
       message: directResult.message
     };
@@ -237,20 +221,95 @@ export async function validateAiKey(
   return { success: false, message: 'Unsupported provider' };
 }
 
+function buildSystemInstruction(
+  settings: AppSettings,
+  memories: UserMemory[],
+  isVoiceMode: boolean
+): string {
+  const identityName = settings.activeIdentity === 'female' ? 'Female Zuzu' : 'Male Zuzu';
+  const pronoun = settings.activeIdentity === 'female' ? 'female companion/assistant' : 'male companion/assistant';
+  const assistantNick = settings.assistantNickname || 'Zuzu';
+  const userNick = settings.userNickname || 'Friend';
+
+  const now = new Date();
+  const liveClock = now.toLocaleString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+
+  let weatherNote = '';
+  try {
+    const rawWeather = typeof localStorage !== 'undefined' ? localStorage.getItem('zuzu_cached_weather_v1') : null;
+    if (rawWeather) {
+      const w = JSON.parse(rawWeather);
+      if (typeof w?.temperature === 'number' && w?.condition) {
+        weatherNote = `\nCurrent Local Weather${w.city ? ` (${w.city})` : ''}: ${w.temperature}°C, ${w.condition}.`;
+      }
+    }
+  } catch {}
+
+  let sys = `You are ${identityName} (${assistantNick}), an intelligent, warm, helpful AI assistant running on Android.
+Gender identity: ${pronoun}. User's name: ${userNick}.
+Current Local Date & Time: ${liveClock}.${weatherNote}
+
+CREATOR & DEVELOPER IDENTITY (MANDATORY KNOWLEDGE):
+- Your creator, author, and lead developer is **Rasel (MD. Rasel Hossen)**, a Computer Science student and full-stack Android & AI developer from Bangladesh (GitHub & TikTok: @justonerasel).
+- If anyone asks "Who created you?", "Who made you?", "Who is your developer?", "Do you know Rasel?", "Who is Rasel?", "তোমাকে কে বানিয়েছে?", or "তোমার ডেভেলপার কে?", always answer proudly and accurately that you (Zuzu AI) were created and developed by **Rasel (MD. Rasel Hossen)** in natural English or Bengali matching the user's language.
+
+You are fluent in both Bengali (বাংলা) and English. Always answer in the language the user spoke or typed, directly answering their actual question without repeating static introductions.
+Active Personality: ${settings.activePersonality}. ${settings.customPersonalityPrompt || ''}`;
+
+  if (isVoiceMode) {
+    sys += `\nThis conversation is spoken aloud. Keep replies concise, natural, conversational, and free of markdown asterisks or code blocks.`;
+  }
+
+  if (settings.memoryEnabled && memories.length > 0) {
+    const memLines = memories.filter(m => m.key && m.value).map(m => `- ${m.key}: ${m.value}`).join('\n');
+    if (memLines) {
+      sys += `\nUser Memories:\n${memLines}`;
+    }
+  }
+
+  return sys;
+}
+
 /**
- * Direct Gemini Generate Content client-side emergency fallback
- * when backend server is completely unreachable from Android APK.
+ * Direct Multi-Turn Gemini REST API Generate Content call (used when backend proxy is unreachable in Android APK).
  */
 export async function directGeminiGenerateContent(
   apiKey: string,
-  prompt: string,
+  promptOrMessages: string | Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>,
   systemInstruction?: string
 ): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
-  
-  const body: any = {
-    contents: [{ parts: [{ text: prompt }] }]
-  };
+  const cleanKey = apiKey.trim();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
+
+  let contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+
+  if (typeof promptOrMessages === 'string') {
+    contents = [{ role: 'user', parts: [{ text: promptOrMessages }] }];
+  } else {
+    for (const msg of promptOrMessages) {
+      const text = (msg?.text || '').trim();
+      if (!text) continue;
+      const role: 'user' | 'model' = msg.sender === 'assistant' || msg.sender === 'model' ? 'model' : 'user';
+      if (contents.length > 0 && contents[contents.length - 1].role === role) {
+        contents[contents.length - 1].parts[0].text += `\n${text}`;
+      } else {
+        contents.push({ role, parts: [{ text }] });
+      }
+    }
+    if (contents.length > 0 && contents[0].role !== 'user') {
+      contents.unshift({ role: 'user', parts: [{ text: 'Hello' }] });
+    }
+  }
+
+  const body: any = { contents };
   if (systemInstruction) {
     body.systemInstruction = {
       parts: [{ text: systemInstruction }]
@@ -265,13 +324,145 @@ export async function directGeminiGenerateContent(
 
   if (!res.ok) {
     const errJson = await res.json().catch(() => ({}));
-    throw new Error(errJson?.error?.message || `Google API error ${res.status}`);
+    const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
+    throw new Error(formatGeminiFriendlyError(rawMsg, res.status));
   }
 
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error('Empty response from Google Gemini API');
+  if (!text || !text.trim()) {
+    throw new Error('Gemini returned an empty response. Please try again.');
   }
   return text.trim();
+}
+
+export interface UnifiedChatResult {
+  reply: string;
+  model: string;
+  isCloudAI: boolean;
+  isError?: boolean;
+  requiresKey?: boolean;
+}
+
+/**
+ * Unified AI Chat pipeline for Text Chat, Voice Studio, and Dashboard Orb.
+ * 1. Always reads latest saved API keys from localStorage merged with React state.
+ * 2. Routes via backend /api/chat first; if unreachable (e.g. Android APK offline proxy), calls Gemini REST directly.
+ * 3. Surfaces real API/quota/network errors transparently when an API key is configured—never replaces real failures with static intros.
+ */
+export async function sendUnifiedAiChat(params: {
+  messages: Array<{ sender: 'user' | 'assistant'; text: string }>;
+  settings: AppSettings;
+  memories: UserMemory[];
+  isVoiceMode: boolean;
+}): Promise<UnifiedChatResult> {
+  const latestStored = getAppSettings();
+  const settings: AppSettings = {
+    ...latestStored,
+    ...params.settings,
+    customGeminiApiKey: (params.settings.customGeminiApiKey || latestStored.customGeminiApiKey || '').trim(),
+    customGrokApiKey: (params.settings.customGrokApiKey || latestStored.customGrokApiKey || '').trim()
+  };
+
+  const latestUserMsg = [...params.messages].reverse().find(m => m.sender === 'user')?.text || '';
+  const hasUserGeminiKey = settings.customGeminiApiKey.length > 0 && settings.geminiEnabled !== false;
+  const hasUserGrokKey = settings.customGrokApiKey.length > 0 && settings.grokEnabled;
+
+  // 1. Try Backend /api/chat first
+  let backendExplicitError: string | null = null;
+  try {
+    const res = await apiFetch('/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        messages: params.messages,
+        personality: settings.activePersonality,
+        voiceIdentity: settings.activeIdentity,
+        customPersonalityPrompt: settings.customPersonalityPrompt,
+        customGeminiKey: settings.customGeminiApiKey,
+        customGrokApiKey: settings.customGrokApiKey,
+        defaultProvider: settings.defaultAiProvider,
+        aiFallbackEnabled: settings.aiFallbackEnabled,
+        isVoiceMode: params.isVoiceMode,
+        memories: params.memories,
+        memoryEnabled: settings.memoryEnabled,
+        assistantNickname: settings.assistantNickname || 'Zuzu',
+        userNickname: settings.userNickname || 'Friend',
+        gfIntensity: settings.gfIntensity || 'sweet'
+      })
+    });
+
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const data = await res.json();
+      if (res.ok && data?.reply && typeof data.reply === 'string' && data.reply.trim().length > 0) {
+        // If user HAS a custom key saved, do NOT settle for local-engine placeholder if backend somehow didn't use it
+        if (!hasUserGeminiKey || data.isCloudAI || settings.defaultAiProvider === 'local') {
+          return {
+            reply: data.reply.trim(),
+            model: data.model || 'gemini-2.5-flash',
+            isCloudAI: Boolean(data.isCloudAI),
+            requiresKey: Boolean(data.requiresKey)
+          };
+        }
+      }
+      if (!res.ok && data?.error) {
+        backendExplicitError = String(data.error);
+      }
+    }
+  } catch (networkErr: any) {
+    console.warn('[Zuzu AI] Backend /api/chat unreachable, checking direct Gemini call:', networkErr?.message);
+  }
+
+  // 2. If user has Gemini API Key saved, try direct Gemini REST call cleanly (critical for standalone Android APK!)
+  if (hasUserGeminiKey && settings.defaultAiProvider !== 'local') {
+    try {
+      const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
+      const reply = await directGeminiGenerateContent(
+        settings.customGeminiApiKey,
+        params.messages,
+        sysPrompt
+      );
+      return {
+        reply,
+        model: 'gemini-2.5-flash',
+        isCloudAI: true
+      };
+    } catch (directErr: any) {
+      const msg = directErr?.message || backendExplicitError || 'Failed to get response from Google Gemini.';
+      return {
+        reply: msg,
+        model: 'gemini-error',
+        isCloudAI: false,
+        isError: true
+      };
+    }
+  }
+
+  if (backendExplicitError) {
+    return {
+      reply: backendExplicitError,
+      model: 'api-error',
+      isCloudAI: false,
+      isError: true
+    };
+  }
+
+  // 3. Offline / Unconfigured fallback when no user API key exists
+  const localReply = generateIntelligentAnswer({
+    userQuestion: latestUserMsg,
+    conversationHistory: params.messages,
+    personality: settings.activePersonality,
+    voiceIdentity: settings.activeIdentity,
+    customPersonalityPrompt: settings.customPersonalityPrompt,
+    isVoiceMode: params.isVoiceMode,
+    memories: params.memories,
+    memoryEnabled: settings.memoryEnabled
+  });
+
+  return {
+    reply: localReply,
+    model: 'zuzu-neural-engine',
+    isCloudAI: false,
+    requiresKey: !hasUserGeminiKey && !hasUserGrokKey
+  };
 }

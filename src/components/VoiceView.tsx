@@ -17,13 +17,14 @@ import { AppSettings, VoiceIdentity, VoiceMessage, VoiceSession } from '../types
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { detectVoiceSwitchIntent, detectVoiceActionIntent } from '../utils/intentDetector';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
-import { saveVoiceSession, getVoiceSessions, getMemories, saveMemory } from '../utils/storage';
+import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
 import { checkMicrophonePermission } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
-import { generateIntelligentAnswer } from '../utils/aiEngine';
-import { apiFetch, directGeminiGenerateContent } from '../utils/apiConfig';
+import { sendUnifiedAiChat } from '../utils/apiConfig';
+import { startVoiceCapture, VoiceCaptureController } from '../utils/speech';
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { setMicBusyForActiveSession } from '../utils/backgroundService';
+import { buildSmartWakeGreeting, getCachedWeatherSummary, refreshWeatherCacheSilently } from '../utils/greetingHelper';
 
 interface VoiceViewProps {
   settings: AppSettings;
@@ -50,11 +51,12 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
 
-  const recognitionRef = useRef<any>(null);
+  const captureControllerRef = useRef<VoiceCaptureController | null>(null);
   const isContinuousRef = useRef(settings.continuousListening);
   const activeIdentityRef = useRef(settings.activeIdentity);
   const sessionRef = useRef(currentSession);
   const isCancelledRef = useRef(false);
+  const hasGreetedSessionRef = useRef(false);
 
   // Sync refs with latest props
   useEffect(() => {
@@ -68,6 +70,15 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   useEffect(() => {
     sessionRef.current = currentSession;
   }, [currentSession]);
+
+  // Cleanup active voice capture on unmount
+  useEffect(() => {
+    return () => {
+      captureControllerRef.current?.cancel();
+      captureControllerRef.current = null;
+      setMicBusyForActiveSession(false);
+    };
+  }, []);
 
   const currentIdentityConfig = VOICE_IDENTITIES[settings.activeIdentity];
   const currentPersonality = PERSONALITIES[settings.activePersonality] || PERSONALITIES.Normal;
@@ -113,122 +124,180 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     saveVoiceSession(updatedSession);
   };
 
-  // Start Speech Recognition
-  const startListening = () => {
+  // Start Speech Recognition via unified native Android + Web Speech controller (no stale closure bugs)
+  const startListening = async () => {
     setErrorNotice(null);
     isCancelledRef.current = false;
     stopSpeaking();
 
-    const SpeechRecognitionClass =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognitionClass) {
-      setErrorNotice('Speech Recognition not supported in this browser. Please use Chrome/Edge or modern Android WebView.');
-      return;
+    if (captureControllerRef.current) {
+      captureControllerRef.current.cancel();
+      captureControllerRef.current = null;
     }
 
     try {
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort();
-        } catch {}
-      }
-
-      const recognition = new SpeechRecognitionClass();
-      recognitionRef.current = recognition;
-
-      recognition.continuous = false; // We manage continuous turns ourselves
-      recognition.interimResults = true;
-
-      // Select language based on settings
-      if (settings.recognitionLanguage === 'bn-BD') {
-        recognition.lang = 'bn-BD';
-      } else if (settings.recognitionLanguage === 'en-US') {
-        recognition.lang = 'en-US';
-      } else {
-        // Auto / bilingual default
-        recognition.lang = 'en-US';
-      }
-
-      recognition.onstart = () => {
-        setMicBusyForActiveSession(true);
-        setIsListening(true);
-        setStatusMessage(`Listening to your voice...`);
-        playHapticSound('listen_start');
-      };
-
-      recognition.onresult = (event: any) => {
-        let currentTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          currentTranscript += event.results[i][0].transcript;
-        }
-        setTranscript(currentTranscript);
-      };
-
-      recognition.onerror = (event: any) => {
-        console.warn('Speech recognition event error:', event.error);
-        setMicBusyForActiveSession(false);
-        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          setShowPermissionModal(true);
-          setErrorNotice('Android microphone permission is required for voice conversation.');
-        } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
-          setErrorNotice(`Microphone error: ${event.error}`);
-        }
-        setIsListening(false);
-      };
-
-      recognition.onend = () => {
-        setMicBusyForActiveSession(false);
-        setIsListening(false);
-        if (isCancelledRef.current) return;
-
-        // Process final captured transcript
-        if (transcript.trim().length > 0) {
-          handleUserVoiceInput(transcript.trim());
-          setTranscript('');
-        } else if (isContinuousRef.current && !isSpeaking && !isProcessing) {
-          // If no speech captured but continuous listening is active, restart gracefully
-          setStatusMessage('Ready for next command...');
-        }
-      };
-
       setMicBusyForActiveSession(true);
-      recognition.start();
+      const controller = await startVoiceCapture({
+        language: settings.recognitionLanguage || 'auto',
+        onStart: () => {
+          setIsListening(true);
+          setTranscript('');
+          setStatusMessage('Listening to your voice...');
+        },
+        onPartial: (partialText) => {
+          setTranscript(partialText);
+        },
+        onResult: (finalText) => {
+          captureControllerRef.current = null;
+          setMicBusyForActiveSession(false);
+          setIsListening(false);
+          setTranscript(finalText);
+          if (!isCancelledRef.current && finalText.trim().length > 0) {
+            handleUserVoiceInput(finalText.trim());
+          }
+        },
+        onEmptyEnd: () => {
+          captureControllerRef.current = null;
+          setMicBusyForActiveSession(false);
+          setIsListening(false);
+          setTranscript('');
+          if (!isCancelledRef.current) {
+            setStatusMessage('No speech detected. Tap orb to speak again.');
+          }
+        },
+        onPermissionDenied: () => {
+          captureControllerRef.current = null;
+          setMicBusyForActiveSession(false);
+          setIsListening(false);
+          setShowPermissionModal(true);
+          setErrorNotice('Microphone permission is required for voice conversation.');
+        },
+        onError: (msg) => {
+          captureControllerRef.current = null;
+          setMicBusyForActiveSession(false);
+          setIsListening(false);
+          setErrorNotice(msg);
+          setStatusMessage('Tap microphone to try again');
+        }
+      });
+
+      captureControllerRef.current = controller;
     } catch (err: any) {
-      console.error('Failed to start speech recognition:', err);
       setMicBusyForActiveSession(false);
       setIsListening(false);
-      setErrorNotice(err.message || 'Microphone activation failed');
+      setErrorNotice(err?.message || 'Microphone activation failed');
     }
   };
 
-  // Check microphone permission before initiating speech recognition
-  const ensurePermissionAndStart = async () => {
-    if (!settings.customGeminiApiKey && onRequestApiKeyModal) {
-      onRequestApiKeyModal('Voice Studio', () => {
-        ensurePermissionAndStart();
-      });
-      return;
-    }
+  // Check microphone permission & optionally greet once per voice session before opening mic
+  const ensurePermissionAndStart = async (skipGreeting = false) => {
     try {
       const perm = await checkMicrophonePermission();
       if (perm.state !== 'granted') {
         setShowPermissionModal(true);
         return;
       }
-      startListening();
-    } catch {
-      startListening();
+    } catch {}
+
+    if (skipGreeting || hasGreetedSessionRef.current) {
+      await startListening();
+      return;
     }
+
+    hasGreetedSessionRef.current = true;
+    isCancelledRef.current = false;
+    setErrorNotice(null);
+    setMicBusyForActiveSession(true);
+
+    const weather = await refreshWeatherCacheSilently(settings).catch(() => getCachedWeatherSummary());
+    if (isCancelledRef.current) {
+      setMicBusyForActiveSession(false);
+      return;
+    }
+
+    const smartGreeting = buildSmartWakeGreeting(settings, { weather });
+    setTranscript(smartGreeting);
+    setIsSpeaking(true);
+    setStatusMessage(`Greeting Boss as ${VOICE_IDENTITIES[settings.activeIdentity].name}...`);
+
+    const voiceId =
+      settings.activeIdentity === 'female'
+        ? settings.elevenLabsFemaleVoiceId
+        : settings.elevenLabsMaleVoiceId;
+
+    speakText({
+      text: smartGreeting,
+      voiceIdentity: settings.activeIdentity,
+      customVoiceId: voiceId,
+      customApiKey: settings.customElevenLabsApiKey,
+      stability: settings.stability,
+      similarityBoost: settings.similarityBoost,
+      speechRate: settings.speechRate,
+      volume: settings.volume ?? 1.0,
+      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId,
+      onStart: () => {
+        if (!isCancelledRef.current) {
+          setIsSpeaking(true);
+        }
+      },
+      onEnd: () => {
+        setIsSpeaking(false);
+        if (!isCancelledRef.current) {
+          startListening();
+        } else {
+          setMicBusyForActiveSession(false);
+        }
+      },
+      onError: () => {
+        setIsSpeaking(false);
+        if (!isCancelledRef.current) {
+          startListening();
+        } else {
+          setMicBusyForActiveSession(false);
+        }
+      }
+    });
   };
+
+  // Display wake greeting emitted from App.tsx and auto-start listening after wake greeting completes
+  useEffect(() => {
+    const onWakeGreeting = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail || {};
+      const greetingText = typeof detail.greetingText === 'string' ? detail.greetingText : '';
+      hasGreetedSessionRef.current = true;
+      isCancelledRef.current = false;
+      if (greetingText) {
+        setTranscript(greetingText);
+      }
+      setIsSpeaking(true);
+      setStatusMessage(detail.triggerLabel ? `Woken by ${detail.triggerLabel}...` : 'Yes Boss! Waking up...');
+    };
+
+    const onAutoStartVoice = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail || {};
+      const cmd = typeof detail.remainingCommand === 'string' ? detail.remainingCommand.trim() : '';
+      hasGreetedSessionRef.current = true;
+      setIsSpeaking(false);
+      if (cmd) {
+        handleUserVoiceInput(cmd);
+      } else {
+        ensurePermissionAndStart(true);
+      }
+    };
+    window.addEventListener('zuzu-wake-greeting', onWakeGreeting);
+    window.addEventListener('zuzu-auto-start-voice', onAutoStartVoice);
+    return () => {
+      window.removeEventListener('zuzu-wake-greeting', onWakeGreeting);
+      window.removeEventListener('zuzu-auto-start-voice', onAutoStartVoice);
+    };
+  }, [settings.recognitionLanguage, settings.customGeminiApiKey, settings.activeIdentity]);
 
   // Stop listening
   const stopListening = () => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {}
+    if (captureControllerRef.current) {
+      captureControllerRef.current.stop();
     }
+    setMicBusyForActiveSession(false);
     setIsListening(false);
     playHapticSound('listen_stop');
   };
@@ -236,7 +305,13 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   // Cancel action: stops everything immediately
   const handleCancel = () => {
     isCancelledRef.current = true;
-    stopListening();
+    hasGreetedSessionRef.current = false;
+    if (captureControllerRef.current) {
+      captureControllerRef.current.cancel();
+      captureControllerRef.current = null;
+    }
+    setMicBusyForActiveSession(false);
+    setIsListening(false);
     stopSpeaking();
     setIsSpeaking(false);
     setIsProcessing(false);
@@ -435,36 +510,25 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         }
       }
 
-      // Call Gemini AI backend
-      const res = await apiFetch('/api/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          messages: [...historyContext, { sender: 'user', text: spokenText }],
-          personality: settings.activePersonality,
-          voiceIdentity: currentId,
-          customPersonalityPrompt: settings.customPersonalityPrompt,
-          customGeminiKey: settings.customGeminiApiKey,
-          isVoiceMode: true, // Spoken response optimization
-          memories: activeMemories,
-          memoryEnabled: settings.memoryEnabled
-        })
+      // Call unified Gemini AI pipeline (backend -> direct Gemini REST fallback -> error surfacing)
+      const aiResult = await sendUnifiedAiChat({
+        messages: [...historyContext, { sender: 'user', text: spokenText }],
+        settings,
+        memories: activeMemories,
+        isVoiceMode: true
       });
 
-      const data = await res.json();
-      let aiReply = data.reply;
-
-      if (!aiReply || aiReply.trim().length === 0) {
-        aiReply = generateIntelligentAnswer({
-          userQuestion: spokenText,
-          conversationHistory: historyContext,
-          personality: settings.activePersonality,
-          voiceIdentity: currentId,
-          customPersonalityPrompt: settings.customPersonalityPrompt,
-          isVoiceMode: true,
-          memories: activeMemories,
-          memoryEnabled: settings.memoryEnabled
-        });
+      if (aiResult.isError) {
+        setIsProcessing(false);
+        setErrorNotice(aiResult.reply);
+        setStatusMessage('Gemini API error');
+        if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
+          onRequestApiKeyModal('Voice Studio');
+        }
+        return;
       }
+
+      const aiReply = aiResult.reply;
 
       // Save AI voice response to Voice History
       appendVoiceMessage({
@@ -475,47 +539,13 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       });
 
       setIsProcessing(false);
+      setTranscript('');
 
       // Speak the response using the active identity's voice
       speakZuzuResponse(aiReply, currentId);
     } catch (err: any) {
-      console.warn('Voice Assistant Query Network Fallback:', err);
       setIsProcessing(false);
-      const activeMemories = settings.memoryEnabled ? getMemories() : [];
-      let fallbackReply = '';
-
-      if (settings.customGeminiApiKey && settings.customGeminiApiKey.trim().length > 0) {
-        try {
-          fallbackReply = await directGeminiGenerateContent(
-            settings.customGeminiApiKey,
-            spokenText,
-            `You are Zuzu AI, an intelligent spoken voice assistant. Personality: ${settings.activePersonality}. Voice identity: ${currentId}. Keep spoken answers concise, engaging, and conversational without markdown.`
-          );
-        } catch (directErr) {
-          console.warn('[Zuzu AI] Voice direct Gemini fallback note:', directErr);
-        }
-      }
-
-      if (!fallbackReply) {
-        fallbackReply = generateIntelligentAnswer({
-          userQuestion: spokenText,
-          conversationHistory: (sessionRef.current?.messages || []).map(m => ({ sender: m.sender, text: m.text })),
-          personality: settings.activePersonality,
-          voiceIdentity: currentId,
-          customPersonalityPrompt: settings.customPersonalityPrompt,
-          isVoiceMode: true,
-          memories: activeMemories,
-          memoryEnabled: settings.memoryEnabled
-        });
-      }
-
-      appendVoiceMessage({
-        sender: 'assistant',
-        text: fallbackReply,
-        timestamp: Date.now() + 100,
-        voiceIdentity: currentId
-      });
-      speakZuzuResponse(fallbackReply, currentId);
+      setErrorNotice(err?.message || 'Failed to get AI voice response.');
     }
   };
 
@@ -596,7 +626,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             glowIntensity={settings.orbGlowIntensity}
             particleDensity={settings.orbParticleDensity}
             size={220}
-            onClick={isListening ? stopListening : ensurePermissionAndStart}
+            onClick={() => (isListening ? stopListening() : isSpeaking ? handleCancel() : ensurePermissionAndStart())}
           />
 
           {/* Status Pill below Orb */}
@@ -656,7 +686,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         <div className="w-full max-w-xs mt-3 flex items-center justify-center gap-2.5 z-20 pb-2">
           {/* Main Voice Toggle */}
           <button
-            onClick={isListening ? stopListening : ensurePermissionAndStart}
+            onClick={() => (isListening ? stopListening() : isSpeaking ? handleCancel() : ensurePermissionAndStart())}
             className={`flex-1 py-2.5 px-4 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-all ${
               isListening
                 ? 'bg-rose-500 hover:bg-rose-600 text-white'
@@ -709,7 +739,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         onClose={() => setShowPermissionModal(false)}
         onPermissionGranted={() => {
           setShowPermissionModal(false);
-          startListening();
+          ensurePermissionAndStart();
         }}
       />
     </div>

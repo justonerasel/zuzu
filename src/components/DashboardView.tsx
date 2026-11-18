@@ -28,12 +28,17 @@ import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
 import { checkMicrophonePermission } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import { detectVoiceSwitchIntent, detectVoiceActionIntent } from '../utils/intentDetector';
-import { saveVoiceSession, getVoiceSessions, getMemories, saveMemory } from '../utils/storage';
-import { generateIntelligentAnswer } from '../utils/aiEngine';
-import { getPersonalizedGreeting } from '../utils/greetingHelper';
+import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
+import { 
+  getPersonalizedGreeting, 
+  buildSmartWakeGreeting, 
+  getCachedWeatherSummary, 
+  refreshWeatherCacheSilently 
+} from '../utils/greetingHelper';
 import { FacebookAutomationModal, FacebookTaskType } from './FacebookAutomationModal';
 import { ScreenAssistantModal } from './ScreenAssistantModal';
-import { apiFetch } from '../utils/apiConfig';
+import { sendUnifiedAiChat } from '../utils/apiConfig';
+import { startVoiceCapture, VoiceCaptureController } from '../utils/speech';
 import { setMicBusyForActiveSession } from '../utils/backgroundService';
 
 interface DashboardViewProps {
@@ -80,10 +85,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [fbModalQuery, setFbModalQuery] = useState<string>('');
 
   // Audio & Speech Recognition Refs
-  const recognitionRef = useRef<any>(null);
+  const captureControllerRef = useRef<VoiceCaptureController | null>(null);
   const currentSessionRef = useRef<VoiceSession | null>(null);
   const isCancelledRef = useRef<boolean>(false);
+  const hasGreetedSessionRef = useRef<boolean>(false);
   const memoryCount = getMemories().length;
+
+  useEffect(() => {
+    return () => {
+      captureControllerRef.current?.cancel();
+      captureControllerRef.current = null;
+      setMicBusyForActiveSession(false);
+    };
+  }, []);
 
   // Real-time Clock & Greeting Effect
   useEffect(() => {
@@ -113,102 +127,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return () => clearInterval(interval);
   }, [settings.activePersonality, settings.gfGreetingEnabled, settings.gfIntensity, settings.userNickname, settings.recognitionLanguage]);
 
-  // Initialize Speech Recognition
-  const initSpeechRecognition = () => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  // Begin live microphone speech capture cleanly (shared by post-greeting & continuous turns)
+  const beginMicCapture = async () => {
+    if (isCancelledRef.current) return;
 
-    if (!SpeechRecognition) {
-      setStatusText('Speech Recognition unavailable on this browser.');
-      return null;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-
-    // Language setting
-    if (settings.recognitionLanguage === 'bn-BD') {
-      recognition.lang = 'bn-BD';
-    } else if (settings.recognitionLanguage === 'en-US') {
-      recognition.lang = 'en-US';
-    } else {
-      recognition.lang = 'en-US';
-    }
-
-    recognition.onstart = () => {
-      setMicBusyForActiveSession(true);
-      setOrbState('listening');
-      setStatusText('LISTENING...');
-      setIsVoiceActive(true);
-      playHapticSound('listen_start');
-    };
-
-    recognition.onresult = (event: any) => {
-      const current = event.resultIndex;
-      const transcript = event.results[current][0].transcript;
-      setTranscriptText(transcript);
-    };
-
-    recognition.onerror = (event: any) => {
-      console.warn('Speech Recognition error event:', event.error);
-      setMicBusyForActiveSession(false);
-      if (event.error === 'not-allowed') {
-        setShowPermissionModal(true);
-      }
-      setOrbState('idle');
-      setStatusText('ZUZU AI OFF • TAP TO START');
-      setIsVoiceActive(false);
-      playHapticSound('listen_stop');
-    };
-
-    recognition.onend = () => {
-      setMicBusyForActiveSession(false);
-      if (isCancelledRef.current) {
-        setOrbState('idle');
-        setStatusText('ZUZU AI OFF • TAP TO START');
-        setIsVoiceActive(false);
-        return;
-      }
-
-      // If user spoke something, process intent
-      const spoken = transcriptText.trim();
-      if (spoken) {
-        handleProcessSpeech(spoken);
-      } else {
-        setOrbState('idle');
-        setStatusText('ZUZU AI OFF • TAP TO START');
-        setIsVoiceActive(false);
-      }
-    };
-
-    return recognition;
-  };
-
-  // Start voice interaction
-  const startVoiceInteraction = async () => {
-    isCancelledRef.current = false;
-    setTranscriptText('');
-    setLastAiResponse(null);
-
-    // Check if API key is configured (Requirement 5)
-    if (!settings.customGeminiApiKey && onRequestApiKeyModal) {
-      onRequestApiKeyModal('Voice Assistant', () => {
-        startVoiceInteraction();
-      });
-      return;
-    }
-
-    // Check mic permission first
-    try {
-      const perm = await checkMicrophonePermission();
-      if (perm.state !== 'granted') {
-        setShowPermissionModal(true);
-        return;
-      }
-    } catch {}
-
-    // Create session container if none
     if (!currentSessionRef.current) {
       currentSessionRef.current = {
         id: `vox-session-${Date.now()}`,
@@ -222,26 +144,146 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
 
     try {
-      const rec = initSpeechRecognition();
-      if (rec) {
-        setMicBusyForActiveSession(true);
-        recognitionRef.current = rec;
-        rec.start();
-      }
+      setMicBusyForActiveSession(true);
+      const controller = await startVoiceCapture({
+        language: settings.recognitionLanguage || 'auto',
+        onStart: () => {
+          setOrbState('listening');
+          setStatusText('LISTENING...');
+          setIsVoiceActive(true);
+        },
+        onPartial: (partial) => {
+          setTranscriptText(partial);
+        },
+        onResult: (finalText) => {
+          captureControllerRef.current = null;
+          setMicBusyForActiveSession(false);
+          setTranscriptText(finalText);
+          if (!isCancelledRef.current && finalText.trim().length > 0) {
+            handleProcessSpeech(finalText.trim());
+          }
+        },
+        onEmptyEnd: () => {
+          captureControllerRef.current = null;
+          setMicBusyForActiveSession(false);
+          setOrbState('idle');
+          setStatusText('ZUZU AI OFF • TAP TO START');
+          setIsVoiceActive(false);
+        },
+        onPermissionDenied: () => {
+          captureControllerRef.current = null;
+          setMicBusyForActiveSession(false);
+          setShowPermissionModal(true);
+          setOrbState('idle');
+          setStatusText('ZUZU AI OFF • TAP TO START');
+          setIsVoiceActive(false);
+        },
+        onError: (msg) => {
+          captureControllerRef.current = null;
+          setMicBusyForActiveSession(false);
+          setOrbState('idle');
+          setStatusText('TAP TO RETRY VOICE');
+          setLastAiResponse(msg);
+          setIsVoiceActive(false);
+        }
+      });
+      captureControllerRef.current = controller;
     } catch (err: any) {
       setMicBusyForActiveSession(false);
+      setIsVoiceActive(false);
       console.warn('Recognition start error:', err);
     }
+  };
+
+  // Start voice interaction using smart greeting on fresh tap + dual-mode Android/Web Speech capture
+  const startVoiceInteraction = async () => {
+    isCancelledRef.current = false;
+    setTranscriptText('');
+    stopSpeaking();
+
+    if (captureControllerRef.current) {
+      captureControllerRef.current.cancel();
+      captureControllerRef.current = null;
+    }
+
+    // Check mic permission first cleanly
+    try {
+      const perm = await checkMicrophonePermission();
+      if (perm.state !== 'granted') {
+        setShowPermissionModal(true);
+        return;
+      }
+    } catch {}
+
+    if (hasGreetedSessionRef.current) {
+      setLastAiResponse(null);
+      await beginMicCapture();
+      return;
+    }
+
+    hasGreetedSessionRef.current = true;
+    setMicBusyForActiveSession(true);
+    setOrbState('speaking');
+    setStatusText('GREETING BOSS...');
+    setIsVoiceActive(true);
+
+    const weather = await refreshWeatherCacheSilently(settings).catch(() => getCachedWeatherSummary());
+    if (isCancelledRef.current) {
+      setMicBusyForActiveSession(false);
+      setIsVoiceActive(false);
+      setOrbState('idle');
+      return;
+    }
+
+    const smartGreeting = buildSmartWakeGreeting(settings, { weather });
+    setLastAiResponse(smartGreeting);
+
+    const voiceId =
+      settings.activeIdentity === 'female'
+        ? settings.elevenLabsFemaleVoiceId
+        : settings.elevenLabsMaleVoiceId;
+
+    speakText({
+      text: smartGreeting,
+      voiceIdentity: settings.activeIdentity,
+      customVoiceId: voiceId,
+      customApiKey: settings.customElevenLabsApiKey,
+      stability: settings.stability,
+      similarityBoost: settings.similarityBoost,
+      speechRate: settings.speechRate,
+      volume: settings.volume ?? 1.0,
+      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId,
+      onStart: () => {
+        if (!isCancelledRef.current) {
+          setOrbState('speaking');
+          setStatusText('SPEAKING...');
+        }
+      },
+      onEnd: () => {
+        if (!isCancelledRef.current) {
+          beginMicCapture();
+        } else {
+          setMicBusyForActiveSession(false);
+        }
+      },
+      onError: () => {
+        if (!isCancelledRef.current) {
+          beginMicCapture();
+        } else {
+          setMicBusyForActiveSession(false);
+        }
+      }
+    });
   };
 
   // Stop / Cancel voice interaction
   const stopVoiceInteraction = () => {
     isCancelledRef.current = true;
+    hasGreetedSessionRef.current = false;
     setMicBusyForActiveSession(false);
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {}
+    if (captureControllerRef.current) {
+      captureControllerRef.current.cancel();
+      captureControllerRef.current = null;
     }
     stopSpeaking();
     setOrbState('idle');
@@ -397,45 +439,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       saveVoiceSession(currentSessionRef.current);
     }
 
-    // 3. Request AI Response from /api/chat
+    // 3. Request AI Response via unified Gemini pipeline
     try {
-      const res = await apiFetch('/api/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          messages: [{ sender: 'user', text: cleanedSpoken }],
-          personality: settings.activePersonality,
-          voiceIdentity: currentId,
-          customPersonalityPrompt: settings.customPersonalityPrompt,
-          customGeminiKey: settings.customGeminiApiKey,
-          customGrokApiKey: settings.customGrokApiKey,
-          defaultProvider: settings.defaultAiProvider,
-          aiFallbackEnabled: settings.aiFallbackEnabled,
-          isVoiceMode: true,
-          memories: activeMemories,
-          memoryEnabled: settings.memoryEnabled,
-          assistantNickname: settings.assistantNickname || 'Zuzu',
-          userNickname: settings.userNickname || 'Rasel',
-          gfIntensity: settings.gfIntensity || 'sweet'
-        })
+      const historyContext = (currentSessionRef.current?.messages || []).map(m => ({
+        sender: m.sender,
+        text: m.text
+      }));
+
+      const aiResult = await sendUnifiedAiChat({
+        messages: historyContext.length > 0 ? historyContext : [{ sender: 'user', text: cleanedSpoken }],
+        settings,
+        memories: activeMemories,
+        isVoiceMode: true
       });
 
-      const data = await res.json();
-      let reply = data.reply;
-
-      if (!reply || reply.trim().length === 0) {
-
-        reply = generateIntelligentAnswer({
-          userQuestion: spoken,
-          conversationHistory: [],
-          personality: settings.activePersonality,
-          voiceIdentity: currentId,
-          customPersonalityPrompt: settings.customPersonalityPrompt,
-          isVoiceMode: true,
-          memories: activeMemories,
-          memoryEnabled: settings.memoryEnabled
-        });
+      if (aiResult.isError) {
+        setLastAiResponse(aiResult.reply);
+        setOrbState('idle');
+        setStatusText('GEMINI API ERROR');
+        setIsVoiceActive(false);
+        if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
+          onRequestApiKeyModal('Voice Assistant');
+        }
+        return;
       }
 
+      const reply = aiResult.reply;
       setLastAiResponse(reply);
 
       // Record assistant voice message
@@ -456,19 +485,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       speakSpokenReply(reply, currentId);
     } catch (err: any) {
-      console.warn('Voice query fallback:', err);
-      const fallback = generateIntelligentAnswer({
-        userQuestion: spoken,
-        conversationHistory: [],
-        personality: settings.activePersonality,
-        voiceIdentity: currentId,
-        customPersonalityPrompt: settings.customPersonalityPrompt,
-        isVoiceMode: true,
-        memories: activeMemories,
-        memoryEnabled: settings.memoryEnabled
-      });
-      setLastAiResponse(fallback);
-      speakSpokenReply(fallback, currentId);
+      setOrbState('idle');
+      setStatusText('ZUZU AI OFF • TAP TO START');
+      setLastAiResponse(err?.message || 'Could not reach AI service.');
+      setIsVoiceActive(false);
     }
   };
 
@@ -501,7 +521,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         setOrbState('idle');
         setStatusText('VOICE SESSION ACTIVE');
         if (settings.continuousListening && !isCancelledRef.current) {
-          setTimeout(() => startVoiceInteraction(), 500);
+          setTimeout(() => beginMicCapture(), 500);
         } else {
           setIsVoiceActive(false);
           setStatusText('ZUZU AI OFF • TAP TO START');

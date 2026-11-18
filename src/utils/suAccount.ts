@@ -3,16 +3,18 @@ import { AppSettings } from '../types';
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { getAllBackupPayload, restoreAllBackupPayload, saveAppSettings } from './storage';
 
-export interface NusuRegistrationInput {
-  fullName: string;
-  phone: string;
+export interface SuRegistrationInput {
+  username: string;
+  fullName?: string;
+  phone?: string;
   password: string;
   confirmPassword: string;
 }
 
-export interface NusuAuthResult {
+export interface SuAuthResult {
   success: boolean;
   accountId?: string;
+  username?: string;
   fullName?: string;
   phone?: string;
   lastSyncedAt?: number;
@@ -20,7 +22,7 @@ export interface NusuAuthResult {
   message: string;
 }
 
-const LOCAL_VAULT_MIRROR_PREFIX = 'zuzu_nusu_vault_';
+const LOCAL_VAULT_MIRROR_PREFIX = 'zuzu_su_vault_';
 
 /**
  * Computes lowercase SHA-256 hex digest using Web Crypto API with pure-JS fallback
@@ -33,7 +35,6 @@ async function sha256Hex(input: string): Promise<string> {
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
   }
-  // Fallback deterministic 64-char hex digest if subtle is unavailable in insecure http contexts
   let h1 = 0x811c9dc5;
   let h2 = 0x9e3779b9;
   let h3 = 0x85ebca6b;
@@ -63,15 +64,14 @@ function generateHexSalt(length = 32): string {
 
 async function hashPassword(password: string, salt: string): Promise<string> {
   let digest = await sha256Hex(`${salt}::${password}`);
-  // Stretch deterministically for brute-force resistance
   for (let i = 0; i < 16; i++) {
     digest = await sha256Hex(`${salt}:${i}:${digest}`);
   }
   return digest;
 }
 
-async function deriveVaultId(accountId: string, password: string): Promise<string> {
-  return sha256Hex(`zuzu_vault::${accountId.toUpperCase()}::${password}`);
+async function deriveVaultId(canonicalId: string, password: string): Promise<string> {
+  return sha256Hex(`zuzu_su_vault::${canonicalId.toLowerCase()}::${password}`);
 }
 
 async function deriveVaultVerifier(vaultId: string): Promise<string> {
@@ -112,31 +112,47 @@ function sanitizeSnapshotForFirestore(raw: ReturnType<typeof getAllBackupPayload
   };
 }
 
-function randomSixDigitNusuId(): string {
-  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
-    const arr = new Uint32Array(1);
-    window.crypto.getRandomValues(arr);
-    const num = 100000 + (arr[0] % 900000);
-    return `NU-${num}`;
-  }
-  return `NU-${Math.floor(100000 + Math.random() * 900000)}`;
+/**
+ * Extracts clean custom username (stripping optional "SU-" prefix if user typed it).
+ */
+export function normalizeCustomUsername(rawInput: string): {
+  displayUsername: string;
+  canonicalId: string;
+  formattedSuId: string;
+} {
+  const trimmed = rawInput.trim().replace(/^su-/i, '');
+  const canonicalId = trimmed.toLowerCase();
+  return {
+    displayUsername: trimmed,
+    canonicalId,
+    formattedSuId: trimmed ? `SU-${trimmed}` : ''
+  };
+}
+
+export function isValidCustomUsername(username: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$/.test(username);
 }
 
 /**
- * Registers a brand new NUSU Account (`NU-XXXXXX`) in Firebase Firestore
- * with Full Name, Phone/Identifier, and Password, then logs user in instantly.
+ * Registers a custom SU-ID account using a user-chosen Username (letters & numbers)
+ * and Secure Password in Firebase Firestore, then signs the user in immediately.
  */
-export async function registerNusuAccount(input: NusuRegistrationInput): Promise<NusuAuthResult> {
-  const fullName = input.fullName.trim();
-  const phone = input.phone.trim();
+export async function registerSuAccount(input: SuRegistrationInput): Promise<SuAuthResult> {
+  const { displayUsername, canonicalId, formattedSuId } = normalizeCustomUsername(input.username);
+  const fullName = (input.fullName || '').trim() || displayUsername;
+  const rawPhone = (input.phone || '').trim();
+  const phone = rawPhone.length >= 3 ? rawPhone.slice(0, 40) : `SU-${displayUsername}`.slice(0, 40);
   const password = input.password.trim();
   const confirmPassword = input.confirmPassword.trim();
 
-  if (fullName.length < 2 || fullName.length > 80) {
-    return { success: false, message: 'Enter your Full Name or Username (2-80 characters).' };
+  if (!isValidCustomUsername(displayUsername)) {
+    return {
+      success: false,
+      message: 'Username must be 3-32 characters (letters & numbers, starting with a letter or digit).'
+    };
   }
-  if (phone.length < 3 || phone.length > 40) {
-    return { success: false, message: 'Enter a valid Phone Number or Identifier (3-40 characters).' };
+  if (fullName.length < 1 || fullName.length > 80) {
+    return { success: false, message: 'Full Name must be 1-80 characters.' };
   }
   if (password.length < 6) {
     return { success: false, message: 'Password must be at least 6 characters long.' };
@@ -145,48 +161,36 @@ export async function registerNusuAccount(input: NusuRegistrationInput): Promise
     return { success: false, message: 'Password and Confirm Password do not match.' };
   }
 
-  // Generate collision-free NU-XXXXXX ID checked against Firestore
-  let accountId = '';
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const candidate = randomSixDigitNusuId();
-    const checkPath = `nusu_accounts/${candidate}`;
-    try {
-      const existingSnap = await getDoc(doc(db, 'nusu_accounts', candidate));
-      if (!existingSnap.exists()) {
-        accountId = candidate;
-        break;
-      }
-    } catch (err: any) {
-      // Only treat permission/fatal errors cleanly; otherwise try next
-      if (err?.code === 'permission-denied') {
-        try {
-          handleFirestoreError(err, OperationType.GET, checkPath);
-        } catch (wrapped: any) {
-          return { success: false, message: wrapped.message };
-        }
-      }
-      accountId = candidate;
-      break;
+  const accountPath = `su_accounts/${canonicalId}`;
+  try {
+    const existingSnap = await getDoc(doc(db, 'su_accounts', canonicalId));
+    if (existingSnap.exists()) {
+      return {
+        success: false,
+        message: `Username "${displayUsername}" is already registered. Pick another Username or sign in.`
+      };
     }
-  }
-
-  if (!accountId) {
-    return { success: false, message: 'Could not allocate a unique NUSU ID. Please try again.' };
+  } catch (err: any) {
+    if (err?.code === 'permission-denied') {
+      try {
+        handleFirestoreError(err, OperationType.GET, accountPath);
+      } catch (wrapped: any) {
+        return { success: false, message: wrapped.message };
+      }
+    }
   }
 
   const salt = generateHexSalt(32);
   const passwordHash = await hashPassword(password, salt);
-  const vaultId = await deriveVaultId(accountId, password);
+  const vaultId = await deriveVaultId(canonicalId, password);
   const vaultVerifier = await deriveVaultVerifier(vaultId);
   const phoneMasked = maskPhoneIdentifier(phone);
-
-  const accountPath = `nusu_accounts/${accountId}`;
-  const vaultPath = `nusu_accounts/${accountId}/vault/${vaultId}`;
+  const vaultPath = `su_accounts/${canonicalId}/vault/${vaultId}`;
 
   try {
-    // 1. Write root NUSU Account metadata document
-    await setDoc(doc(db, 'nusu_accounts', accountId), {
-      accountId,
+    await setDoc(doc(db, 'su_accounts', canonicalId), {
+      accountId: canonicalId,
+      username: displayUsername,
       fullName,
       phoneMasked,
       passwordSalt: salt,
@@ -198,31 +202,31 @@ export async function registerNusuAccount(input: NusuRegistrationInput): Promise
   } catch (err) {
     try {
       handleFirestoreError(err, OperationType.CREATE, accountPath);
-    } catch (wrapped: any) {
+    } catch {
       return {
         success: false,
-        message: 'Failed to register NUSU ID in Firebase Firestore. Check network connection.',
+        message: 'Failed to create SU-ID account in Firebase Firestore. Check network connection.',
       };
     }
   }
 
-  // Prepare initial persistent snapshot (preserving current user nickname as fullName)
   const rawPayload = getAllBackupPayload();
   const cleanSnapshot = sanitizeSnapshotForFirestore({
     ...rawPayload,
     settings: {
       ...rawPayload.settings,
       userNickname: fullName,
-      nusuAccountId: accountId,
-      nusuFullName: fullName,
-      nusuPhone: phone,
+      suAccountId: canonicalId,
+      suUsername: displayUsername,
+      suFullName: fullName,
+      suPhone: phone,
     },
   });
 
   try {
-    // 2. Write private password-capability protected Vault document
-    await setDoc(doc(db, 'nusu_accounts', accountId, 'vault', vaultId), {
-      accountId,
+    await setDoc(doc(db, 'su_accounts', canonicalId, 'vault', vaultId), {
+      accountId: canonicalId,
+      username: displayUsername,
       phone,
       fullName,
       chatHistory: cleanSnapshot.chatHistory,
@@ -238,7 +242,7 @@ export async function registerNusuAccount(input: NusuRegistrationInput): Promise
     } catch {
       return {
         success: false,
-        message: 'Account ID created, but failed to initialize Firebase memory vault.',
+        message: 'SU-ID created, but failed to initialize Firebase memory vault.',
       };
     }
   }
@@ -246,50 +250,55 @@ export async function registerNusuAccount(input: NusuRegistrationInput): Promise
   const now = Date.now();
   const updatedSettings = saveAppSettings({
     userNickname: fullName,
-    nusuAccountId: accountId,
-    nusuFullName: fullName,
-    nusuPhone: phone,
-    nusuVaultKey: vaultId,
-    nusuToken: `fb_${vaultId.slice(0, 24)}`,
-    nusuLastSyncedAt: now,
+    suAccountId: canonicalId,
+    suUsername: displayUsername,
+    suFullName: fullName,
+    suPhone: phone,
+    suVaultKey: vaultId,
+    suToken: `fb_${vaultId.slice(0, 24)}`,
+    suLastSyncedAt: now,
   });
 
   try {
-    localStorage.setItem(`${LOCAL_VAULT_MIRROR_PREFIX}${accountId}`, JSON.stringify(cleanSnapshot));
+    localStorage.setItem(`${LOCAL_VAULT_MIRROR_PREFIX}${canonicalId}`, JSON.stringify(cleanSnapshot));
   } catch {}
 
   return {
     success: true,
-    accountId,
+    accountId: canonicalId,
+    username: displayUsername,
     fullName,
     phone,
     lastSyncedAt: now,
     restoredSettings: updatedSettings,
-    message: `Created NUSU ID ${accountId}! Logged in & backed up to Firebase.`,
+    message: `SU-ID ${formattedSuId} created! Signed in & backed up to Firebase.`,
   };
 }
 
 /**
- * Signs into an existing NUSU Account (`NU-XXXXXX` + Password) via Firebase Firestore
+ * Signs in directly using the user's chosen Username / SU-ID + Password via Firebase Firestore
  * and completely restores user profile, chat histories, voice sessions, memories & settings.
  */
-export async function loginNusuAccount(accountId: string, password: string): Promise<NusuAuthResult> {
-  const normalizedId = accountId.trim().toUpperCase();
+export async function loginSuAccount(usernameOrSuId: string, password: string): Promise<SuAuthResult> {
+  const { displayUsername, canonicalId } = normalizeCustomUsername(usernameOrSuId);
   const cleanPassword = password.trim();
 
-  if (!/^NU-\d{6}$/.test(normalizedId)) {
-    return { success: false, message: 'Enter a valid NUSU ID (format: NU-XXXXXX).' };
+  if (!isValidCustomUsername(displayUsername)) {
+    return {
+      success: false,
+      message: 'Enter a valid Username or SU-ID (3-32 letters/numbers).'
+    };
   }
   if (!cleanPassword) {
     return { success: false, message: 'Password is required.' };
   }
 
-  const accountPath = `nusu_accounts/${normalizedId}`;
+  const accountPath = `su_accounts/${canonicalId}`;
   let accountData: any = null;
   try {
-    const accountSnap = await getDoc(doc(db, 'nusu_accounts', normalizedId));
+    const accountSnap = await getDoc(doc(db, 'su_accounts', canonicalId));
     if (!accountSnap.exists()) {
-      return { success: false, message: `No NUSU Account found for ${normalizedId}.` };
+      return { success: false, message: `No SU-ID Account found for "${displayUsername}".` };
     }
     accountData = accountSnap.data();
   } catch (err) {
@@ -302,15 +311,15 @@ export async function loginNusuAccount(accountId: string, password: string): Pro
 
   const expectedHash = await hashPassword(cleanPassword, String(accountData.passwordSalt || ''));
   if (expectedHash !== accountData.passwordHash) {
-    return { success: false, message: 'Incorrect password for this NUSU Account.' };
+    return { success: false, message: 'Incorrect password for this SU-ID Account.' };
   }
 
-  const vaultId = await deriveVaultId(normalizedId, cleanPassword);
-  const vaultPath = `nusu_accounts/${normalizedId}/vault/${vaultId}`;
+  const vaultId = await deriveVaultId(canonicalId, cleanPassword);
+  const vaultPath = `su_accounts/${canonicalId}/vault/${vaultId}`;
   let vaultData: any = null;
 
   try {
-    const vaultSnap = await getDoc(doc(db, 'nusu_accounts', normalizedId, 'vault', vaultId));
+    const vaultSnap = await getDoc(doc(db, 'su_accounts', canonicalId, 'vault', vaultId));
     if (vaultSnap.exists()) {
       vaultData = vaultSnap.data();
     }
@@ -323,7 +332,8 @@ export async function loginNusuAccount(accountId: string, password: string): Pro
   }
 
   const now = Date.now();
-  const restoredFullName = String(vaultData?.fullName || accountData.fullName || 'Zuzu User');
+  const storedUsername = String(vaultData?.username || accountData.username || displayUsername);
+  const restoredFullName = String(vaultData?.fullName || accountData.fullName || storedUsername);
   const restoredPhone = String(vaultData?.phone || accountData.phoneMasked || '');
   const sessionToken = `fb_${vaultId.slice(0, 24)}`;
 
@@ -337,27 +347,29 @@ export async function loginNusuAccount(accountId: string, password: string): Pro
           savedAt: now,
         },
         {
-          nusuAccountId: normalizedId,
-          nusuFullName: restoredFullName,
-          nusuPhone: restoredPhone,
-          nusuVaultKey: vaultId,
-          nusuToken: sessionToken,
-          nusuLastSyncedAt: now,
+          suAccountId: canonicalId,
+          suUsername: storedUsername,
+          suFullName: restoredFullName,
+          suPhone: restoredPhone,
+          suVaultKey: vaultId,
+          suToken: sessionToken,
+          suLastSyncedAt: now,
         }
       )
     : saveAppSettings({
         userNickname: restoredFullName,
-        nusuAccountId: normalizedId,
-        nusuFullName: restoredFullName,
-        nusuPhone: restoredPhone,
-        nusuVaultKey: vaultId,
-        nusuToken: sessionToken,
-        nusuLastSyncedAt: now,
+        suAccountId: canonicalId,
+        suUsername: storedUsername,
+        suFullName: restoredFullName,
+        suPhone: restoredPhone,
+        suVaultKey: vaultId,
+        suToken: sessionToken,
+        suLastSyncedAt: now,
       });
 
   try {
     localStorage.setItem(
-      `${LOCAL_VAULT_MIRROR_PREFIX}${normalizedId}`,
+      `${LOCAL_VAULT_MIRROR_PREFIX}${canonicalId}`,
       JSON.stringify({
         chatHistory: vaultData?.chatHistory || [],
         voiceSessions: vaultData?.voiceSessions || [],
@@ -372,44 +384,45 @@ export async function loginNusuAccount(accountId: string, password: string): Pro
 
   return {
     success: true,
-    accountId: normalizedId,
+    accountId: canonicalId,
+    username: storedUsername,
     fullName: restoredFullName,
     phone: restoredPhone,
     lastSyncedAt: now,
     restoredSettings,
-    message: `Signed in as ${normalizedId} (${restoredFullName}). Restored ${chatCount} chats & ${memCount} memories from Firebase!`,
+    message: `Signed in as SU-${storedUsername}. Restored ${chatCount} chats & ${memCount} memories from Firebase!`,
   };
 }
 
 /**
  * Syncs local chat history, voice sessions, assistant memories & settings to Firebase Firestore
  */
-export async function syncNusuCloudNow(settings: AppSettings): Promise<{
+export async function syncSuCloudNow(settings: AppSettings): Promise<{
   success: boolean;
   lastSyncedAt?: number;
   message: string;
 }> {
-  if (!settings.nusuAccountId || !settings.nusuVaultKey) {
-    return { success: false, message: 'Sign in with your NUSU ID (NU-XXXXXX) first.' };
+  if (!settings.suAccountId || !settings.suVaultKey) {
+    return { success: false, message: 'Sign in with your custom Username / SU-ID first.' };
   }
 
-  const accountId = settings.nusuAccountId;
-  const vaultId = settings.nusuVaultKey;
+  const canonicalId = settings.suAccountId.toLowerCase();
+  const vaultId = settings.suVaultKey;
   const rawSnapshot = getAllBackupPayload();
   const cleanSnapshot = sanitizeSnapshotForFirestore(rawSnapshot);
 
   try {
-    localStorage.setItem(`${LOCAL_VAULT_MIRROR_PREFIX}${accountId}`, JSON.stringify(cleanSnapshot));
+    localStorage.setItem(`${LOCAL_VAULT_MIRROR_PREFIX}${canonicalId}`, JSON.stringify(cleanSnapshot));
   } catch {}
 
-  const rawPhone = String(settings.nusuPhone || cleanSnapshot.settings?.nusuPhone || 'NUSU-User').trim();
-  const safePhone = rawPhone.length >= 3 ? rawPhone.slice(0, 40) : 'NUSU-User';
-  const rawName = String(settings.nusuFullName || settings.userNickname || 'Zuzu User').trim();
+  const rawPhone = String(settings.suPhone || cleanSnapshot.settings?.suPhone || 'SU-User').trim();
+  const safePhone = rawPhone.length >= 3 ? rawPhone.slice(0, 40) : 'SU-User';
+  const rawName = String(settings.suFullName || settings.userNickname || settings.suUsername || 'Zuzu User').trim();
   const safeName = rawName.length >= 1 ? rawName.slice(0, 80) : 'Zuzu User';
 
-  const vaultPath = `nusu_accounts/${accountId}/vault/${vaultId}`;
+  const vaultPath = `su_accounts/${canonicalId}/vault/${vaultId}`;
   try {
-    await updateDoc(doc(db, 'nusu_accounts', accountId, 'vault', vaultId), {
+    await updateDoc(doc(db, 'su_accounts', canonicalId, 'vault', vaultId), {
       phone: safePhone,
       fullName: safeName,
       chatHistory: cleanSnapshot.chatHistory,
@@ -424,7 +437,7 @@ export async function syncNusuCloudNow(settings: AppSettings): Promise<{
       const currentRaw = localStorage.getItem('zuzu_settings_v2');
       if (currentRaw) {
         const parsed = JSON.parse(currentRaw);
-        parsed.nusuLastSyncedAt = now;
+        parsed.suLastSyncedAt = now;
         localStorage.setItem('zuzu_settings_v2', JSON.stringify(parsed));
       }
     } catch {}
@@ -446,12 +459,13 @@ export async function syncNusuCloudNow(settings: AppSettings): Promise<{
   }
 }
 
-export function logoutNusuAccount(): AppSettings {
+export function logoutSuAccount(): AppSettings {
   return saveAppSettings({
-    nusuAccountId: undefined,
-    nusuFullName: undefined,
-    nusuPhone: undefined,
-    nusuToken: undefined,
-    nusuVaultKey: undefined,
+    suAccountId: undefined,
+    suUsername: undefined,
+    suFullName: undefined,
+    suPhone: undefined,
+    suToken: undefined,
+    suVaultKey: undefined,
   });
 }
