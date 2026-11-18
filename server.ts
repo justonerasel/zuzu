@@ -47,12 +47,13 @@ const CURATED_PREMADE_VOICES = [
   { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', gender: 'female', category: 'premade', description: 'Clear narrative female voice' }
 ];
 
-// ---------------- PERSISTENT SU-ID ACCOUNT CLOUD STORE ----------------
+// ---------------- PERSISTENT ZU-ID ACCOUNT CLOUD STORE ----------------
 const DATA_DIR = path.resolve(__dirname, 'data');
-const SU_DB_PATH = path.join(DATA_DIR, 'su_accounts.json');
+const ZU_DB_PATH = path.join(DATA_DIR, 'zu_accounts.json');
 
-interface SuAccountRecord {
-  accountId: string; // canonical lowercase username (e.g., rasel99 -> SU-rasel99)
+interface ZuAccountRecord {
+  accountId: string; // canonical lowercase username (e.g., rasel99 -> ZU-rasel99)
+  zu_id: string;
   username: string;
   displayName: string;
   passwordSalt: string;
@@ -69,54 +70,54 @@ interface SuAccountRecord {
   };
 }
 
-function readSuStore(): Record<string, SuAccountRecord> {
+function readZuStore(): Record<string, ZuAccountRecord> {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    if (!fs.existsSync(SU_DB_PATH)) {
+    if (!fs.existsSync(ZU_DB_PATH)) {
       return {};
     }
-    const raw = fs.readFileSync(SU_DB_PATH, 'utf-8');
+    const raw = fs.readFileSync(ZU_DB_PATH, 'utf-8');
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (err) {
-    console.warn('[SU Store] Read warning:', err);
+    console.warn('[ZU Store] Read warning:', err);
     return {};
   }
 }
 
-function writeSuStore(store: Record<string, SuAccountRecord>): void {
+function writeZuStore(store: Record<string, ZuAccountRecord>): void {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-  const tmpPath = `${SU_DB_PATH}.tmp`;
+  const tmpPath = `${ZU_DB_PATH}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), 'utf-8');
-  fs.renameSync(tmpPath, SU_DB_PATH);
+  fs.renameSync(tmpPath, ZU_DB_PATH);
 }
 
-function hashSuPassword(password: string, salt?: string): { salt: string; hash: string } {
+function hashZuPassword(password: string, salt?: string): { salt: string; hash: string } {
   const actualSalt = salt || crypto.randomBytes(16).toString('hex');
   const derived = crypto.scryptSync(password, actualSalt, 64).toString('hex');
   return { salt: actualSalt, hash: derived };
 }
 
-function verifySuPassword(password: string, salt: string, storedHash: string): boolean {
+function verifyZuPassword(password: string, salt: string, storedHash: string): boolean {
   const derived = crypto.scryptSync(password, salt, 64);
   const storedBuf = Buffer.from(storedHash, 'hex');
   if (derived.length !== storedBuf.length) return false;
   return crypto.timingSafeEqual(derived, storedBuf);
 }
 
-function normalizeSuUsername(rawInput: string): { displayUsername: string; canonicalId: string } {
-  const displayUsername = String(rawInput || '').trim().replace(/^su-/i, '');
+function normalizeZuUsername(rawInput: string): { displayUsername: string; canonicalId: string } {
+  const displayUsername = String(rawInput || '').trim().replace(/^(zu|su)-/i, '');
   return {
     displayUsername,
     canonicalId: displayUsername.toLowerCase(),
   };
 }
 
-function isValidSuUsername(username: string): boolean {
+function isValidZuUsername(username: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$/.test(username);
 }
 
@@ -132,9 +133,61 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-const LATEST_APP_VERSION = '3.6.3';
-const LATEST_VERSION_CODE = 363;
-const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.6.0';
+const LATEST_APP_VERSION = '3.7.0';
+const LATEST_VERSION_CODE = 370;
+const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.7.0';
+const GEMINI_PRIMARY_MODEL = 'gemini-3.8-flash';
+const GEMINI_FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-4-hydrogen'];
+
+async function generateWithGeminiResilience(
+  clientAi: GoogleGenAI,
+  params: {
+    contents: any;
+    config?: any;
+    preferredModel?: string;
+    timeoutMs?: number;
+  }
+): Promise<{ response: any; usedModel: string }> {
+  const preferred = (params.preferredModel || GEMINI_PRIMARY_MODEL).replace(/^models\//, '');
+  const candidates = Array.from(new Set([preferred, ...GEMINI_FALLBACK_MODELS])).filter(Boolean);
+  let lastErr: any = null;
+
+  for (const modelId of candidates) {
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    try {
+      const requestPromise = clientAi.models.generateContent({
+        model: modelId,
+        contents: params.contents,
+        ...(params.config ? { config: params.config } : {})
+      });
+
+      const response = params.timeoutMs
+        ? await Promise.race([
+            requestPromise,
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(
+                () => reject(new Error(`Gemini request timed out after ${Math.round(params.timeoutMs! / 1000)}s.`)),
+                params.timeoutMs
+              );
+            })
+          ])
+        : await requestPromise;
+
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      return { response, usedModel: modelId };
+    } catch (err: any) {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      lastErr = err;
+      const msg = err?.message || '';
+      if (/404|NOT_FOUND|not found for API version/i.test(msg)) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastErr || new Error('Google Gemini model request failed.');
+}
 
 // Endpoint: Configuration check (Voice IDs, API key availability)
 app.get('/api/config', (req, res) => {
@@ -150,7 +203,7 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-// Endpoint: System update & Force Update checking
+// Endpoint: System update & In-App OTA checking
 app.get('/api/system/check-update', (req, res) => {
   const installedVersion = typeof req.query.installedVersion === 'string' ? req.query.installedVersion : LATEST_APP_VERSION;
   const installedCode = req.query.versionCode ? parseInt(String(req.query.versionCode), 10) : LATEST_VERSION_CODE;
@@ -164,38 +217,36 @@ app.get('/api/system/check-update', (req, res) => {
     latestVersion: `v${LATEST_APP_VERSION}`,
     versionCode: LATEST_VERSION_CODE,
     minSupportedVersion: `v${MIN_SUPPORTED_VERSION}`,
-    buildTag: 'Build 363-Production',
+    buildTag: 'Build 370-Production',
     releaseDate: 'November 2026',
     status: hasNewerVersion ? 'update_available' : 'up_to_date',
     updateRequired: hasNewerVersion,
     forceUpdate: forceFlag,
     otaAvailable: true,
+    otaMethod: 'in_app_delta',
     targetCompatibility: 'Android 9.0 (Pie) through Android 16',
-    downloadUrl: 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
-    apkDownloadUrl: 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
     websiteUrl: 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
-    downloadAvailable: true,
     message: forceFlag
-      ? `Critical update required (v${LATEST_APP_VERSION}). Please update Zuzu AI to continue with Silent Background Wake-Word, Gemini AI & SU-ID Cloud Sync.`
-      : `Zuzu AI is running the latest production build (v${LATEST_APP_VERSION}). Silent Foreground Service, Wake Word, Gemini Voice & SU-ID Cloud Sync are active.`,
+      ? `OTA update required (v${LATEST_APP_VERSION}). Syncing Zuzu AI in-app OTA bundle with Gemini 3.8 Flash, 30 Android Permissions & ZU-ID Sync.`
+      : `Zuzu AI is up to date on v${LATEST_APP_VERSION} (OTA Verified). Gemini 3.8 Flash, 30 Android Permissions & ZU-ID Cloud Sync are active.`,
     changelogSummary: [
-      '100% Silent Android Foreground Service with boot persistence & battery exemption controls',
-      'Always-On Wake Word background listener ("Wake up Zuzu") with seamless voice capture',
-      'Reliable Gemini 2.5 Flash bilingual (English & Bangla) text & voice responses',
-      'Custom Username SU-ID Account cloud sync preserving chats, memories & settings across reinstalls',
-      'Edge-to-Edge full-screen display layout & scaled crisp Zuzu AI app icon assets'
+      'Google Gemini 3.8 Flash engine (models/gemini-3.8-flash) for fast bilingual text & voice',
+      '30 comprehensive Android permissions (audio, Bluetooth, Wi-Fi/network, wake lock, overlay, location, calls, contacts, storage & vision)',
+      'Custom Username & ZU-ID Account login with Firebase Firestore cloud backup & restore',
+      'Calibrated Mouth Whistle (শিস) & Finger Snap triggers + Smart Contextual Wake Greetings',
+      '100% Silent Android Foreground Service, true Edge-to-Edge layout & scaled Zuzu AI logos'
     ]
   });
 });
 
-// ---------------- SU-ID ACCOUNT API ENDPOINTS ----------------
+// ---------------- ZU-ID ACCOUNT API ENDPOINTS ----------------
 
-// Register a new Custom Username SU-ID Account
-app.post('/api/su/register', (req, res) => {
+// Register a new Custom Username ZU-ID Account
+app.post('/api/zu/register', (req, res) => {
   try {
     const { username, password, displayName = 'Zuzu User', initialSnapshot } = req.body || {};
-    const { displayUsername, canonicalId } = normalizeSuUsername(username);
-    if (!isValidSuUsername(displayUsername)) {
+    const { displayUsername, canonicalId } = normalizeZuUsername(username);
+    if (!isValidZuUsername(displayUsername)) {
       return res.status(400).json({
         success: false,
         error: 'Username must be 3-32 characters (letters & numbers, starting with a letter or digit).'
@@ -205,7 +256,7 @@ app.post('/api/su/register', (req, res) => {
       return res.status(400).json({ success: false, error: 'Password must be at least 6 characters long.' });
     }
 
-    const store = readSuStore();
+    const store = readZuStore();
     if (store[canonicalId]) {
       return res.status(409).json({
         success: false,
@@ -213,12 +264,13 @@ app.post('/api/su/register', (req, res) => {
       });
     }
 
-    const { salt, hash } = hashSuPassword(password.trim());
+    const { salt, hash } = hashZuPassword(password.trim());
     const sessionToken = crypto.randomBytes(24).toString('hex');
     const now = Date.now();
 
-    const record: SuAccountRecord = {
+    const record: ZuAccountRecord = {
       accountId: canonicalId,
+      zu_id: canonicalId,
       username: displayUsername,
       displayName: String(displayName).trim() || displayUsername,
       passwordSalt: salt,
@@ -236,74 +288,76 @@ app.post('/api/su/register', (req, res) => {
     };
 
     store[canonicalId] = record;
-    writeSuStore(store);
+    writeZuStore(store);
 
     return res.json({
       success: true,
       accountId: canonicalId,
+      zu_id: canonicalId,
       username: displayUsername,
       displayName: record.displayName,
       token: sessionToken,
       lastSyncedAt: now,
-      message: `SU-ID SU-${displayUsername} created and synced successfully!`
+      message: `ZU-ID ZU-${displayUsername} created and synced successfully!`
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'Registration failed.' });
   }
 });
 
-// Login to existing SU-ID Account (Username/SU-ID + Password) & restore full memory snapshot
-app.post('/api/su/login', (req, res) => {
+// Login to existing ZU-ID Account (Username/ZU-ID + Password) & restore full memory snapshot
+app.post('/api/zu/login', (req, res) => {
   try {
     const { username, accountId, password } = req.body || {};
-    const { displayUsername, canonicalId } = normalizeSuUsername(username || accountId);
-    if (!isValidSuUsername(displayUsername)) {
-      return res.status(400).json({ success: false, error: 'Enter a valid Username or SU-ID (3-32 letters/numbers).' });
+    const { displayUsername, canonicalId } = normalizeZuUsername(username || accountId);
+    if (!isValidZuUsername(displayUsername)) {
+      return res.status(400).json({ success: false, error: 'Enter a valid Username or ZU-ID (3-32 letters/numbers).' });
     }
     if (!password || typeof password !== 'string') {
       return res.status(400).json({ success: false, error: 'Password is required.' });
     }
 
-    const store = readSuStore();
+    const store = readZuStore();
     const record = store[canonicalId];
     if (!record) {
-      return res.status(404).json({ success: false, error: `No SU-ID Account found for "${displayUsername}".` });
+      return res.status(404).json({ success: false, error: `No ZU-ID Account found for "${displayUsername}".` });
     }
 
-    if (!verifySuPassword(password.trim(), record.passwordSalt, record.passwordHash)) {
-      return res.status(401).json({ success: false, error: 'Incorrect password for this SU-ID Account.' });
+    if (!verifyZuPassword(password.trim(), record.passwordSalt, record.passwordHash)) {
+      return res.status(401).json({ success: false, error: 'Incorrect password for this ZU-ID Account.' });
     }
 
     const newToken = crypto.randomBytes(24).toString('hex');
     record.sessionToken = newToken;
     store[canonicalId] = record;
-    writeSuStore(store);
+    writeZuStore(store);
 
     return res.json({
       success: true,
       accountId: record.accountId,
+      zu_id: record.zu_id || record.accountId,
       username: record.username,
       displayName: record.displayName,
       token: newToken,
       lastSyncedAt: record.lastSyncedAt,
       snapshot: record.snapshot,
-      message: `Signed in as SU-${record.username}. All memories and chats restored!`
+      message: `Signed in as ZU-${record.username}. All memories and chats restored!`
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'Login failed.' });
   }
 });
 
-// Sync local data (chats, voice sessions, memories, settings, face enrollment) to SU-ID Account
-app.post('/api/su/sync', (req, res) => {
+// Sync local data (chats, voice sessions, memories, settings) to ZU-ID Account
+app.post('/api/zu/sync', (req, res) => {
   try {
     const { accountId, token, snapshot } = req.body || {};
-    const { canonicalId } = normalizeSuUsername(accountId);
-    const store = readSuStore();
+    const { canonicalId } = normalizeZuUsername(accountId);
+    const store = readZuStore();
     const record = store[canonicalId];
 
     if (!record) {
-      return res.status(404).json({ success: false, error: 'SU-ID Account not found.' });
+      return res.status(404).json({ success: false, error: 'ZU-ID Account not found.' });
     }
     if (!token || record.sessionToken !== token) {
       return res.status(401).json({ success: false, error: 'Session expired. Please sign in again.' });
@@ -322,11 +376,12 @@ app.post('/api/su/sync', (req, res) => {
     };
 
     store[canonicalId] = record;
-    writeSuStore(store);
+    writeZuStore(store);
 
     return res.json({
       success: true,
       accountId: record.accountId,
+      zu_id: record.zu_id || record.accountId,
       username: record.username,
       lastSyncedAt: now,
       stats: {
@@ -340,10 +395,10 @@ app.post('/api/su/sync', (req, res) => {
   }
 });
 
-// Check SU-ID Account metadata status
-app.get('/api/su/status/:accountId', (req, res) => {
-  const { canonicalId } = normalizeSuUsername(req.params.accountId);
-  const store = readSuStore();
+// Check ZU-ID Account metadata status
+app.get('/api/zu/status/:accountId', (req, res) => {
+  const { canonicalId } = normalizeZuUsername(req.params.accountId);
+  const store = readZuStore();
   const record = store[canonicalId];
   if (!record) {
     return res.status(404).json({ exists: false });
@@ -351,6 +406,7 @@ app.get('/api/su/status/:accountId', (req, res) => {
   return res.json({
     exists: true,
     accountId: record.accountId,
+    zu_id: record.zu_id || record.accountId,
     username: record.username,
     displayName: record.displayName,
     lastSyncedAt: record.lastSyncedAt,
@@ -416,20 +472,20 @@ const handleTestAiProvider = async (req: express.Request, res: express.Response)
     });
 
     try {
-      await client.models.generateContent({
-        model: 'gemini-2.5-flash',
+      const { usedModel } = await generateWithGeminiResilience(client, {
         contents: 'Ping test. Reply with "OK" only.',
+        preferredModel: GEMINI_PRIMARY_MODEL
       });
       const latency = Date.now() - startTime;
       return res.json({
         success: true,
         provider: 'gemini',
-        model: 'gemini-2.5-flash',
+        model: usedModel,
         latencyMs: latency,
-        message: `Connected successfully (${latency}ms) • gemini-2.5-flash`
+        message: `Connected successfully (${latency}ms) • ${usedModel}`
       });
-    } catch (err25: any) {
-      console.log('[Zuzu AI] gemini-2.5-flash test note:', err25?.message);
+    } catch (err38: any) {
+      console.log('[Zuzu AI] gemini-3.8-flash test note:', err38?.message);
 
       // Fallback to Google REST models endpoint verification
       try {
@@ -439,7 +495,7 @@ const handleTestAiProvider = async (req: express.Request, res: express.Response)
           return res.json({
             success: true,
             provider: 'gemini',
-            model: 'gemini-2.5-flash',
+            model: GEMINI_PRIMARY_MODEL,
             latencyMs: latency,
             message: `Connected successfully (${latency}ms) • Google Gemini Key Verified`
           });
@@ -448,7 +504,7 @@ const handleTestAiProvider = async (req: express.Request, res: express.Response)
         // ignore network error on fallback
       }
 
-      const rawErr = err25?.message || 'Failed to authenticate with Google Gemini API.';
+      const rawErr = err38?.message || 'Failed to authenticate with Google Gemini API.';
       let userMessage = rawErr;
       if (rawErr.includes('API_KEY_INVALID') || rawErr.includes('API key not valid')) {
         userMessage = 'Invalid API Key. Please verify your key in Google AI Studio.';
@@ -615,8 +671,7 @@ app.post('/api/generate-caption', async (req, res) => {
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
     });
 
-    const response = await clientAi.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const { response } = await generateWithGeminiResilience(clientAi, {
       contents: {
         parts: [
           {
@@ -629,7 +684,8 @@ app.post('/api/generate-caption', async (req, res) => {
             text: 'Write a catchy, warm, human-like social media caption for this photo suitable for Facebook. Include 2-3 suitable hashtags. Keep it engaging and concise.'
           }
         ]
-      }
+      },
+      preferredModel: GEMINI_PRIMARY_MODEL
     });
 
     const caption = response.text?.trim() || 'Cherishing beautiful moments! ✨ #Life #Photography #Moments';
@@ -692,7 +748,8 @@ app.post('/api/chat', async (req, res) => {
       memoryEnabled = true,
       assistantNickname = 'Zuzu',
       userNickname = 'Rasel',
-      gfIntensity = 'sweet'
+      gfIntensity = 'sweet',
+      model: requestedModel = GEMINI_PRIMARY_MODEL
     } = req.body;
 
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -815,7 +872,6 @@ GUIDELINES FOR GF MODE:
 
     // 2. Try Gemini if configured
     if (effectiveGeminiKey && effectiveGeminiKey !== 'MY_GEMINI_API_KEY') {
-      let timeoutHandle: NodeJS.Timeout | null = null;
       try {
         const clientAi = new GoogleGenAI({ 
           apiKey: effectiveGeminiKey,
@@ -841,28 +897,18 @@ GUIDELINES FOR GF MODE:
 
         const contents = formattedContents.length > 0 ? formattedContents : [{ role: 'user', parts: [{ text: latestUserMsg || 'Hello' }] }];
 
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(() => reject(new Error('Gemini request timed out after 20s.')), 20000);
+        const { response, usedModel } = await generateWithGeminiResilience(clientAi, {
+          contents,
+          config: { systemInstruction },
+          preferredModel: requestedModel,
+          timeoutMs: 20000
         });
-
-        const response: any = await Promise.race([
-          clientAi.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: contents,
-            config: {
-              systemInstruction: systemInstruction,
-            }
-          }),
-          timeoutPromise
-        ]);
-
-        if (timeoutHandle) clearTimeout(timeoutHandle);
 
         const replyText = response?.text?.trim();
         if (replyText && replyText.length > 0) {
           return res.json({ 
             reply: replyText, 
-            model: 'gemini-2.5-flash',
+            model: usedModel,
             isCloudAI: true,
             provider: 'google_gemini'
           });
@@ -870,7 +916,6 @@ GUIDELINES FOR GF MODE:
 
         lastCloudError = { status: 502, message: 'Gemini returned an empty response. Please try rephrasing your question.' };
       } catch (geminiError: any) {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
         const rawErr = geminiError?.message || 'Google Gemini request failed.';
         let status = 502;
         let friendly = rawErr;
@@ -980,8 +1025,7 @@ Provide a clear, warm, concise explanation of:
 3. Direct actionable steps or advice for the user.
 Respond in ${language === 'bn-BD' ? 'warm natural Bengali' : 'warm conversational English'}.`;
 
-        const response = await client.models.generateContent({
-          model: 'gemini-2.5-flash',
+        const { response, usedModel } = await generateWithGeminiResilience(client, {
           contents: [
             {
               role: 'user',
@@ -995,13 +1039,14 @@ Respond in ${language === 'bn-BD' ? 'warm natural Bengali' : 'warm conversationa
                 { text: `${systemPrompt}\n\nUser Question about this screen: ${userPrompt}` }
               ]
             }
-          ]
+          ],
+          preferredModel: GEMINI_PRIMARY_MODEL
         });
 
         const analysisText = response.text || 'Screen analysis complete.';
         return res.json({
           analysis: analysisText,
-          model: 'gemini-2.5-flash-vision',
+          model: `${usedModel}-vision`,
           success: true
         });
       } catch (geminiErr: any) {

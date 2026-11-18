@@ -167,14 +167,14 @@ export interface AppSettings {
   customTriggersEnabled: boolean;
   customAudioTriggers: CustomAudioTrigger[];
 
-  // Custom SU-ID Account Persistence (Custom Username + Firebase Firestore)
-  suAccountId?: string;
-  suUsername?: string;
-  suFullName?: string;
-  suPhone?: string;
-  suToken?: string;
-  suVaultKey?: string;
-  suLastSyncedAt?: number;
+  // Custom ZU-ID Account Persistence (Custom Username + Firebase Firestore)
+  zuAccountId?: string;
+  zuUsername?: string;
+  zuFullName?: string;
+  zuPhone?: string;
+  zuToken?: string;
+  zuVaultKey?: string;
+  zuLastSyncedAt?: number;
 }
 
 export type CustomAudioTriggerKind = 'whistle' | 'snap' | 'custom';

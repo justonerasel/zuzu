@@ -288,10 +288,10 @@ function matchesWakePhrase(transcript: string, customPhrase: string): { matched:
   ].filter(Boolean);
 
   for (const phrase of candidates) {
-    const idx = clean.indexOf(phrase);
-    if (idx !== -1) {
-      const remaining = clean.slice(idx + phrase.length).trim();
-      return { matched: true, remainingCommand: remaining };
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = clean.match(new RegExp(`(?:^|\\s)${escaped}(?:$|\\s)(.*)$`, 'i'));
+    if (match) {
+      return { matched: true, remainingCommand: (match[1] || '').trim() };
     }
   }
   return { matched: false, remainingCommand: '' };
@@ -403,11 +403,11 @@ async function startSilentVadOrRecognition(): Promise<void> {
             }
           }
 
-          // 2. Check Human Vocal Onset for Wake Word ("Wake up Zuzu")
+          // 2. Check Human Vocal Onset for Wake Word ("Wake up Zuzu") with ambient chatter rejection
           if (wakeListenerShouldRun) {
-            if (features.rms > 0.055 && features.tonalityRatio < 4.5) {
+            if (features.rms > 0.072 && features.tonalityRatio < 4.2) {
               speechHits++;
-              if (speechHits >= 2) {
+              if (speechHits >= 3) {
                 stopSilentVadGate();
                 bootWakeRecognitionCycle();
               }

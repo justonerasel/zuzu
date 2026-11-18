@@ -9,8 +9,10 @@ import { getAppSettings } from './storage';
  */
 
 // Current Application Build Version (Keep synchronized across Gradle, Server, UI & CI)
-export const APP_VERSION = '3.6.3';
-export const APP_VERSION_CODE = 363;
+export const APP_VERSION = '3.7.0';
+export const APP_VERSION_CODE = 370;
+export const GEMINI_PRIMARY_MODEL = 'gemini-3.8-flash';
+const GEMINI_MODEL_CANDIDATES = ['gemini-3.8-flash', 'gemini-4-hydrogen'];
 
 // Deployed Cloud Run Production Backend URL for Android APK
 export const DEFAULT_REMOTE_BACKEND_URL = 'https://ais-dev-requvmmuycwborvooarj55-817905745905.asia-east1.run.app';
@@ -157,9 +159,9 @@ export async function validateAiKey(
       if (res.ok && data.success) {
         return {
           success: true,
-          model: data.model || 'gemini-2.5-flash',
+          model: data.model || GEMINI_PRIMARY_MODEL,
           latencyMs: data.latencyMs,
-          message: data.message || `Valid ✓ Connected to ${provider === 'gemini' ? 'Google Gemini' : 'xAI Grok'}`
+          message: data.message || `Valid ✓ Connected to ${provider === 'gemini' ? 'Google Gemini 3.8 Flash' : 'xAI Grok'}`
         };
       }
       if (data?.error && provider === 'grok') {
@@ -175,7 +177,7 @@ export async function validateAiKey(
     const directResult = await validateGeminiKeyDirectly(trimmed);
     return {
       success: directResult.success,
-      model: directResult.success ? 'gemini-2.5-flash' : undefined,
+      model: directResult.success ? GEMINI_PRIMARY_MODEL : undefined,
       latencyMs: directResult.latencyMs,
       message: directResult.message
     };
@@ -284,10 +286,10 @@ Active Personality: ${settings.activePersonality}. ${settings.customPersonalityP
 export async function directGeminiGenerateContent(
   apiKey: string,
   promptOrMessages: string | Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>,
-  systemInstruction?: string
+  systemInstruction?: string,
+  preferredModel: string = GEMINI_PRIMARY_MODEL
 ): Promise<string> {
   const cleanKey = apiKey.trim();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
 
   let contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
 
@@ -316,24 +318,39 @@ export async function directGeminiGenerateContent(
     };
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
+  const modelsToTry = Array.from(new Set([preferredModel, ...GEMINI_MODEL_CANDIDATES])).filter(Boolean);
+  let lastErrorMsg = 'Google Gemini API error.';
 
-  if (!res.ok) {
-    const errJson = await res.json().catch(() => ({}));
-    const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
-    throw new Error(formatGeminiFriendlyError(rawMsg, res.status));
+  for (const modelId of modelsToTry) {
+    const cleanModel = modelId.replace(/^models\//, '');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
+      lastErrorMsg = formatGeminiFriendlyError(rawMsg, res.status);
+      // Only fall back to secondary model if endpoint reports 404 model-not-found
+      if (res.status === 404 || /NOT_FOUND|not found for API version/i.test(rawMsg)) {
+        continue;
+      }
+      throw new Error(lastErrorMsg);
+    }
+
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text || !text.trim()) {
+      throw new Error('Gemini returned an empty response. Please try again.');
+    }
+    return text.trim();
   }
 
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text || !text.trim()) {
-    throw new Error('Gemini returned an empty response. Please try again.');
-  }
-  return text.trim();
+  throw new Error(lastErrorMsg);
 }
 
 export interface UnifiedChatResult {
@@ -387,7 +404,8 @@ export async function sendUnifiedAiChat(params: {
         memoryEnabled: settings.memoryEnabled,
         assistantNickname: settings.assistantNickname || 'Zuzu',
         userNickname: settings.userNickname || 'Friend',
-        gfIntensity: settings.gfIntensity || 'sweet'
+        gfIntensity: settings.gfIntensity || 'sweet',
+        model: settings.aiModel || GEMINI_PRIMARY_MODEL
       })
     });
 
@@ -399,7 +417,7 @@ export async function sendUnifiedAiChat(params: {
         if (!hasUserGeminiKey || data.isCloudAI || settings.defaultAiProvider === 'local') {
           return {
             reply: data.reply.trim(),
-            model: data.model || 'gemini-2.5-flash',
+            model: data.model || GEMINI_PRIMARY_MODEL,
             isCloudAI: Boolean(data.isCloudAI),
             requiresKey: Boolean(data.requiresKey)
           };
@@ -416,15 +434,17 @@ export async function sendUnifiedAiChat(params: {
   // 2. If user has Gemini API Key saved, try direct Gemini REST call cleanly (critical for standalone Android APK!)
   if (hasUserGeminiKey && settings.defaultAiProvider !== 'local') {
     try {
+      const targetModel = settings.aiModel || GEMINI_PRIMARY_MODEL;
       const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
       const reply = await directGeminiGenerateContent(
         settings.customGeminiApiKey,
         params.messages,
-        sysPrompt
+        sysPrompt,
+        targetModel
       );
       return {
         reply,
-        model: 'gemini-2.5-flash',
+        model: targetModel,
         isCloudAI: true
       };
     } catch (directErr: any) {

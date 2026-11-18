@@ -3,7 +3,7 @@ import { AppSettings } from '../types';
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { getAllBackupPayload, restoreAllBackupPayload, saveAppSettings } from './storage';
 
-export interface SuRegistrationInput {
+export interface ZuRegistrationInput {
   username: string;
   fullName?: string;
   phone?: string;
@@ -11,8 +11,9 @@ export interface SuRegistrationInput {
   confirmPassword: string;
 }
 
-export interface SuAuthResult {
+export interface ZuAuthResult {
   success: boolean;
+  zu_id?: string;
   accountId?: string;
   username?: string;
   fullName?: string;
@@ -22,7 +23,7 @@ export interface SuAuthResult {
   message: string;
 }
 
-const LOCAL_VAULT_MIRROR_PREFIX = 'zuzu_su_vault_';
+const LOCAL_VAULT_MIRROR_PREFIX = 'zuzu_zu_vault_';
 
 /**
  * Computes lowercase SHA-256 hex digest using Web Crypto API with pure-JS fallback
@@ -71,7 +72,7 @@ async function hashPassword(password: string, salt: string): Promise<string> {
 }
 
 async function deriveVaultId(canonicalId: string, password: string): Promise<string> {
-  return sha256Hex(`zuzu_su_vault::${canonicalId.toLowerCase()}::${password}`);
+  return sha256Hex(`zuzu_zu_vault::${canonicalId.toLowerCase()}::${password}`);
 }
 
 async function deriveVaultVerifier(vaultId: string): Promise<string> {
@@ -113,19 +114,19 @@ function sanitizeSnapshotForFirestore(raw: ReturnType<typeof getAllBackupPayload
 }
 
 /**
- * Extracts clean custom username (stripping optional "SU-" prefix if user typed it).
+ * Extracts clean custom username (stripping optional "ZU-" prefix if user typed it).
  */
 export function normalizeCustomUsername(rawInput: string): {
   displayUsername: string;
   canonicalId: string;
-  formattedSuId: string;
+  formattedZuId: string;
 } {
-  const trimmed = rawInput.trim().replace(/^su-/i, '');
+  const trimmed = rawInput.trim().replace(/^zu-/i, '');
   const canonicalId = trimmed.toLowerCase();
   return {
     displayUsername: trimmed,
     canonicalId,
-    formattedSuId: trimmed ? `SU-${trimmed}` : ''
+    formattedZuId: trimmed ? `ZU-${trimmed}` : ''
   };
 }
 
@@ -134,14 +135,14 @@ export function isValidCustomUsername(username: string): boolean {
 }
 
 /**
- * Registers a custom SU-ID account using a user-chosen Username (letters & numbers)
+ * Registers a custom ZU-ID account using a user-chosen Username (letters & numbers)
  * and Secure Password in Firebase Firestore, then signs the user in immediately.
  */
-export async function registerSuAccount(input: SuRegistrationInput): Promise<SuAuthResult> {
-  const { displayUsername, canonicalId, formattedSuId } = normalizeCustomUsername(input.username);
+export async function registerZuAccount(input: ZuRegistrationInput): Promise<ZuAuthResult> {
+  const { displayUsername, canonicalId, formattedZuId } = normalizeCustomUsername(input.username);
   const fullName = (input.fullName || '').trim() || displayUsername;
   const rawPhone = (input.phone || '').trim();
-  const phone = rawPhone.length >= 3 ? rawPhone.slice(0, 40) : `SU-${displayUsername}`.slice(0, 40);
+  const phone = rawPhone.length >= 3 ? rawPhone.slice(0, 40) : `ZU-${displayUsername}`.slice(0, 40);
   const password = input.password.trim();
   const confirmPassword = input.confirmPassword.trim();
 
@@ -161,9 +162,9 @@ export async function registerSuAccount(input: SuRegistrationInput): Promise<SuA
     return { success: false, message: 'Password and Confirm Password do not match.' };
   }
 
-  const accountPath = `su_accounts/${canonicalId}`;
+  const accountPath = `zu_accounts/${canonicalId}`;
   try {
-    const existingSnap = await getDoc(doc(db, 'su_accounts', canonicalId));
+    const existingSnap = await getDoc(doc(db, 'zu_accounts', canonicalId));
     if (existingSnap.exists()) {
       return {
         success: false,
@@ -185,10 +186,11 @@ export async function registerSuAccount(input: SuRegistrationInput): Promise<SuA
   const vaultId = await deriveVaultId(canonicalId, password);
   const vaultVerifier = await deriveVaultVerifier(vaultId);
   const phoneMasked = maskPhoneIdentifier(phone);
-  const vaultPath = `su_accounts/${canonicalId}/vault/${vaultId}`;
+  const vaultPath = `zu_accounts/${canonicalId}/vault/${vaultId}`;
 
   try {
-    await setDoc(doc(db, 'su_accounts', canonicalId), {
+    await setDoc(doc(db, 'zu_accounts', canonicalId), {
+      zu_id: canonicalId,
       accountId: canonicalId,
       username: displayUsername,
       fullName,
@@ -205,7 +207,7 @@ export async function registerSuAccount(input: SuRegistrationInput): Promise<SuA
     } catch {
       return {
         success: false,
-        message: 'Failed to create SU-ID account in Firebase Firestore. Check network connection.',
+        message: 'Failed to create ZU-ID account in Firebase Firestore. Check network connection.',
       };
     }
   }
@@ -216,15 +218,16 @@ export async function registerSuAccount(input: SuRegistrationInput): Promise<SuA
     settings: {
       ...rawPayload.settings,
       userNickname: fullName,
-      suAccountId: canonicalId,
-      suUsername: displayUsername,
-      suFullName: fullName,
-      suPhone: phone,
+      zuAccountId: canonicalId,
+      zuUsername: displayUsername,
+      zuFullName: fullName,
+      zuPhone: phone,
     },
   });
 
   try {
-    await setDoc(doc(db, 'su_accounts', canonicalId, 'vault', vaultId), {
+    await setDoc(doc(db, 'zu_accounts', canonicalId, 'vault', vaultId), {
+      zu_id: canonicalId,
       accountId: canonicalId,
       username: displayUsername,
       phone,
@@ -242,7 +245,7 @@ export async function registerSuAccount(input: SuRegistrationInput): Promise<SuA
     } catch {
       return {
         success: false,
-        message: 'SU-ID created, but failed to initialize Firebase memory vault.',
+        message: 'ZU-ID created, but failed to initialize Firebase memory vault.',
       };
     }
   }
@@ -250,13 +253,13 @@ export async function registerSuAccount(input: SuRegistrationInput): Promise<SuA
   const now = Date.now();
   const updatedSettings = saveAppSettings({
     userNickname: fullName,
-    suAccountId: canonicalId,
-    suUsername: displayUsername,
-    suFullName: fullName,
-    suPhone: phone,
-    suVaultKey: vaultId,
-    suToken: `fb_${vaultId.slice(0, 24)}`,
-    suLastSyncedAt: now,
+    zuAccountId: canonicalId,
+    zuUsername: displayUsername,
+    zuFullName: fullName,
+    zuPhone: phone,
+    zuVaultKey: vaultId,
+    zuToken: `fb_${vaultId.slice(0, 24)}`,
+    zuLastSyncedAt: now,
   });
 
   try {
@@ -265,40 +268,41 @@ export async function registerSuAccount(input: SuRegistrationInput): Promise<SuA
 
   return {
     success: true,
+    zu_id: canonicalId,
     accountId: canonicalId,
     username: displayUsername,
     fullName,
     phone,
     lastSyncedAt: now,
     restoredSettings: updatedSettings,
-    message: `SU-ID ${formattedSuId} created! Signed in & backed up to Firebase.`,
+    message: `ZU-ID ${formattedZuId} created! Signed in & backed up to Firebase.`,
   };
 }
 
 /**
- * Signs in directly using the user's chosen Username / SU-ID + Password via Firebase Firestore
+ * Signs in directly using the user's chosen Username / ZU-ID + Password via Firebase Firestore
  * and completely restores user profile, chat histories, voice sessions, memories & settings.
  */
-export async function loginSuAccount(usernameOrSuId: string, password: string): Promise<SuAuthResult> {
-  const { displayUsername, canonicalId } = normalizeCustomUsername(usernameOrSuId);
+export async function loginZuAccount(usernameOrZuId: string, password: string): Promise<ZuAuthResult> {
+  const { displayUsername, canonicalId } = normalizeCustomUsername(usernameOrZuId);
   const cleanPassword = password.trim();
 
   if (!isValidCustomUsername(displayUsername)) {
     return {
       success: false,
-      message: 'Enter a valid Username or SU-ID (3-32 letters/numbers).'
+      message: 'Enter a valid Username or ZU-ID (3-32 letters/numbers).'
     };
   }
   if (!cleanPassword) {
     return { success: false, message: 'Password is required.' };
   }
 
-  const accountPath = `su_accounts/${canonicalId}`;
+  const accountPath = `zu_accounts/${canonicalId}`;
   let accountData: any = null;
   try {
-    const accountSnap = await getDoc(doc(db, 'su_accounts', canonicalId));
+    const accountSnap = await getDoc(doc(db, 'zu_accounts', canonicalId));
     if (!accountSnap.exists()) {
-      return { success: false, message: `No SU-ID Account found for "${displayUsername}".` };
+      return { success: false, message: `No ZU-ID Account found for "${displayUsername}".` };
     }
     accountData = accountSnap.data();
   } catch (err) {
@@ -311,15 +315,15 @@ export async function loginSuAccount(usernameOrSuId: string, password: string): 
 
   const expectedHash = await hashPassword(cleanPassword, String(accountData.passwordSalt || ''));
   if (expectedHash !== accountData.passwordHash) {
-    return { success: false, message: 'Incorrect password for this SU-ID Account.' };
+    return { success: false, message: 'Incorrect password for this ZU-ID Account.' };
   }
 
   const vaultId = await deriveVaultId(canonicalId, cleanPassword);
-  const vaultPath = `su_accounts/${canonicalId}/vault/${vaultId}`;
+  const vaultPath = `zu_accounts/${canonicalId}/vault/${vaultId}`;
   let vaultData: any = null;
 
   try {
-    const vaultSnap = await getDoc(doc(db, 'su_accounts', canonicalId, 'vault', vaultId));
+    const vaultSnap = await getDoc(doc(db, 'zu_accounts', canonicalId, 'vault', vaultId));
     if (vaultSnap.exists()) {
       vaultData = vaultSnap.data();
     }
@@ -347,24 +351,24 @@ export async function loginSuAccount(usernameOrSuId: string, password: string): 
           savedAt: now,
         },
         {
-          suAccountId: canonicalId,
-          suUsername: storedUsername,
-          suFullName: restoredFullName,
-          suPhone: restoredPhone,
-          suVaultKey: vaultId,
-          suToken: sessionToken,
-          suLastSyncedAt: now,
+          zuAccountId: canonicalId,
+          zuUsername: storedUsername,
+          zuFullName: restoredFullName,
+          zuPhone: restoredPhone,
+          zuVaultKey: vaultId,
+          zuToken: sessionToken,
+          zuLastSyncedAt: now,
         }
       )
     : saveAppSettings({
         userNickname: restoredFullName,
-        suAccountId: canonicalId,
-        suUsername: storedUsername,
-        suFullName: restoredFullName,
-        suPhone: restoredPhone,
-        suVaultKey: vaultId,
-        suToken: sessionToken,
-        suLastSyncedAt: now,
+        zuAccountId: canonicalId,
+        zuUsername: storedUsername,
+        zuFullName: restoredFullName,
+        zuPhone: restoredPhone,
+        zuVaultKey: vaultId,
+        zuToken: sessionToken,
+        zuLastSyncedAt: now,
       });
 
   try {
@@ -384,30 +388,31 @@ export async function loginSuAccount(usernameOrSuId: string, password: string): 
 
   return {
     success: true,
+    zu_id: canonicalId,
     accountId: canonicalId,
     username: storedUsername,
     fullName: restoredFullName,
     phone: restoredPhone,
     lastSyncedAt: now,
     restoredSettings,
-    message: `Signed in as SU-${storedUsername}. Restored ${chatCount} chats & ${memCount} memories from Firebase!`,
+    message: `Signed in as ZU-${storedUsername}. Restored ${chatCount} chats & ${memCount} memories from Firebase!`,
   };
 }
 
 /**
  * Syncs local chat history, voice sessions, assistant memories & settings to Firebase Firestore
  */
-export async function syncSuCloudNow(settings: AppSettings): Promise<{
+export async function syncZuCloudNow(settings: AppSettings): Promise<{
   success: boolean;
   lastSyncedAt?: number;
   message: string;
 }> {
-  if (!settings.suAccountId || !settings.suVaultKey) {
-    return { success: false, message: 'Sign in with your custom Username / SU-ID first.' };
+  if (!settings.zuAccountId || !settings.zuVaultKey) {
+    return { success: false, message: 'Sign in with your custom Username / ZU-ID first.' };
   }
 
-  const canonicalId = settings.suAccountId.toLowerCase();
-  const vaultId = settings.suVaultKey;
+  const canonicalId = settings.zuAccountId.toLowerCase();
+  const vaultId = settings.zuVaultKey;
   const rawSnapshot = getAllBackupPayload();
   const cleanSnapshot = sanitizeSnapshotForFirestore(rawSnapshot);
 
@@ -415,14 +420,14 @@ export async function syncSuCloudNow(settings: AppSettings): Promise<{
     localStorage.setItem(`${LOCAL_VAULT_MIRROR_PREFIX}${canonicalId}`, JSON.stringify(cleanSnapshot));
   } catch {}
 
-  const rawPhone = String(settings.suPhone || cleanSnapshot.settings?.suPhone || 'SU-User').trim();
-  const safePhone = rawPhone.length >= 3 ? rawPhone.slice(0, 40) : 'SU-User';
-  const rawName = String(settings.suFullName || settings.userNickname || settings.suUsername || 'Zuzu User').trim();
+  const rawPhone = String(settings.zuPhone || cleanSnapshot.settings?.zuPhone || 'ZU-User').trim();
+  const safePhone = rawPhone.length >= 3 ? rawPhone.slice(0, 40) : 'ZU-User';
+  const rawName = String(settings.zuFullName || settings.userNickname || settings.zuUsername || 'Zuzu User').trim();
   const safeName = rawName.length >= 1 ? rawName.slice(0, 80) : 'Zuzu User';
 
-  const vaultPath = `su_accounts/${canonicalId}/vault/${vaultId}`;
+  const vaultPath = `zu_accounts/${canonicalId}/vault/${vaultId}`;
   try {
-    await updateDoc(doc(db, 'su_accounts', canonicalId, 'vault', vaultId), {
+    await updateDoc(doc(db, 'zu_accounts', canonicalId, 'vault', vaultId), {
       phone: safePhone,
       fullName: safeName,
       chatHistory: cleanSnapshot.chatHistory,
@@ -437,7 +442,7 @@ export async function syncSuCloudNow(settings: AppSettings): Promise<{
       const currentRaw = localStorage.getItem('zuzu_settings_v2');
       if (currentRaw) {
         const parsed = JSON.parse(currentRaw);
-        parsed.suLastSyncedAt = now;
+        parsed.zuLastSyncedAt = now;
         localStorage.setItem('zuzu_settings_v2', JSON.stringify(parsed));
       }
     } catch {}
@@ -459,13 +464,13 @@ export async function syncSuCloudNow(settings: AppSettings): Promise<{
   }
 }
 
-export function logoutSuAccount(): AppSettings {
+export function logoutZuAccount(): AppSettings {
   return saveAppSettings({
-    suAccountId: undefined,
-    suUsername: undefined,
-    suFullName: undefined,
-    suPhone: undefined,
-    suToken: undefined,
-    suVaultKey: undefined,
+    zuAccountId: undefined,
+    zuUsername: undefined,
+    zuFullName: undefined,
+    zuPhone: undefined,
+    zuToken: undefined,
+    zuVaultKey: undefined,
   });
 }

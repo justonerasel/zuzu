@@ -7,7 +7,7 @@ service cloud.firestore {
     }
 
     // 2. Hardened Validation Helpers
-    function isValidSuId(id) {
+    function isValidZuId(id) {
       return id is string && id.size() >= 3 && id.size() <= 32 && id.matches('^[a-z0-9][a-z0-9_\\-]{2,31}$');
     }
 
@@ -27,19 +27,20 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isValidSuAccount(data, suId) {
+    function isValidZuAccount(data, zuId) {
       return data.keys().hasAll([
-          'accountId', 'username', 'fullName', 'phoneMasked',
+          'zu_id', 'accountId', 'username', 'fullName', 'phoneMasked',
           'passwordSalt', 'passwordHash', 'vaultVerifier',
           'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'accountId', 'username', 'fullName', 'phoneMasked',
+          'zu_id', 'accountId', 'username', 'fullName', 'phoneMasked',
           'passwordSalt', 'passwordHash', 'vaultVerifier',
           'createdAt', 'updatedAt'
         ])
-        && data.accountId is string && data.accountId == suId
-        && isValidUsername(data.username) && data.username.lower() == suId
+        && data.zu_id is string && data.zu_id == zuId
+        && data.accountId is string && data.accountId == zuId
+        && isValidUsername(data.username) && data.username.lower() == zuId
         && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80
         && data.phoneMasked is string && data.phoneMasked.size() >= 2 && data.phoneMasked.size() <= 32
         && data.passwordSalt is string && data.passwordSalt.size() >= 16 && data.passwordSalt.size() <= 64 && data.passwordSalt.matches('^[a-f0-9]+$')
@@ -49,19 +50,20 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    function isValidSuVault(data, suId) {
+    function isValidZuVault(data, zuId) {
       return data.keys().hasAll([
-          'accountId', 'username', 'phone', 'fullName',
+          'zu_id', 'accountId', 'username', 'phone', 'fullName',
           'chatHistory', 'voiceSessions', 'memories', 'settings',
           'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'accountId', 'username', 'phone', 'fullName',
+          'zu_id', 'accountId', 'username', 'phone', 'fullName',
           'chatHistory', 'voiceSessions', 'memories', 'settings',
           'createdAt', 'updatedAt'
         ])
-        && data.accountId is string && data.accountId == suId
-        && isValidUsername(data.username) && data.username.lower() == suId
+        && data.zu_id is string && data.zu_id == zuId
+        && data.accountId is string && data.accountId == zuId
+        && isValidUsername(data.username) && data.username.lower() == zuId
         && data.phone is string && data.phone.size() >= 3 && data.phone.size() <= 40
         && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80
         && data.chatHistory is list && data.chatHistory.size() <= 500 && (data.chatHistory.size() == 0 || data.chatHistory[0] is map)
@@ -72,25 +74,26 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    function hasValidVaultCapability(suId, vaultId) {
-      return exists(/databases/$(database)/documents/su_accounts/$(suId))
+    function hasValidVaultCapability(zuId, vaultId) {
+      return exists(/databases/$(database)/documents/zu_accounts/$(zuId))
         && hashing.sha256(('verify::' + vaultId).toUtf8()).toHexString().lower()
-           == get(/databases/$(database)/documents/su_accounts/$(suId)).data.vaultVerifier;
+           == get(/databases/$(database)/documents/zu_accounts/$(zuId)).data.vaultVerifier;
     }
 
-    // 3. SU-ID Custom Username Identity Lookup (Zero list access; point-get only; no PII/chats)
-    match /su_accounts/{suId} {
+    // 3. ZU-ID Custom Username Identity Lookup (Zero list access; point-get only; no PII/chats)
+    match /zu_accounts/{zuId} {
       allow list: if false;
-      allow get: if isValidSuId(suId);
+      allow get: if isValidZuId(zuId);
 
-      allow create: if isValidSuId(suId)
-        && isValidSuAccount(incoming(), suId)
+      allow create: if isValidZuId(zuId)
+        && isValidZuAccount(incoming(), zuId)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && !exists(/databases/$(database)/documents/su_accounts/$(suId));
+        && !exists(/databases/$(database)/documents/zu_accounts/$(zuId));
 
-      allow update: if isValidSuId(suId)
-        && isValidSuAccount(incoming(), suId)
+      allow update: if isValidZuId(zuId)
+        && isValidZuAccount(incoming(), zuId)
+        && incoming().zu_id == existing().zu_id
         && incoming().accountId == existing().accountId
         && incoming().username == existing().username
         && incoming().createdAt == existing().createdAt
@@ -105,21 +108,22 @@ service cloud.firestore {
       // 4. Private Password-Capability Protected Backup Vault
       match /vault/{vaultId} {
         allow list: if false;
-        allow get: if isValidSuId(suId)
+        allow get: if isValidZuId(zuId)
           && isValidVaultId(vaultId)
-          && hasValidVaultCapability(suId, vaultId);
+          && hasValidVaultCapability(zuId, vaultId);
 
-        allow create: if isValidSuId(suId)
+        allow create: if isValidZuId(zuId)
           && isValidVaultId(vaultId)
-          && isValidSuVault(incoming(), suId)
-          && hasValidVaultCapability(suId, vaultId)
+          && isValidZuVault(incoming(), zuId)
+          && hasValidVaultCapability(zuId, vaultId)
           && incoming().createdAt == request.time
           && incoming().updatedAt == request.time;
 
-        allow update: if isValidSuId(suId)
+        allow update: if isValidZuId(zuId)
           && isValidVaultId(vaultId)
-          && isValidSuVault(incoming(), suId)
-          && hasValidVaultCapability(suId, vaultId)
+          && isValidZuVault(incoming(), zuId)
+          && hasValidVaultCapability(zuId, vaultId)
+          && incoming().zu_id == existing().zu_id
           && incoming().accountId == existing().accountId
           && incoming().username == existing().username
           && incoming().createdAt == existing().createdAt

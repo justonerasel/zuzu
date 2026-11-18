@@ -123,29 +123,31 @@ export function matchAcousticFrame(
   let bestMatch: TriggerMatchResult | null = null;
 
   for (const trigger of triggers) {
-    const sens = Math.max(0.5, Math.min(0.95, trigger.sensitivity ?? 0.75));
-    const simRelax = (sens - 0.75) * 0.22; // Higher sensitivity slightly relaxes required similarity
+    const sens = Math.max(0.5, Math.min(0.92, trigger.sensitivity ?? 0.72));
+    const simRelax = (sens - 0.72) * 0.14; // Gentle sensitivity offset without opening up to ambient speech
 
     const sim = cosineSimilarity(features.bandProfile, trigger.bandProfile || []);
 
     if (trigger.kind === 'whistle') {
-      const minRms = Math.max(0.016, (trigger.rmsThreshold || 0.04) * (0.42 - simRelax));
-      const minTonality = Math.max(2.6, Math.min(5.2, (trigger.tonalityRatio || 4.0) * 0.48));
+      // Mouth whistles exhibit sharp narrowband energy >= 750 Hz with high spectral tonality (>= 4.0)
+      const minRms = Math.max(0.026, (trigger.rmsThreshold || 0.045) * (0.55 - simRelax));
+      const minTonality = Math.max(4.0, Math.min(6.2, (trigger.tonalityRatio || 5.0) * 0.68));
       const hzDiff = Math.abs(features.peakHz - trigger.peakHz);
-      const maxHzDiff = 340 + (sens - 0.7) * 200;
+      const maxHzDiff = 240 + (sens - 0.72) * 140;
 
       const isFrameHit =
+        features.peakHz >= 750 &&
         features.rms >= minRms &&
         features.tonalityRatio >= minTonality &&
         hzDiff <= maxHzDiff &&
-        sim >= (0.72 - simRelax);
+        sim >= (0.80 - simRelax);
 
       const prevStreak = whistleStreaks.get(trigger.id) || 0;
       if (isFrameHit) {
         const nextStreak = prevStreak + 1;
         whistleStreaks.set(trigger.id, nextStreak);
-        if (nextStreak >= 2) {
-          const score = sim * 0.7 + Math.max(0, 1 - hzDiff / 500) * 0.3;
+        if (nextStreak >= 3) {
+          const score = sim * 0.7 + Math.max(0, 1 - hzDiff / 360) * 0.3;
           if (!bestMatch || score > bestMatch.score) {
             bestMatch = { trigger, score };
           }
@@ -157,12 +159,15 @@ export function matchAcousticFrame(
     }
 
     if (trigger.kind === 'snap') {
-      const minRms = Math.max(0.028, (trigger.rmsThreshold || 0.06) * (0.45 - simRelax));
-      const minCrest = Math.max(2.5, (trigger.crestFactor || 3.8) * 0.55);
+      // Finger snaps exhibit sharp broadband impulse (high crest factor + high spectral centroid >= 1550 Hz)
+      const minRms = Math.max(0.042, (trigger.rmsThreshold || 0.065) * (0.58 - simRelax));
+      const minCrest = Math.max(3.35, Math.min(4.8, (trigger.crestFactor || 4.0) * 0.72));
       const isSnapHit =
         features.rms >= minRms &&
         features.crestFactor >= minCrest &&
-        sim >= (0.68 - simRelax);
+        features.centroidHz >= 1550 &&
+        features.peakHz >= 1050 &&
+        sim >= (0.76 - simRelax);
 
       if (isSnapHit) {
         const score = sim * 0.65 + Math.min(1, features.crestFactor / 6) * 0.35;
@@ -173,13 +178,18 @@ export function matchAcousticFrame(
       continue;
     }
 
-    // Custom short acoustic trigger
-    const minRms = Math.max(0.024, (trigger.rmsThreshold || 0.05) * (0.48 - simRelax));
-    const isCustomHit = features.rms >= minRms && sim >= (0.75 - simRelax);
+    // Custom short acoustic trigger: require 2 consecutive matching frames to avoid casual spoken words
+    const minRms = Math.max(0.040, (trigger.rmsThreshold || 0.06) * (0.58 - simRelax));
+    const isCustomHit = features.rms >= minRms && sim >= (0.84 - simRelax);
+    const prevStreak = whistleStreaks.get(trigger.id) || 0;
     if (isCustomHit) {
-      if (!bestMatch || sim > bestMatch.score) {
+      const nextStreak = prevStreak + 1;
+      whistleStreaks.set(trigger.id, nextStreak);
+      if (nextStreak >= 2 && (!bestMatch || sim > bestMatch.score)) {
         bestMatch = { trigger, score: sim };
       }
+    } else {
+      whistleStreaks.set(trigger.id, 0);
     }
   }
 
@@ -255,7 +265,7 @@ export async function recordCustomAudioTrigger(
   }
 
   // Pick salient frames representing the target sound rather than background room silence
-  let activeFrames = collected.filter(f => f.rms >= 0.015);
+  let activeFrames = collected.filter(f => f.rms >= 0.020);
   if (activeFrames.length === 0) {
     throw new Error(
       kind === 'whistle'
@@ -267,7 +277,7 @@ export async function recordCustomAudioTrigger(
   }
 
   if (kind === 'whistle') {
-    const tonalFrames = activeFrames.filter(f => f.tonalityRatio >= 3.0 && f.peakHz >= 500 && f.peakHz <= 4200);
+    const tonalFrames = activeFrames.filter(f => f.tonalityRatio >= 3.4 && f.peakHz >= 750 && f.peakHz <= 4200);
     if (tonalFrames.length >= 2) {
       tonalFrames.sort((a, b) => (b.rms * b.tonalityRatio) - (a.rms * a.tonalityRatio));
       activeFrames = tonalFrames.slice(0, Math.min(10, tonalFrames.length));
@@ -276,8 +286,10 @@ export async function recordCustomAudioTrigger(
       activeFrames = activeFrames.slice(0, Math.min(6, activeFrames.length));
     }
   } else if (kind === 'snap') {
-    activeFrames.sort((a, b) => (b.rms * b.crestFactor) - (a.rms * a.crestFactor));
-    activeFrames = activeFrames.slice(0, Math.min(4, activeFrames.length));
+    const sharpFrames = activeFrames.filter(f => f.crestFactor >= 2.8 && f.centroidHz >= 1200);
+    const pool = sharpFrames.length >= 1 ? sharpFrames : activeFrames;
+    pool.sort((a, b) => (b.rms * b.crestFactor) - (a.rms * a.crestFactor));
+    activeFrames = pool.slice(0, Math.min(4, pool.length));
   } else {
     activeFrames.sort((a, b) => b.rms - a.rms);
     activeFrames = activeFrames.slice(0, Math.min(8, activeFrames.length));
@@ -312,9 +324,9 @@ export async function recordCustomAudioTrigger(
     centroidHz: avgCentroidHz,
     tonalityRatio: avgTonality,
     crestFactor: avgCrest,
-    rmsThreshold: Math.max(0.02, avgRms),
+    rmsThreshold: Math.max(0.025, avgRms),
     bandProfile: normalizeVector(summedBands),
-    sensitivity: 0.78,
+    sensitivity: 0.72,
     createdAt: Date.now()
   };
 }

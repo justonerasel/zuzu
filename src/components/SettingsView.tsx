@@ -84,10 +84,12 @@ import {
 } from '../utils/apiConfig';
 import { 
   PERMISSION_DEFINITIONS, 
+  PermissionCategoryId,
   PermissionDefinition, 
   PermissionStatusState, 
   checkAllPermissions, 
   handlePermissionAction, 
+  requestAllRuntimePermissions,
   openAndroidSettings,
   openAndroidAppSettingsGuide, 
   checkMicrophonePermission, 
@@ -97,11 +99,11 @@ import {
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { THEME_PRESETS, isValidHexColor, getThemeDetails } from '../utils/theme';
 import { 
-  registerSuAccount, 
-  loginSuAccount, 
-  syncSuCloudNow, 
-  logoutSuAccount 
-} from '../utils/suAccount';
+  registerZuAccount, 
+  loginZuAccount, 
+  syncZuCloudNow, 
+  logoutZuAccount 
+} from '../utils/zuAccount';
 import { 
   syncBackgroundServicesWithSettings, 
   isForegroundServiceActive,
@@ -236,9 +238,9 @@ const CATEGORIES: CategoryCardInfo[] = [
   {
     id: 'permissions',
     title: 'Permissions Center',
-    subtitle: 'Essential Android permissions • Microphone & Notification access',
+    subtitle: 'All 30 Android audio, Bluetooth, network, background & device permissions',
     icon: ShieldCheck,
-    badge: '2 Essential',
+    badge: '30 Permissions',
     colorTheme: {
       bg: 'bg-teal-50/70 hover:bg-teal-50',
       border: 'border-teal-200/80',
@@ -377,9 +379,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [micState, setMicState] = useState<MicrophonePermissionState>('prompt');
   const [isTestingMic, setIsTestingMic] = useState(false);
 
-  // Permissions Center State (Microphone & Notifications)
+  // Permissions Center State (30 Comprehensive Android Permissions)
   const [permissionStatuses, setPermissionStatuses] = useState<Record<string, PermissionStatusState>>({});
   const [isCheckingPermissions, setIsCheckingPermissions] = useState(false);
+  const [isGrantingAllPerms, setIsGrantingAllPerms] = useState(false);
+  const [permCategoryFilter, setPermCategoryFilter] = useState<PermissionCategoryId>('all');
   const [permActionLoadingId, setPermActionLoadingId] = useState<string | null>(null);
   const [permNotice, setPermNotice] = useState<string | null>(null);
 
@@ -407,17 +411,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [newMemCategory, setNewMemCategory] = useState<MemoryCategory>('personal');
   const [memError, setMemError] = useState<string | null>(null);
 
-  // SU-ID Account State (Custom Username + Firebase Firestore)
-  const [suMode, setSuMode] = useState<'login' | 'register'>('login');
-  const [suUsernameInput, setSuUsernameInput] = useState(settings.suUsername || settings.suAccountId || '');
-  const [suFullNameInput, setSuFullNameInput] = useState(settings.suFullName || settings.userNickname || '');
-  const [suPhoneInput, setSuPhoneInput] = useState(settings.suPhone || '');
-  const [suPasswordInput, setSuPasswordInput] = useState('');
-  const [suConfirmPasswordInput, setSuConfirmPasswordInput] = useState('');
-  const [showSuPassword, setShowSuPassword] = useState(false);
-  const [newlyCreatedSuId, setNewlyCreatedSuId] = useState<string | null>(null);
-  const [suLoading, setSuLoading] = useState(false);
-  const [suStatusMsg, setSuStatusMsg] = useState<string | null>(null);
+  // ZU-ID Account State (Custom Username + Firebase Firestore)
+  const [zuMode, setZuMode] = useState<'login' | 'register'>('login');
+  const [zuUsernameInput, setZuUsernameInput] = useState(settings.zuUsername || settings.zuAccountId || '');
+  const [zuFullNameInput, setZuFullNameInput] = useState(settings.zuFullName || settings.userNickname || '');
+  const [zuPhoneInput, setZuPhoneInput] = useState(settings.zuPhone || '');
+  const [zuPasswordInput, setZuPasswordInput] = useState('');
+  const [zuConfirmPasswordInput, setZuConfirmPasswordInput] = useState('');
+  const [showZuPassword, setShowZuPassword] = useState(false);
+  const [newlyCreatedZuId, setNewlyCreatedZuId] = useState<string | null>(null);
+  const [zuLoading, setZuLoading] = useState(false);
+  const [zuStatusMsg, setZuStatusMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (settings.userNickname) {
@@ -607,7 +611,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
       const data = await res.json();
       const latency = Date.now() - startTime;
-      const model = data.model || 'gemini-2.5-flash';
+      const model = data.model || 'gemini-3.8-flash';
       setAiTestResult(`Success (${latency}ms) • Engine: ${model}`);
       playHapticSound('listen_start');
     } catch (err: any) {
@@ -838,7 +842,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   };
 
   const handleConfirmReset = () => {
-    // Reset general configuration while strictly preserving API keys, SU-ID session, memories & chat history
+    // Reset general configuration while strictly preserving API keys, ZU-ID session, memories & chat history
     const newSettings: AppSettings = {
       ...DEFAULT_SETTINGS,
       customGeminiApiKey: resetApiKeysToggle ? '' : (settings.customGeminiApiKey || ''),
@@ -846,13 +850,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
       customElevenLabsApiKey: resetApiKeysToggle ? '' : (settings.customElevenLabsApiKey || ''),
       userNickname: settings.userNickname,
       assistantNickname: settings.assistantNickname,
-      suAccountId: settings.suAccountId,
-      suUsername: settings.suUsername,
-      suFullName: settings.suFullName,
-      suPhone: settings.suPhone,
-      suToken: settings.suToken,
-      suVaultKey: settings.suVaultKey,
-      suLastSyncedAt: settings.suLastSyncedAt
+      zuAccountId: settings.zuAccountId,
+      zuUsername: settings.zuUsername,
+      zuFullName: settings.zuFullName,
+      zuPhone: settings.zuPhone,
+      zuToken: settings.zuToken,
+      zuVaultKey: settings.zuVaultKey,
+      zuLastSyncedAt: settings.zuLastSyncedAt
     };
     onUpdateSettings(newSettings);
     setCustomHexInput('#FAF5FF');
@@ -932,7 +936,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                 <img
                   src="/zuzu-logo.png"
                   alt="Zuzu AI"
-                  className="w-14 h-14 rounded-2xl object-cover shadow-md border border-purple-200 flex-shrink-0"
+                  className="w-16 h-16 rounded-2xl object-cover shadow-md border border-purple-200 flex-shrink-0"
                 />
                 <div>
                   <div className="text-sm font-extrabold flex items-center gap-1.5">
@@ -1122,20 +1126,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   </div>
                 </div>
 
-                {/* Custom Username & SU-ID Account Login + Firebase Cloud Persistent Memory Card */}
+                {/* Custom Username & ZU-ID Account Login + Firebase Cloud Persistent Memory Card */}
                 <div className="p-4 bg-white/95 border border-indigo-200 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
                       <img
                         src="/zuzu-logo.png"
-                        alt="Zuzu AI SU-ID"
-                        className="w-10 h-10 rounded-xl object-cover border border-indigo-200 shadow-xs flex-shrink-0"
+                        alt="Zuzu AI ZU-ID"
+                        className="w-12 h-12 rounded-xl object-cover border border-indigo-200 shadow-xs flex-shrink-0"
                       />
                       <div>
                         <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <span>SU-ID Cloud Account</span>
+                          <span>ZU-ID Cloud Account</span>
                           <span className="text-[9px] font-mono font-bold bg-indigo-100 text-indigo-800 px-1.5 py-0.2 rounded">
-                            SU-ID
+                            ZU-ID
                           </span>
                         </div>
                         <div className="text-[10px] text-slate-500">
@@ -1143,18 +1147,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         </div>
                       </div>
                     </div>
-                    {settings.suAccountId && settings.suVaultKey && (
+                    {settings.zuAccountId && settings.zuVaultKey && (
                       <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
-                        SU-{settings.suUsername || settings.suAccountId}
+                        ZU-{settings.zuUsername || settings.zuAccountId}
                       </span>
                     )}
                   </div>
 
-                  {settings.suAccountId && settings.suVaultKey ? (
+                  {settings.zuAccountId && settings.zuVaultKey ? (
                     <div className="space-y-2.5 pt-1 border-t border-slate-100">
-                      {newlyCreatedSuId && (
+                      {newlyCreatedZuId && (
                         <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-950 space-y-0.5">
-                          <div className="font-extrabold">Account Ready: <span className="font-mono text-emerald-700">{newlyCreatedSuId}</span></div>
+                          <div className="font-extrabold">Account Ready: <span className="font-mono text-emerald-700">{newlyCreatedZuId}</span></div>
                           <div className="text-[10px] text-emerald-800">Log in anytime using your custom Username and password to restore all chats &amp; memories.</div>
                         </div>
                       )}
@@ -1162,13 +1166,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       <div className="p-2.5 rounded-xl bg-indigo-50/60 border border-indigo-100 text-[11px] flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <div className="font-bold text-indigo-900 truncate">
-                            {settings.suFullName || settings.userNickname || 'Zuzu User'} • <span className="font-mono">SU-{settings.suUsername || settings.suAccountId}</span>
+                            {settings.zuFullName || settings.userNickname || 'Zuzu User'} • <span className="font-mono">ZU-{settings.zuUsername || settings.zuAccountId}</span>
                           </div>
-                          {settings.suPhone && (
-                            <div className="text-[10px] text-slate-600 truncate">Identifier: {settings.suPhone}</div>
+                          {settings.zuPhone && (
+                            <div className="text-[10px] text-slate-600 truncate">Identifier: {settings.zuPhone}</div>
                           )}
                           <div className="text-[10px] text-slate-500">
-                            Last synced: {settings.suLastSyncedAt ? new Date(settings.suLastSyncedAt).toLocaleString() : 'Just now'}
+                            Last synced: {settings.zuLastSyncedAt ? new Date(settings.zuLastSyncedAt).toLocaleString() : 'Just now'}
                           </div>
                         </div>
                         <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full flex-shrink-0">
@@ -1179,36 +1183,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
-                          disabled={suLoading}
+                          disabled={zuLoading}
                           onClick={async () => {
-                            setSuLoading(true);
-                            setSuStatusMsg(null);
+                            setZuLoading(true);
+                            setZuStatusMsg(null);
                             try {
-                              const res = await syncSuCloudNow(settings);
-                              setSuStatusMsg(res.message);
+                              const res = await syncZuCloudNow(settings);
+                              setZuStatusMsg(res.message);
                               if (res.success && res.lastSyncedAt) {
-                                onUpdateSettings({ suLastSyncedAt: res.lastSyncedAt });
+                                onUpdateSettings({ zuLastSyncedAt: res.lastSyncedAt });
                                 playHapticSound('message_sent');
                               }
                             } finally {
-                              setSuLoading(false);
+                              setZuLoading(false);
                             }
                           }}
                           className="py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1 shadow-xs disabled:opacity-50"
                         >
-                          <RefreshCw className={`w-3.5 h-3.5 ${suLoading ? 'animate-spin' : ''}`} />
-                          <span>{suLoading ? 'Syncing...' : 'Sync Now'}</span>
+                          <RefreshCw className={`w-3.5 h-3.5 ${zuLoading ? 'animate-spin' : ''}`} />
+                          <span>{zuLoading ? 'Syncing...' : 'Sync Now'}</span>
                         </button>
 
                         <button
                           type="button"
                           onClick={() => {
-                            const next = logoutSuAccount();
+                            const next = logoutZuAccount();
                             onUpdateSettings(next);
-                            setNewlyCreatedSuId(null);
-                            setSuPasswordInput('');
-                            setSuConfirmPasswordInput('');
-                            setSuStatusMsg('Signed out of SU-ID Account.');
+                            setNewlyCreatedZuId(null);
+                            setZuPasswordInput('');
+                            setZuConfirmPasswordInput('');
+                            setZuStatusMsg('Signed out of ZU-ID Account.');
                             playHapticSound('listen_stop');
                           }}
                           className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
@@ -1222,34 +1226,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl">
                         <button
                           type="button"
-                          onClick={() => { setSuMode('login'); setSuStatusMsg(null); }}
+                          onClick={() => { setZuMode('login'); setZuStatusMsg(null); }}
                           className={`py-1.5 rounded-lg text-[11px] font-bold transition-all ${
-                            suMode === 'login' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
+                            zuMode === 'login' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
                           }`}
                         >
-                          Login (SU-ID)
+                          Login (ZU-ID)
                         </button>
                         <button
                           type="button"
-                          onClick={() => { setSuMode('register'); setSuStatusMsg(null); }}
+                          onClick={() => { setZuMode('register'); setZuStatusMsg(null); }}
                           className={`py-1.5 rounded-lg text-[11px] font-bold transition-all ${
-                            suMode === 'register' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
+                            zuMode === 'register' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
                           }`}
                         >
-                          Register Custom SU-ID
+                          Register Custom ZU-ID
                         </button>
                       </div>
 
-                      {suMode === 'login' ? (
+                      {zuMode === 'login' ? (
                         <div className="space-y-1">
                           <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                            Username or SU-ID
+                            Username or ZU-ID
                           </label>
                           <input
                             type="text"
-                            value={suUsernameInput}
-                            onChange={(e) => setSuUsernameInput(e.target.value)}
-                            placeholder="Enter your Username (e.g. rasel008 or SU-rasel008)"
+                            value={zuUsernameInput}
+                            onChange={(e) => setZuUsernameInput(e.target.value)}
+                            placeholder="Enter your Username (e.g. rasel008 or ZU-rasel008)"
                             className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                           />
                         </div>
@@ -1257,16 +1261,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         <>
                           <div className="space-y-1">
                             <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                              Choose Custom Username / SU-ID (Letters &amp; Numbers)
+                              Choose Custom Username / ZU-ID (Letters &amp; Numbers)
                             </label>
                             <div className="flex items-center bg-slate-50 rounded-xl border border-slate-200 focus-within:border-indigo-400 overflow-hidden">
                               <span className="px-2.5 py-2 text-[11px] font-mono font-bold text-indigo-700 bg-indigo-50 border-r border-slate-200">
-                                SU-
+                                ZU-
                               </span>
                               <input
                                 type="text"
-                                value={suUsernameInput.replace(/^su-/i, '')}
-                                onChange={(e) => setSuUsernameInput(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
+                                value={zuUsernameInput.replace(/^(zu|su)-/i, '')}
+                                onChange={(e) => setZuUsernameInput(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
                                 placeholder="e.g. Rasel008"
                                 className="flex-1 bg-transparent text-xs font-mono text-slate-800 px-2.5 py-2 focus:outline-none"
                               />
@@ -1279,8 +1283,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                             </label>
                             <input
                               type="text"
-                              value={suFullNameInput}
-                              onChange={(e) => setSuFullNameInput(e.target.value)}
+                              value={zuFullNameInput}
+                              onChange={(e) => setZuFullNameInput(e.target.value)}
                               placeholder="e.g. MD Rasel Hossen"
                               className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                             />
@@ -1292,8 +1296,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                             </label>
                             <input
                               type="text"
-                              value={suPhoneInput}
-                              onChange={(e) => setSuPhoneInput(e.target.value)}
+                              value={zuPhoneInput}
+                              onChange={(e) => setZuPhoneInput(e.target.value)}
                               placeholder="e.g. +88017XXXXXXXX or email"
                               className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                             />
@@ -1303,36 +1307,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                       <div className="space-y-1">
                         <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                          {suMode === 'register' ? 'Secure Password (min 6 chars)' : 'Password'}
+                          {zuMode === 'register' ? 'Secure Password (min 6 chars)' : 'Password'}
                         </label>
                         <div className="relative">
                           <input
-                            type={showSuPassword ? 'text' : 'password'}
-                            value={suPasswordInput}
-                            onChange={(e) => setSuPasswordInput(e.target.value)}
-                            placeholder={suMode === 'register' ? 'Create secure password (min 6 chars)' : 'Enter your SU-ID password'}
+                            type={showZuPassword ? 'text' : 'password'}
+                            value={zuPasswordInput}
+                            onChange={(e) => setZuPasswordInput(e.target.value)}
+                            placeholder={zuMode === 'register' ? 'Create secure password (min 6 chars)' : 'Enter your ZU-ID password'}
                             className="w-full bg-slate-50 text-xs text-slate-800 pl-3 pr-9 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                           />
                           <button
                             type="button"
-                            onClick={() => setShowSuPassword(v => !v)}
+                            onClick={() => setShowZuPassword(v => !v)}
                             className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                            title={showSuPassword ? 'Hide password' : 'Show password'}
+                            title={showZuPassword ? 'Hide password' : 'Show password'}
                           >
-                            {showSuPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            {showZuPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                           </button>
                         </div>
                       </div>
 
-                      {suMode === 'register' && (
+                      {zuMode === 'register' && (
                         <div className="space-y-1">
                           <label className="text-[10px] font-semibold text-slate-500 px-0.5">
                             Confirm Password
                           </label>
                           <input
-                            type={showSuPassword ? 'text' : 'password'}
-                            value={suConfirmPasswordInput}
-                            onChange={(e) => setSuConfirmPasswordInput(e.target.value)}
+                            type={showZuPassword ? 'text' : 'password'}
+                            value={zuConfirmPasswordInput}
+                            onChange={(e) => setZuConfirmPasswordInput(e.target.value)}
                             placeholder="Re-enter password to confirm"
                             className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
                           />
@@ -1341,25 +1345,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                       <button
                         type="button"
-                        disabled={suLoading}
+                        disabled={zuLoading}
                         onClick={async () => {
-                          setSuLoading(true);
-                          setSuStatusMsg(null);
+                          setZuLoading(true);
+                          setZuStatusMsg(null);
                           try {
-                            if (suMode === 'register') {
-                              const res = await registerSuAccount({
-                                username: suUsernameInput,
-                                fullName: suFullNameInput,
-                                phone: suPhoneInput,
-                                password: suPasswordInput,
-                                confirmPassword: suConfirmPasswordInput
+                            if (zuMode === 'register') {
+                              const res = await registerZuAccount({
+                                username: zuUsernameInput,
+                                fullName: zuFullNameInput,
+                                phone: zuPhoneInput,
+                                password: zuPasswordInput,
+                                confirmPassword: zuConfirmPasswordInput
                               });
-                              setSuStatusMsg(res.message);
+                              setZuStatusMsg(res.message);
                               if (res.success && res.username) {
-                                setSuUsernameInput(res.username);
-                                setNewlyCreatedSuId(`SU-${res.username}`);
-                                setSuPasswordInput('');
-                                setSuConfirmPasswordInput('');
+                                setZuUsernameInput(res.username);
+                                setNewlyCreatedZuId(`ZU-${res.username}`);
+                                setZuPasswordInput('');
+                                setZuConfirmPasswordInput('');
                                 if (res.fullName) {
                                   setUserNickname(res.fullName);
                                 }
@@ -1371,11 +1375,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                                 playHapticSound('listen_stop');
                               }
                             } else {
-                              const res = await loginSuAccount(suUsernameInput, suPasswordInput);
-                              setSuStatusMsg(res.message);
+                              const res = await loginZuAccount(zuUsernameInput, zuPasswordInput);
+                              setZuStatusMsg(res.message);
                               if (res.success) {
-                                setSuPasswordInput('');
-                                setNewlyCreatedSuId(null);
+                                setZuPasswordInput('');
+                                setNewlyCreatedZuId(null);
                                 if (res.restoredSettings) {
                                   onUpdateSettings(res.restoredSettings);
                                   if (res.restoredSettings.userNickname) {
@@ -1390,25 +1394,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                               }
                             }
                           } catch (err: any) {
-                            setSuStatusMsg(err?.message || 'Firebase SU-ID connection failed.');
+                            setZuStatusMsg(err?.message || 'Firebase ZU-ID connection failed.');
                           } finally {
-                            setSuLoading(false);
+                            setZuLoading(false);
                           }
                         }}
                         className="w-full py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs disabled:opacity-50"
                       >
-                        {suLoading
+                        {zuLoading
                           ? 'Connecting to Firebase Cloud...'
-                          : suMode === 'register'
-                          ? 'Create SU-ID & Sign In'
+                          : zuMode === 'register'
+                          ? 'Create ZU-ID & Sign In'
                           : 'Sign In & Restore All Memory'}
                       </button>
                     </div>
                   )}
 
-                  {suStatusMsg && (
+                  {zuStatusMsg && (
                     <div className="p-2 rounded-xl bg-indigo-50 border border-indigo-200 text-[11px] text-indigo-900 font-medium">
-                      {suStatusMsg}
+                      {zuStatusMsg}
                     </div>
                   )}
                 </div>
@@ -1526,7 +1530,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                           <span>Google Gemini</span>
                           <span className="text-[9px] font-mono font-bold bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded">Primary</span>
                         </div>
-                        <div className="text-[10px] text-slate-500">Gemini 2.5 Flash &amp; Image Generation</div>
+                        <div className="text-[10px] text-slate-500">Gemini 3.8 Flash (models/gemini-3.8-flash) &amp; Image Generation</div>
                       </div>
                     </div>
 
@@ -2144,7 +2148,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                   <div className="space-y-2">
                     {VOICE_MODELS.map((model) => {
-                      const isSelected = (settings.selectedVoiceModelId || 'gemini-2.5-flash-native-audio') === model.id;
+                      const isSelected = (settings.selectedVoiceModelId || 'gemini-3.8-flash') === model.id;
                       return (
                         <button
                           key={model.id}
@@ -2667,148 +2671,228 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             )}
 
             {/* ----------------------------------------------------------- */}
-            {/* 7. PERMISSIONS SUB-PAGE (Essential Microphone & Notifications) */}
+            {/* 7. PERMISSIONS SUB-PAGE (30 Comprehensive Android Access)   */}
             {/* ----------------------------------------------------------- */}
-            {activeCategory === 'permissions' && (
-              <div className="space-y-3.5 animate-fade-in text-slate-800">
-                {/* Assistant Permissions Explanation Card */}
-                <div className="p-4 bg-gradient-to-r from-teal-50 via-cyan-50 to-blue-50 border border-teal-200/80 rounded-2xl shadow-xs space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-teal-900 flex items-center gap-1.5">
-                      <ShieldCheck className="w-4 h-4 text-teal-600" />
-                      <span>Assistant Permissions Center</span>
-                    </span>
-                    <span className="text-[9px] font-mono font-bold bg-white text-teal-800 px-2 py-0.5 rounded-full border border-teal-200">
-                      {PERMISSION_DEFINITIONS.length} Essential
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-600 leading-relaxed">
-                    Zuzu AI only requests the two permissions needed for a fast, reliable voice assistant: <strong>Microphone</strong> (for live speech recognition &amp; wake word) and <strong>Notifications</strong> (for silent foreground service stability).
-                  </p>
-                </div>
+            {activeCategory === 'permissions' && (() => {
+              const grantedCount = PERMISSION_DEFINITIONS.filter(
+                p => permissionStatuses[p.id] === 'granted'
+              ).length;
+              const filteredPerms = PERMISSION_DEFINITIONS.filter(
+                p => permCategoryFilter === 'all' || p.category === permCategoryFilter
+              );
 
-                {/* Permissions Toolbar: Quick actions */}
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={refreshAllPermissions}
-                    disabled={isCheckingPermissions}
-                    className="flex-1 py-2 px-3 rounded-xl bg-white/90 hover:bg-white text-slate-700 text-xs font-bold border border-teal-200/80 shadow-xs flex items-center justify-center gap-1.5 transition-colors"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${isCheckingPermissions ? 'animate-spin' : ''}`} />
-                    <span>{isCheckingPermissions ? 'Checking Status...' : 'Re-check Permissions'}</span>
-                  </button>
-
-                  <button
-                    onClick={openAndroidAppSettingsGuide}
-                    className="py-2 px-3 rounded-xl bg-teal-100/90 hover:bg-teal-200 text-teal-900 text-xs font-bold border border-teal-300 shadow-xs flex items-center gap-1.5 transition-colors"
-                    title="Open Android App Settings directly"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5 text-teal-700" />
-                    <span>App Settings</span>
-                  </button>
-                </div>
-
-                {/* Status Notice Toast if any action returned message */}
-                {permNotice && (
-                  <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 text-xs flex items-center justify-between animate-fade-in shadow-xs">
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
-                      <span>{permNotice}</span>
+              return (
+                <div className="space-y-3.5 animate-fade-in text-slate-800">
+                  {/* Assistant Permissions Explanation Card */}
+                  <div className="p-4 bg-gradient-to-r from-teal-50 via-cyan-50 to-blue-50 border border-teal-200/80 rounded-2xl shadow-xs space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase tracking-wider text-teal-900 flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4 text-teal-600" />
+                        <span>Android Permissions Center</span>
+                      </span>
+                      <span className="text-[9px] font-mono font-bold bg-white text-teal-800 px-2 py-0.5 rounded-full border border-teal-200">
+                        {grantedCount} / {PERMISSION_DEFINITIONS.length} Active
+                      </span>
                     </div>
+                    <p className="text-[11px] text-slate-600 leading-relaxed">
+                      Full 30-permission native Android suite covering live audio &amp; Bluetooth routing, network sync, silent foreground wake lock, overlays, GPS weather, calls, contacts, storage, and vision.
+                    </p>
+                  </div>
+
+                  {/* Permissions Toolbar: Quick actions */}
+                  <div className="grid grid-cols-3 gap-2">
                     <button
-                      onClick={() => setPermNotice(null)}
-                      className="text-blue-500 hover:text-blue-800 ml-2"
+                      type="button"
+                      disabled={isGrantingAllPerms}
+                      onClick={async () => {
+                        setIsGrantingAllPerms(true);
+                        setPermNotice(null);
+                        playHapticSound('message_sent');
+                        try {
+                          const res = await requestAllRuntimePermissions();
+                          setPermissionStatuses(res.statuses);
+                          if (res.statuses.microphone) {
+                            setMicState(res.statuses.microphone as MicrophonePermissionState);
+                          }
+                          setPermNotice(res.message);
+                          playHapticSound('listen_start');
+                        } finally {
+                          setIsGrantingAllPerms(false);
+                        }
+                      }}
+                      className="py-2 px-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-[11px] font-bold shadow-xs flex items-center justify-center gap-1 transition-colors"
                     >
-                      <X className="w-3.5 h-3.5" />
+                      <Sparkles className={`w-3.5 h-3.5 ${isGrantingAllPerms ? 'animate-spin' : ''}`} />
+                      <span>{isGrantingAllPerms ? 'Granting...' : 'Grant Runtime'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={refreshAllPermissions}
+                      disabled={isCheckingPermissions}
+                      className="py-2 px-2 rounded-xl bg-white/90 hover:bg-white text-slate-700 text-[11px] font-bold border border-teal-200/80 shadow-xs flex items-center justify-center gap-1 transition-colors"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${isCheckingPermissions ? 'animate-spin' : ''}`} />
+                      <span>{isCheckingPermissions ? 'Checking...' : 'Re-check All'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={openAndroidAppSettingsGuide}
+                      className="py-2 px-2 rounded-xl bg-teal-100/90 hover:bg-teal-200 text-teal-900 text-[11px] font-bold border border-teal-300 shadow-xs flex items-center justify-center gap-1 transition-colors"
+                      title="Open Android App Settings directly"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 text-teal-700" />
+                      <span>App Settings</span>
                     </button>
                   </div>
-                )}
 
-                {/* Essential Permission Cards */}
-                <div className="space-y-2.5">
-                  {PERMISSION_DEFINITIONS.map(def => {
-                    const status = permissionStatuses[def.id] || 'prompt';
-                    const isLoading = permActionLoadingId === def.id;
-                    const Icon = def.id === 'microphone' ? Mic : Radio;
-
-                    return (
-                      <div
-                        key={def.id}
-                        className="p-3.5 bg-white/95 border border-teal-100 rounded-2xl shadow-xs flex items-center justify-between gap-3 text-slate-800"
+                  {/* Category Filter Pills */}
+                  <div className="grid grid-cols-4 gap-1.5 bg-slate-100 p-1 rounded-xl">
+                    {[
+                      { id: 'all' as PermissionCategoryId, label: 'All (30)' },
+                      { id: 'audio' as PermissionCategoryId, label: 'Audio & BT (6)' },
+                      { id: 'system' as PermissionCategoryId, label: 'System (16)' },
+                      { id: 'device' as PermissionCategoryId, label: 'Device (8)' }
+                    ].map(tab => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          setPermCategoryFilter(tab.id);
+                          playHapticSound('switch');
+                        }}
+                        className={`py-1.5 px-1 rounded-lg text-[10px] font-bold transition-all ${
+                          permCategoryFilter === tab.id
+                            ? 'bg-white text-teal-800 shadow-xs'
+                            : 'text-slate-500 hover:text-slate-700'
+                        }`}
                       >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-200/60 text-teal-700 flex items-center justify-center flex-shrink-0 shadow-2xs">
-                            <Icon className="w-4 h-4" />
-                          </div>
-                          <div className="min-w-0">
-                            <div className="text-xs font-bold text-slate-800 truncate">
-                              {def.name}
-                            </div>
-                            <p className="text-[10px] text-slate-500 line-clamp-1 mt-0.5">
-                              {def.whyNeeded}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold border ${
-                            status === 'granted'
-                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                              : 'bg-rose-100 text-rose-800 border-rose-300'
-                          }`}>
-                            {status === 'granted' ? (
-                              <>
-                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                                <span>GRANTED</span>
-                              </>
-                            ) : (
-                              <>
-                                <ShieldAlert className="w-2.5 h-2.5 text-rose-600" />
-                                <span>NEEDED</span>
-                              </>
-                            )}
-                          </span>
-
-                          <button
-                            onClick={() => handlePermAction(def.id)}
-                            disabled={isLoading}
-                            className={`py-1.5 px-2.5 rounded-xl text-[11px] font-bold flex items-center gap-1 transition-all shadow-xs ${
-                              status === 'granted'
-                                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                : 'bg-teal-600 hover:bg-teal-700 text-white'
-                            }`}
-                          >
-                            {isLoading ? (
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                            ) : status === 'granted' ? (
-                              <Check className="w-3 h-3 text-emerald-600" />
-                            ) : (
-                              <Sparkles className="w-3 h-3" />
-                            )}
-                            <span>
-                              {isLoading ? '...' : status === 'granted' ? 'Verified' : 'Grant'}
-                            </span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Assistant Privacy & Lightweight Design Card */}
-                <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-md space-y-2.5 mt-2">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-teal-400" />
-                    <span className="text-xs font-bold text-teal-300 uppercase tracking-wide">
-                      Lightweight Voice Assistant Sandbox
-                    </span>
+                        {tab.label}
+                      </button>
+                    ))}
                   </div>
-                  <p className="text-[11px] text-slate-300 leading-relaxed">
-                    No camera, location, or screen-lock permissions are requested. Microphone audio is processed solely for voice commands and wake-word detection.
-                  </p>
+
+                  {/* Status Notice Toast if any action returned message */}
+                  {permNotice && (
+                    <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 text-xs flex items-center justify-between animate-fade-in shadow-xs">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                        <span>{permNotice}</span>
+                      </div>
+                      <button
+                        onClick={() => setPermNotice(null)}
+                        className="text-blue-500 hover:text-blue-800 ml-2"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Comprehensive Permission Cards */}
+                  <div className="space-y-2">
+                    {filteredPerms.map(def => {
+                      const status = permissionStatuses[def.id] || (def.permissionType === 'manifest' ? 'granted' : def.isSpecialSystemSetting ? 'system_required' : 'prompt');
+                      const isLoading = permActionLoadingId === def.id;
+                      const Icon = def.category === 'audio' ? (def.id === 'microphone' ? Mic : Volume2) : def.category === 'device' ? MapPin : Radio;
+
+                      return (
+                        <div
+                          key={def.id}
+                          className="p-3 bg-white/95 border border-teal-100 rounded-2xl shadow-xs flex items-center justify-between gap-2.5 text-slate-800"
+                        >
+                          <div className="flex items-start gap-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-xl bg-teal-50 border border-teal-200/60 text-teal-700 flex items-center justify-center flex-shrink-0 mt-0.5">
+                              <Icon className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-xs font-bold text-slate-800 truncate">
+                                {def.name}
+                              </div>
+                              <div className="text-[9px] font-mono text-teal-700/80 truncate">
+                                {def.androidManifestName}
+                              </div>
+                              <p className="text-[10px] text-slate-500 line-clamp-2 mt-0.5 leading-snug">
+                                {def.whyNeeded}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                            <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold border ${
+                              status === 'granted'
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                : status === 'system_required'
+                                ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                : 'bg-rose-100 text-rose-800 border-rose-300'
+                            }`}>
+                              {status === 'granted' ? (
+                                <>
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                                  <span>GRANTED</span>
+                                </>
+                              ) : status === 'system_required' ? (
+                                <>
+                                  <Sliders className="w-2.5 h-2.5 text-amber-700" />
+                                  <span>SYSTEM REQ</span>
+                                </>
+                              ) : (
+                                <>
+                                  <ShieldAlert className="w-2.5 h-2.5 text-rose-600" />
+                                  <span>NEEDED</span>
+                                </>
+                              )}
+                            </span>
+
+                            <button
+                              onClick={() => handlePermAction(def.id)}
+                              disabled={isLoading}
+                              className={`py-1 px-2.5 rounded-xl text-[10px] font-bold flex items-center gap-1 transition-all shadow-xs ${
+                                status === 'granted'
+                                  ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                  : status === 'system_required'
+                                  ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                                  : 'bg-teal-600 hover:bg-teal-700 text-white'
+                              }`}
+                            >
+                              {isLoading ? (
+                                <RefreshCw className="w-3 h-3 animate-spin" />
+                              ) : status === 'granted' ? (
+                                <Check className="w-3 h-3 text-emerald-600" />
+                              ) : (
+                                <Sparkles className="w-3 h-3" />
+                              )}
+                              <span>
+                                {isLoading
+                                  ? '...'
+                                  : status === 'granted'
+                                  ? 'Active ✓'
+                                  : def.isSpecialSystemSetting
+                                  ? 'Configure'
+                                  : 'Grant'}
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Transparent Permissions & Assistant Sandbox Card */}
+                  <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-md space-y-2.5 mt-2">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-teal-400" />
+                      <span className="text-xs font-bold text-teal-300 uppercase tracking-wide">
+                        Full 30-Permission Assistant Suite
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      Every Android capability—from silent background Wake Word and Bluetooth headset routing to GPS weather, hands-free calling, contacts, storage, overlays, and camera vision—is transparently controlled right here on your device.
+                    </p>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* ----------------------------------------------------------- */}
             {/* 8. BACKGROUND SERVICE & WAKE WORD SUB-PAGE                  */}
@@ -3200,7 +3284,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   <img
                     src="/zuzu-logo.png"
                     alt="Zuzu AI"
-                    className="w-16 h-16 rounded-2xl object-cover shadow-md border border-purple-200"
+                    className="w-20 h-20 rounded-2xl object-cover shadow-md border border-purple-200"
                   />
                   <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-50 text-purple-700 text-xs font-bold border border-purple-200">
                     <span>Zuzu AI</span>

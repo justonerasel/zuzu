@@ -1,11 +1,10 @@
 import React from 'react';
-import { ArrowUpCircle, Download, Globe2, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Globe2, RefreshCw, AlertTriangle } from 'lucide-react';
 import { APP_VERSION } from '../utils/apiConfig';
 
 export interface ForceUpdatePayload {
   latestVersion: string;
   minSupportedVersion?: string;
-  apkDownloadUrl: string;
   websiteUrl: string;
   message: string;
   changelogSummary?: string[];
@@ -41,7 +40,7 @@ export const ForceUpdateOverlay: React.FC<ForceUpdateOverlayProps> = ({
 
         <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[10px] font-bold uppercase tracking-wider mb-2">
           <AlertTriangle className="w-3 h-3" />
-          <span>Update Required</span>
+          <span>OTA Update Required</span>
         </div>
 
         <h2 className="text-xl font-black text-slate-900 tracking-tight">
@@ -58,7 +57,7 @@ export const ForceUpdateOverlay: React.FC<ForceUpdateOverlayProps> = ({
             <span className="font-mono text-slate-500">v{APP_VERSION}</span>
           </div>
           <div className="flex justify-between font-bold text-purple-800">
-            <span>Required Release:</span>
+            <span>Latest OTA Release:</span>
             <span className="font-mono">{updateInfo.latestVersion}</span>
           </div>
           {updateInfo.changelogSummary && updateInfo.changelogSummary.length > 0 && (
@@ -74,36 +73,24 @@ export const ForceUpdateOverlay: React.FC<ForceUpdateOverlayProps> = ({
         </div>
 
         <div className="space-y-2 mt-4">
-          <a
-            href={updateInfo.apkDownloadUrl}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            type="button"
+            onClick={onStartOtaUpdate}
             className="w-full py-2.5 px-4 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-bold shadow-md shadow-purple-200 flex items-center justify-center gap-1.5 transition-all"
           >
-            <Download className="w-4 h-4" />
-            <span>Download Latest APK</span>
+            <RefreshCw className="w-4 h-4" />
+            <span>Install In-App OTA Update</span>
+          </button>
+
+          <a
+            href={updateInfo.websiteUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors"
+          >
+            <Globe2 className="w-3.5 h-3.5 text-slate-500" />
+            <span>Open Official Web App</span>
           </a>
-
-          <div className="grid grid-cols-2 gap-2">
-            <a
-              href={updateInfo.websiteUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
-            >
-              <Globe2 className="w-3.5 h-3.5 text-slate-500" />
-              <span>Official Web</span>
-            </a>
-
-            <button
-              type="button"
-              onClick={onStartOtaUpdate}
-              className="py-2 px-3 rounded-xl bg-purple-100 hover:bg-purple-200 text-purple-800 text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Open Updater</span>
-            </button>
-          </div>
 
           {isPreview && onDismissPreview && (
             <button

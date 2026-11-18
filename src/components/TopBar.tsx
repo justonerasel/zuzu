@@ -48,7 +48,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           <img
             src="/zuzu-logo.png"
             alt="Zuzu AI"
-            className="w-10 h-10 rounded-xl object-cover shadow-md shadow-purple-600/20 border border-purple-200/80 flex-shrink-0"
+            className="w-11 h-11 rounded-2xl object-cover shadow-md shadow-purple-600/25 border border-purple-200 flex-shrink-0"
           />
           <span className="font-black text-base tracking-tight text-slate-800">
             Zuzu <span className="bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">AI</span>

@@ -27,7 +27,7 @@ import { syncBackgroundServicesWithSettings, setMicBusyForActiveSession } from '
 import { buildSmartWakeGreeting, getCachedWeatherSummary, refreshWeatherCacheSilently } from './utils/greetingHelper';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
-import { syncSuCloudNow } from './utils/suAccount';
+import { syncZuCloudNow } from './utils/zuAccount';
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => getAppSettings());
@@ -78,9 +78,8 @@ export default function App() {
           setForceUpdateInfo({
             latestVersion: data.latestVersion || `v${APP_VERSION}`,
             minSupportedVersion: data.minSupportedVersion,
-            apkDownloadUrl: data.apkDownloadUrl || data.downloadUrl || 'https://github.com/justonerasel/Zuzu-AI/releases/latest',
             websiteUrl: data.websiteUrl || 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
-            message: data.message || 'A required Zuzu AI update is available.',
+            message: data.message || 'A required Zuzu AI OTA update is available.',
             changelogSummary: data.changelogSummary
           });
         }
@@ -170,33 +169,33 @@ export default function App() {
     settings.selectedVoiceStyleId
   ]);
 
-  // Auto-sync SU-ID Account Firebase cloud backup in background when local data changes
+  // Auto-sync ZU-ID Account Firebase cloud backup in background when local data changes
   useEffect(() => {
-    if (!settings.suAccountId || !settings.suVaultKey) return;
+    if (!settings.zuAccountId || !settings.zuVaultKey) return;
     let syncTimer: ReturnType<typeof setTimeout> | null = null;
 
     const triggerDebouncedSync = () => {
       if (syncTimer) clearTimeout(syncTimer);
       syncTimer = setTimeout(() => {
         const latest = getAppSettings();
-        if (latest.suAccountId && latest.suVaultKey) {
-          syncSuCloudNow(latest).catch(() => {});
+        if (latest.zuAccountId && latest.zuVaultKey) {
+          syncZuCloudNow(latest).catch(() => {});
         }
       }, 3000);
     };
 
-    window.addEventListener('zuzu-su-data-changed', triggerDebouncedSync);
+    window.addEventListener('zuzu-zu-data-changed', triggerDebouncedSync);
     triggerDebouncedSync();
 
     return () => {
       if (syncTimer) clearTimeout(syncTimer);
-      window.removeEventListener('zuzu-su-data-changed', triggerDebouncedSync);
+      window.removeEventListener('zuzu-zu-data-changed', triggerDebouncedSync);
     };
   }, [
     textMessageCount,
     voiceSessionCount,
-    settings.suAccountId,
-    settings.suVaultKey,
+    settings.zuAccountId,
+    settings.zuVaultKey,
     settings.userNickname,
     settings.activePersonality
   ]);
@@ -355,13 +354,16 @@ export default function App() {
         onSuccessResume={apiKeyModalConfig.onResume}
       />
 
-      {/* Mandatory Force Update Overlay ("Update Required") */}
+      {/* Mandatory Force Update Overlay ("OTA Update Required") */}
       <ForceUpdateOverlay
         isOpen={Boolean(forceUpdateInfo)}
         updateInfo={forceUpdateInfo}
         onStartOtaUpdate={() => {
           setForceUpdateInfo(null);
           setActiveTab('updates');
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('zuzu-trigger-ota-sync'));
+          }, 120);
         }}
       />
     </AndroidFrame>

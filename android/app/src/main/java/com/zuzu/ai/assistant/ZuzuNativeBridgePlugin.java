@@ -53,7 +53,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
         name = "ZuzuNative",
         permissions = {
                 @Permission(strings = { Manifest.permission.RECORD_AUDIO }, alias = "microphone"),
-                @Permission(strings = { Manifest.permission.POST_NOTIFICATIONS }, alias = "notifications")
+                @Permission(strings = { Manifest.permission.POST_NOTIFICATIONS }, alias = "notifications"),
+                @Permission(strings = { Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN }, alias = "bluetooth"),
+                @Permission(strings = { Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION }, alias = "location"),
+                @Permission(strings = { Manifest.permission.CALL_PHONE }, alias = "phone"),
+                @Permission(strings = { Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS }, alias = "contacts"),
+                @Permission(strings = { Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE }, alias = "storage"),
+                @Permission(strings = { Manifest.permission.CAMERA }, alias = "camera")
         }
 )
 public class ZuzuNativeBridgePlugin extends Plugin {
@@ -253,19 +259,20 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                 List<NativeTriggerSpec> snapshot = activeTriggers;
                 for (NativeTriggerSpec spec : snapshot) {
                     if ("whistle".equals(spec.kind)) {
-                        double targetHz = spec.peakHz > 300 ? spec.peakHz : 1500.0;
+                        double targetHz = spec.peakHz > 750 ? spec.peakHz : 1500.0;
                         double goertzelTarget = computeGoertzelMagnitude(samples, read, sampleRate, targetHz);
                         double goertzelRefLow = computeGoertzelMagnitude(samples, read, sampleRate, Math.max(250, targetHz * 0.55));
                         double goertzelRefHigh = computeGoertzelMagnitude(samples, read, sampleRate, Math.min(7200, targetHz * 1.45));
                         double ratio = goertzelTarget / Math.max(1e-5, (goertzelRefLow + goertzelRefHigh) * 0.5);
 
-                        boolean hit = rms >= Math.max(0.015, spec.rmsThreshold * 0.32)
-                                && Math.abs(estHz - targetHz) <= 450.0
-                                && ratio >= 2.6;
+                        boolean hit = rms >= Math.max(0.024, spec.rmsThreshold * 0.50)
+                                && estHz >= 750.0
+                                && Math.abs(estHz - targetHz) <= 300.0
+                                && ratio >= 3.8;
 
                         if (hit) {
                             spec.whistleStreak++;
-                            if (spec.whistleStreak >= 2) {
+                            if (spec.whistleStreak >= 3) {
                                 fireNativeTrigger(spec, now);
                                 break;
                             }
@@ -273,19 +280,24 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                             spec.whistleStreak = Math.max(0, spec.whistleStreak - 1);
                         }
                     } else if ("snap".equals(spec.kind)) {
-                        boolean hit = rms >= Math.max(0.028, spec.rmsThreshold * 0.42)
-                                && crest >= Math.max(2.6, spec.crestFactor * 0.55)
-                                && estHz >= 900.0;
+                        boolean hit = rms >= Math.max(0.042, spec.rmsThreshold * 0.55)
+                                && crest >= Math.max(3.35, spec.crestFactor * 0.70)
+                                && estHz >= 1450.0;
                         if (hit) {
                             fireNativeTrigger(spec, now);
                             break;
                         }
                     } else {
-                        boolean hit = rms >= Math.max(0.024, spec.rmsThreshold * 0.45)
-                                && Math.abs(estHz - spec.peakHz) <= 500.0;
+                        boolean hit = rms >= Math.max(0.040, spec.rmsThreshold * 0.58)
+                                && Math.abs(estHz - spec.peakHz) <= 320.0;
                         if (hit) {
-                            fireNativeTrigger(spec, now);
-                            break;
+                            spec.whistleStreak++;
+                            if (spec.whistleStreak >= 2) {
+                                fireNativeTrigger(spec, now);
+                                break;
+                            }
+                        } else {
+                            spec.whistleStreak = 0;
                         }
                     }
                 }
@@ -341,14 +353,30 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         Context ctx = getContext();
         JSObject res = new JSObject();
 
-        String micStatus = hasPerm(ctx, Manifest.permission.RECORD_AUDIO) ? "granted" : "prompt";
-        res.put("microphone", micStatus);
+        // 1-2. Audio & Voice
+        res.put("microphone", hasPerm(ctx, Manifest.permission.RECORD_AUDIO) ? "granted" : "prompt");
+        res.put("modify_audio", "granted");
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            res.put("notifications", hasPerm(ctx, Manifest.permission.POST_NOTIFICATIONS) ? "granted" : "prompt");
+        // 3-6. Bluetooth (API 31+ runtime connect/scan)
+        res.put("bluetooth", "granted");
+        res.put("bluetooth_admin", "granted");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            res.put("bluetooth_connect", hasPerm(ctx, Manifest.permission.BLUETOOTH_CONNECT) ? "granted" : "prompt");
+            res.put("bluetooth_scan", hasPerm(ctx, Manifest.permission.BLUETOOTH_SCAN) ? "granted" : "prompt");
         } else {
-            res.put("notifications", NotificationManagerCompat.from(ctx).areNotificationsEnabled() ? "granted" : "prompt");
+            res.put("bluetooth_connect", "granted");
+            res.put("bluetooth_scan", "granted");
         }
+
+        // 7-15. Network, Foreground Services, WakeLock, Boot & Battery
+        res.put("internet", "granted");
+        res.put("access_network", "granted");
+        res.put("access_wifi", "granted");
+        res.put("foreground_service", "granted");
+        res.put("fg_microphone", "granted");
+        res.put("fg_media", "granted");
+        res.put("wake_lock", "granted");
+        res.put("boot_completed", "granted");
 
         boolean ignoringBattery = true;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -356,6 +384,49 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             ignoringBattery = pm != null && pm.isIgnoringBatteryOptimizations(ctx.getPackageName());
         }
         res.put("battery_opt", ignoringBattery ? "granted" : "system_required");
+
+        // 16-22. Notifications, Overlay, System Settings & Package Visibility
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            res.put("notifications", hasPerm(ctx, Manifest.permission.POST_NOTIFICATIONS) ? "granted" : "prompt");
+        } else {
+            res.put("notifications", NotificationManagerCompat.from(ctx).areNotificationsEnabled() ? "granted" : "prompt");
+        }
+        res.put("vibrate", "granted");
+
+        boolean canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(ctx);
+        res.put("system_alert_window", canOverlay ? "granted" : "system_required");
+
+        boolean canWriteSettings = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(ctx);
+        res.put("write_settings", canWriteSettings ? "granted" : "system_required");
+
+        res.put("expand_status_bar", "granted");
+        res.put("query_all_packages", "granted");
+
+        boolean canInstall = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            canInstall = ctx.getPackageManager().canRequestPackageInstalls();
+        }
+        res.put("request_install_packages", canInstall ? "granted" : "system_required");
+
+        // 23-30. Location, Calls, Contacts, Storage & Camera
+        res.put("fine_location", hasPerm(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ? "granted" : "prompt");
+        res.put("coarse_location", hasPerm(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ? "granted" : "prompt");
+        res.put("call_phone", hasPerm(ctx, Manifest.permission.CALL_PHONE) ? "granted" : "prompt");
+        res.put("read_contacts", hasPerm(ctx, Manifest.permission.READ_CONTACTS) ? "granted" : "prompt");
+        res.put("write_contacts", hasPerm(ctx, Manifest.permission.WRITE_CONTACTS) ? "granted" : "prompt");
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            res.put("read_storage", "granted");
+            res.put("write_storage", "granted");
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            res.put("read_storage", hasPerm(ctx, Manifest.permission.READ_EXTERNAL_STORAGE) ? "granted" : "prompt");
+            res.put("write_storage", "granted");
+        } else {
+            res.put("read_storage", hasPerm(ctx, Manifest.permission.READ_EXTERNAL_STORAGE) ? "granted" : "prompt");
+            res.put("write_storage", hasPerm(ctx, Manifest.permission.WRITE_EXTERNAL_STORAGE) ? "granted" : "prompt");
+        }
+
+        res.put("camera", hasPerm(ctx, Manifest.permission.CAMERA) ? "granted" : "prompt");
         return res;
     }
 
@@ -380,8 +451,78 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             } else {
                 call.resolve(buildPermissionSnapshot());
             }
+        } else if ("bluetooth".equals(alias)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (hasPerm(ctx, Manifest.permission.BLUETOOTH_CONNECT)
+                        && hasPerm(ctx, Manifest.permission.BLUETOOTH_SCAN)) {
+                    call.resolve(buildPermissionSnapshot());
+                    return;
+                }
+                requestPermissionForAlias("bluetooth", call, "permCallback");
+            } else {
+                call.resolve(buildPermissionSnapshot());
+            }
+        } else if ("location".equals(alias)) {
+            if (hasPerm(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
+                    && hasPerm(ctx, Manifest.permission.ACCESS_COARSE_LOCATION)) {
+                call.resolve(buildPermissionSnapshot());
+                return;
+            }
+            requestPermissionForAlias("location", call, "permCallback");
+        } else if ("phone".equals(alias)) {
+            if (hasPerm(ctx, Manifest.permission.CALL_PHONE)) {
+                call.resolve(buildPermissionSnapshot());
+                return;
+            }
+            requestPermissionForAlias("phone", call, "permCallback");
+        } else if ("contacts".equals(alias)) {
+            if (hasPerm(ctx, Manifest.permission.READ_CONTACTS)
+                    && hasPerm(ctx, Manifest.permission.WRITE_CONTACTS)) {
+                call.resolve(buildPermissionSnapshot());
+                return;
+            }
+            requestPermissionForAlias("contacts", call, "permCallback");
+        } else if ("storage".equals(alias)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                call.resolve(buildPermissionSnapshot());
+                return;
+            }
+            requestPermissionForAlias("storage", call, "permCallback");
+        } else if ("camera".equals(alias)) {
+            if (hasPerm(ctx, Manifest.permission.CAMERA)) {
+                call.resolve(buildPermissionSnapshot());
+                return;
+            }
+            requestPermissionForAlias("camera", call, "permCallback");
         } else {
-            requestAllPermissions(call, "permCallback");
+            List<String> neededAliases = new ArrayList<>();
+            if (!hasPerm(ctx, Manifest.permission.RECORD_AUDIO)) neededAliases.add("microphone");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && !hasPerm(ctx, Manifest.permission.POST_NOTIFICATIONS)) {
+                neededAliases.add("notifications");
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                    && (!hasPerm(ctx, Manifest.permission.BLUETOOTH_CONNECT)
+                    || !hasPerm(ctx, Manifest.permission.BLUETOOTH_SCAN))) {
+                neededAliases.add("bluetooth");
+            }
+            if (!hasPerm(ctx, Manifest.permission.ACCESS_FINE_LOCATION)) neededAliases.add("location");
+            if (!hasPerm(ctx, Manifest.permission.CALL_PHONE)) neededAliases.add("phone");
+            if (!hasPerm(ctx, Manifest.permission.READ_CONTACTS)
+                    || !hasPerm(ctx, Manifest.permission.WRITE_CONTACTS)) {
+                neededAliases.add("contacts");
+            }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+                    && !hasPerm(ctx, Manifest.permission.READ_EXTERNAL_STORAGE)) {
+                neededAliases.add("storage");
+            }
+            if (!hasPerm(ctx, Manifest.permission.CAMERA)) neededAliases.add("camera");
+
+            if (neededAliases.isEmpty()) {
+                call.resolve(buildPermissionSnapshot());
+            } else {
+                requestPermissionForAliases(neededAliases.toArray(new String[0]), call, "permCallback");
+            }
         }
     }
 
@@ -624,6 +765,15 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                 } else {
                     intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
                 }
+            } else if ("android.settings.action.MANAGE_OVERLAY_PERMISSION".equals(action)
+                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse(pkgUri));
+            } else if ("android.settings.action.MANAGE_WRITE_SETTINGS".equals(action)
+                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse(pkgUri));
+            } else if ("android.settings.MANAGE_UNKNOWN_APP_SOURCES".equals(action)
+                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse(pkgUri));
             } else {
                 intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse(pkgUri));
             }
@@ -659,8 +809,8 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             call.resolve(ret);
         } catch (Exception e) {
             JSObject ret = new JSObject();
-            ret.put("versionName", "3.6.3");
-            ret.put("versionCode", 363);
+            ret.put("versionName", "3.7.0");
+            ret.put("versionCode", 370);
             call.resolve(ret);
         }
     }

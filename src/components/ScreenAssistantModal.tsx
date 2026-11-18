@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { AppSettings } from '../types';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
-import { apiFetch } from '../utils/apiConfig';
+import { apiFetch, APP_VERSION } from '../utils/apiConfig';
 
 interface ScreenAssistantModalProps {
   isOpen: boolean;
@@ -113,8 +113,8 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
       ctx.fillText('• 3D Assistant Character: Active & Roaming', 45, 260);
       ctx.fillText('• Weather Module: GPS Live Location', 45, 300);
       ctx.fillText('• Audio Engine: Dual Voice (Kore Melodic)', 45, 340);
-      ctx.fillText('• System Version: v3.6.3 (Android 9.0 - Android 16)', 45, 380);
-      ctx.fillText('• Permissions: 17 Android System Access Status: Granted', 45, 420);
+      ctx.fillText(`• System Version: v${APP_VERSION} (Android 9.0 - Android 16)`, 45, 380);
+      ctx.fillText('• Permissions: 30 Android System Permissions: Ready', 45, 420);
 
       ctx.fillStyle = '#1e293b';
       ctx.fillRect(20, 510, canvas.width - 40, 420);
@@ -227,7 +227,7 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
                 Active Android Cast
               </span>
               <span className="text-[10px] font-mono text-slate-500">
-                Gemini 2.5 Vision
+                Gemini 3.8 Vision
               </span>
             </div>
             <p className="text-xs text-slate-700 leading-relaxed">

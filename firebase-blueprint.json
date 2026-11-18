@@ -1,13 +1,20 @@
 {
   "entities": {
-    "SuAccount": {
-      "title": "SU-ID Account Identity",
-      "description": "Publicly addressable account metadata using custom lowercase username/SU-ID key without exposing raw PII or chat data.",
+    "ZuAccount": {
+      "title": "ZU-ID Account Identity",
+      "description": "Publicly addressable account metadata using custom lowercase username/zu_id key without exposing raw PII or chat data.",
       "type": "object",
       "properties": {
+        "zu_id": {
+          "type": "string",
+          "description": "Normalized canonical ZU-ID lookup key derived from custom alphanumeric username",
+          "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
+          "minLength": 3,
+          "maxLength": 32
+        },
         "accountId": {
           "type": "string",
-          "description": "Normalized canonical SU-ID lookup key derived from custom alphanumeric username",
+          "description": "Canonical ZU-ID alias matching zu_id",
           "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
           "minLength": 3,
           "maxLength": 32
@@ -64,6 +71,7 @@
         }
       },
       "required": [
+        "zu_id",
         "accountId",
         "username",
         "fullName",
@@ -75,11 +83,17 @@
         "updatedAt"
       ]
     },
-    "SuVault": {
-      "title": "SU-ID Persistent Memory & Backup Vault",
+    "ZuVault": {
+      "title": "ZU-ID Persistent Memory & Backup Vault",
       "description": "Capability-keyed backup containing user phone identifier, chat history, voice sessions, assistant memories, and assistant settings.",
       "type": "object",
       "properties": {
+        "zu_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
+          "minLength": 3,
+          "maxLength": 32
+        },
         "accountId": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
@@ -129,6 +143,7 @@
         }
       },
       "required": [
+        "zu_id",
         "accountId",
         "username",
         "phone",
@@ -143,15 +158,15 @@
     }
   },
   "firestore": {
-    "/su_accounts/{suId}": {
+    "/zu_accounts/{zuId}": {
       "schema": {
-        "$ref": "#/entities/SuAccount"
+        "$ref": "#/entities/ZuAccount"
       },
-      "description": "SU-ID Account identity lookup document keyed by normalized custom username."
+      "description": "ZU-ID Account identity lookup document keyed by normalized custom username (zu_id)."
     },
-    "/su_accounts/{suId}/vault/{vaultId}": {
+    "/zu_accounts/{zuId}/vault/{vaultId}": {
       "schema": {
-        "$ref": "#/entities/SuVault"
+        "$ref": "#/entities/ZuVault"
       },
       "description": "Private capability-protected vault storing user PII, chat histories, voice sessions, memories, and settings across uninstall/reinstall."
     }

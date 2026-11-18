@@ -55,6 +55,7 @@ jobs:
             cp -rv native-android/app/src/main/java/* android/app/src/main/java/
           fi
           if [ -d "native-android/app/src/main/res" ]; then
+            find android/app/src/main/res -name 'splash.png' -delete || true
             mkdir -p android/app/src/main/res
             cp -rv native-android/app/src/main/res/* android/app/src/main/res/
           fi
@@ -62,27 +63,63 @@ jobs:
           python3 - <<'PY'
           import os, re, xml.etree.ElementTree as ET
 
-          # 1. Add essential Android assistant permissions, queries, Foreground Service & Boot Receiver
+          # 1. Add all 30 Android assistant permissions, optional features, queries, Foreground Service & Boot Receiver
           p = "android/app/src/main/AndroidManifest.xml"
           assert os.path.exists(p), "Missing android/app/src/main/AndroidManifest.xml"
           s = open(p, encoding="utf-8").read()
+          if 'xmlns:tools=' not in s:
+              s = s.replace("<manifest ", '<manifest xmlns:tools="http://schemas.android.com/tools" ', 1)
+
           perms = [
-              "android.permission.INTERNET",
-              "android.permission.ACCESS_NETWORK_STATE",
               "android.permission.RECORD_AUDIO",
               "android.permission.MODIFY_AUDIO_SETTINGS",
-              "android.permission.VIBRATE",
+              "android.permission.BLUETOOTH",
+              "android.permission.BLUETOOTH_ADMIN",
+              "android.permission.BLUETOOTH_CONNECT",
+              "android.permission.BLUETOOTH_SCAN",
+              "android.permission.INTERNET",
+              "android.permission.ACCESS_NETWORK_STATE",
+              "android.permission.ACCESS_WIFI_STATE",
               "android.permission.FOREGROUND_SERVICE",
               "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+              "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
               "android.permission.WAKE_LOCK",
               "android.permission.RECEIVE_BOOT_COMPLETED",
               "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+              "android.permission.SYSTEM_ALERT_WINDOW",
               "android.permission.POST_NOTIFICATIONS",
+              "android.permission.VIBRATE",
+              "android.permission.WRITE_SETTINGS",
+              "android.permission.EXPAND_STATUS_BAR",
+              "android.permission.ACCESS_FINE_LOCATION",
+              "android.permission.ACCESS_COARSE_LOCATION",
+              "android.permission.CALL_PHONE",
+              "android.permission.READ_CONTACTS",
+              "android.permission.WRITE_CONTACTS",
+              "android.permission.READ_EXTERNAL_STORAGE",
+              "android.permission.WRITE_EXTERNAL_STORAGE",
+              "android.permission.CAMERA",
+              "android.permission.QUERY_ALL_PACKAGES",
+              "android.permission.REQUEST_INSTALL_PACKAGES",
           ]
           add = ""
           for x in perms:
               if x not in s:
-                  add += '    <uses-permission android:name="%s" />\n' % x
+                  if x == "android.permission.WRITE_SETTINGS":
+                      add += '    <uses-permission android:name="%s" tools:ignore="ProtectedPermissions" />\n' % x
+                  elif x == "android.permission.QUERY_ALL_PACKAGES":
+                      add += '    <uses-permission android:name="%s" tools:ignore="QueryAllPackagesPermission" />\n' % x
+                  else:
+                      add += '    <uses-permission android:name="%s" />\n' % x
+          features = [
+              "android.hardware.camera",
+              "android.hardware.telephony",
+              "android.hardware.location.gps",
+              "android.hardware.bluetooth",
+          ]
+          for feat in features:
+              if feat not in s:
+                  add += '    <uses-feature android:name="%s" android:required="false" />\n' % feat
           if add:
               s = s.replace("</manifest>", add + "</manifest>")
 
@@ -127,14 +164,33 @@ jobs:
           ET.parse(p)
           print("AndroidManifest.xml patched and XML-validated successfully")
 
-          # 2. Configure versionCode 363 and versionName 3.6.3 in android/app/build.gradle
+          # 2. Enforce Edge-to-Edge transparent bars & notch shortEdges in values/styles.xml
+          styles_path = "android/app/src/main/res/values/styles.xml"
+          if os.path.exists(styles_path):
+              st = open(styles_path, encoding="utf-8").read()
+              if 'xmlns:tools=' not in st:
+                  st = st.replace("<resources", '<resources xmlns:tools="http://schemas.android.com/tools"', 1)
+              if "windowLayoutInDisplayCutoutMode" not in st:
+                  edge_items = "\n".join([
+                      '        <item name="android:statusBarColor" tools:targetApi="21">@android:color/transparent</item>',
+                      '        <item name="android:navigationBarColor" tools:targetApi="21">@android:color/transparent</item>',
+                      '        <item name="android:windowDrawsSystemBarBackgrounds" tools:targetApi="21">true</item>',
+                      '        <item name="android:windowLightStatusBar" tools:targetApi="23">true</item>',
+                      '        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="28">shortEdges</item>',
+                  ])
+                  st = re.sub(r'(\s*</style>)', "\n" + edge_items + r'\1', st)
+              open(styles_path, "w", encoding="utf-8").write(st)
+              ET.parse(styles_path)
+              print("Patched styles.xml for full-screen Edge-to-Edge")
+
+          # 3. Configure versionCode 370 and versionName 3.7.0 in android/app/build.gradle
           g = "android/app/build.gradle"
           assert os.path.exists(g), "Missing android/app/build.gradle"
           txt = open(g, encoding="utf-8").read()
-          txt = re.sub(r'versionCode\s+\d+', 'versionCode 363', txt)
-          txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.6.3"', txt)
+          txt = re.sub(r'versionCode\s+\d+', 'versionCode 370', txt)
+          txt = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "3.7.0"', txt)
           open(g, "w", encoding="utf-8").write(txt)
-          print("Updated android/app/build.gradle to versionCode 363 and versionName 3.6.3")
+          print("Updated android/app/build.gradle to versionCode 370 and versionName 3.7.0")
           PY
           test -f android/app/src/main/assets/public/index.html
 
@@ -147,12 +203,12 @@ jobs:
       - name: Package Versioned APK Output
         run: |
           mkdir -p apk-output
-          cp -v android/app/build/outputs/apk/debug/*.apk apk-output/Zuzu-AI-v3.6.3-b363-debug.apk
+          cp -v android/app/build/outputs/apk/debug/*.apk apk-output/Zuzu-AI-v3.7.0-b370-debug.apk
           ls -lh apk-output/
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Zuzu-AI-v3.6.3-APK
-          path: apk-output/Zuzu-AI-v3.6.3-b363-debug.apk
+          name: Zuzu-AI-v3.7.0-APK
+          path: apk-output/Zuzu-AI-v3.7.0-b370-debug.apk
           if-no-files-found: error
