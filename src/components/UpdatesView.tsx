@@ -102,7 +102,8 @@ export const UpdatesView: React.FC<UpdatesViewProps> = ({ onForceUpdateTriggered
         setCheckStatusMessage(data?.message || `Zuzu AI is up to date on ${latestVer}.`);
         playHapticSound('listen_stop');
       } else {
-        runSeamlessOtaSync(currentVersion, false);
+        setCheckStatusMessage(`Update check returned HTTP ${res.status}. Running installed release ${currentVersion}.`);
+        playHapticSound('listen_stop');
       }
     } catch {
       setCheckStatusMessage(`OTA server unreachable right now. Running verified local build ${currentVersion}.`);
@@ -284,8 +285,8 @@ export const UpdatesView: React.FC<UpdatesViewProps> = ({ onForceUpdateTriggered
           <div className="grid grid-cols-1 gap-2 pt-1">
             {[
               {
-                title: 'Google Gemini 3.8 Flash AI Engine',
-                desc: 'Upgraded all text and voice interactions to models/gemini-3.8-flash for reliable bilingual English & Bengali responses.'
+                title: 'Google Gemini 4 Hydrogen AI Engine',
+                desc: 'Upgraded all text and voice interactions to models/gemini-4-hydrogen for reliable bilingual English & Bengali responses.'
               },
               {
                 title: 'Calibrated Whistle & Snap Audio Triggers',
@@ -327,7 +328,7 @@ export const UpdatesView: React.FC<UpdatesViewProps> = ({ onForceUpdateTriggered
           <span>Application Environment &amp; Low-Latency Architecture</span>
         </div>
         <div>Target Platform: Android 9.0 (API 28) - 16 (API 36) / Mobile Web</div>
-        <div>Neural Backend: Google Gemini 3.8 Flash + ElevenLabs Multilingual V2</div>
+        <div>Neural Backend: Google Gemini 4 Hydrogen + ElevenLabs Multilingual V2</div>
         <div>OTA Delivery: Seamless in-app delta verification via Check Status</div>
       </div>
     </div>

@@ -24,27 +24,42 @@ export function getPersonalizedGreeting(settings: AppSettings, localDate: Date =
       bnTimeGreeting = 'শুভ রাত্রি';
     }
 
+    const style = settings.greetingStyle || 'friendly';
+    const isTimeBased = settings.timeBasedGreetings !== false;
+
     if (isBengali) {
-      if (settings.timeBasedGreetings !== false) {
+      if (isTimeBased) {
+        if (style === 'formal') {
+          return rawNickname ? `আসসালামু আলাইকুম • ${bnTimeGreeting}, ${rawNickname}` : `আসসালামু আলাইকুম • ${bnTimeGreeting}`;
+        }
+        if (style === 'cheerful') {
+          return rawNickname ? `${bnTimeGreeting}, ${rawNickname}! দিনটি দারুণ কাটুক` : `${bnTimeGreeting}! দিনটি দারুণ কাটুক`;
+        }
         return rawNickname ? `${bnTimeGreeting}, ${rawNickname}` : bnTimeGreeting;
       }
-      if (settings.greetingStyle === 'formal') {
+      if (style === 'formal') {
         return rawNickname ? `আসসালামু আলাইকুম, ${rawNickname}` : 'আসসালামু আলাইকুম';
       }
-      if (settings.greetingStyle === 'cheerful') {
+      if (style === 'cheerful') {
         return rawNickname ? `স্বাগতম, ${rawNickname}!` : 'স্বাগতম!';
       }
       return rawNickname ? `হ্যালো, ${rawNickname}` : 'হ্যালো';
     }
 
-    if (settings.timeBasedGreetings !== false) {
+    if (isTimeBased) {
+      if (style === 'formal') {
+        return rawNickname ? `Greetings — ${timeGreeting}, ${rawNickname}` : `Greetings — ${timeGreeting}`;
+      }
+      if (style === 'cheerful') {
+        return rawNickname ? `${timeGreeting} & Shine, ${rawNickname}!` : `${timeGreeting} & Shine!`;
+      }
       return rawNickname ? `${timeGreeting}, ${rawNickname}` : timeGreeting;
     }
 
-    if (settings.greetingStyle === 'formal') {
+    if (style === 'formal') {
       return rawNickname ? `Greetings, ${rawNickname}` : 'Greetings';
     }
-    if (settings.greetingStyle === 'cheerful') {
+    if (style === 'cheerful') {
       return rawNickname ? `Hello & Welcome, ${rawNickname}!` : 'Hello & Welcome!';
     }
     return rawNickname ? `Hello, ${rawNickname}` : 'Hello';

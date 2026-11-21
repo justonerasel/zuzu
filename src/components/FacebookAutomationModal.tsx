@@ -18,7 +18,8 @@ import {
 } from 'lucide-react';
 import { AppSettings } from '../types';
 import { playHapticSound } from '../utils/audio';
-import { apiFetch } from '../utils/apiConfig';
+import { apiFetch, directGeminiVisionAnalyze } from '../utils/apiConfig';
+import { getNativeZuzuPlugin } from '../utils/permission';
 
 export type FacebookTaskType = 'search' | 'comment' | 'like' | 'upload_photo' | 'info';
 
@@ -52,38 +53,51 @@ export const FacebookAutomationModal: React.FC<FacebookAutomationModalProps> = (
 
   if (!isOpen) return null;
 
+  const openFbExternal = (url: string) => {
+    const nativePlugin = getNativeZuzuPlugin();
+    if (nativePlugin?.openExternalUrl) {
+      nativePlugin.openExternalUrl({ url }).catch(() => {
+        try {
+          window.open(url, '_blank');
+        } catch {}
+      });
+      return;
+    }
+    try {
+      window.open(url, '_blank');
+    } catch {}
+  };
+
   // 1. Open Facebook Search
   const handleExecuteSearch = () => {
     const query = searchTarget.trim();
     if (!query) return;
 
     playHapticSound('message_sent');
-    // Primary Android Intent via web fallback
     const fbUrl = `https://www.facebook.com/search/top/?q=${encodeURIComponent(query)}`;
-    window.open(fbUrl, '_blank');
+    openFbExternal(fbUrl);
   };
 
   // 2. Prepare Comment & Open
   const handleExecuteComment = () => {
     playHapticSound('message_sent');
-    // Copy comment to clipboard for user convenience
     if (navigator.clipboard && draftComment) {
-      navigator.clipboard.writeText(draftComment);
+      navigator.clipboard.writeText(draftComment).catch(() => {});
     }
     const target = profileTarget.trim();
-    const url = target.startsWith('http') 
-      ? target 
-      : target 
+    const url = target.startsWith('http')
+      ? target
+      : target
       ? `https://www.facebook.com/search/top/?q=${encodeURIComponent(target)}`
       : 'https://www.facebook.com';
-    window.open(url, '_blank');
+    openFbExternal(url);
   };
 
   // 3. Like Post
   const handleExecuteLike = () => {
     playHapticSound('message_sent');
     const url = postUrl.trim() || 'https://www.facebook.com';
-    window.open(url, '_blank');
+    openFbExternal(url);
   };
 
   // 4. Handle Gallery Photo Selection
@@ -98,7 +112,7 @@ export const FacebookAutomationModal: React.FC<FacebookAutomationModalProps> = (
       setUploadStatus(null);
       playHapticSound('switch');
 
-      // Automatically generate caption via AI
+      // Automatically generate caption via backend -> direct Gemini Vision fallback
       setIsGeneratingCaption(true);
       try {
         const res = await apiFetch('/api/generate-caption', {
@@ -110,8 +124,24 @@ export const FacebookAutomationModal: React.FC<FacebookAutomationModalProps> = (
           })
         });
         const data = await res.json();
-        setPhotoCaption(data.caption || 'Captured moments ✨ #Life #Photography');
-      } catch (err) {
+        if (res.ok && data?.caption && !data.isDefault) {
+          setPhotoCaption(data.caption);
+          return;
+        }
+        throw new Error('Default caption returned');
+      } catch {
+        if (settings.customGeminiApiKey?.trim()) {
+          try {
+            const direct = await directGeminiVisionAnalyze(
+              settings.customGeminiApiKey,
+              base64,
+              'Write a catchy, warm Facebook caption for this photo with 2-3 suitable hashtags.',
+              file.type || 'image/jpeg'
+            );
+            setPhotoCaption(direct.text);
+            return;
+          } catch {}
+        }
         setPhotoCaption('Cherishing every moment ✨ #Memories #GoodTimes');
       } finally {
         setIsGeneratingCaption(false);
@@ -120,25 +150,34 @@ export const FacebookAutomationModal: React.FC<FacebookAutomationModalProps> = (
     reader.readAsDataURL(file);
   };
 
-  // 5. Confirm & Publish to Facebook
-  const handleConfirmUpload = () => {
+  // 5. Confirm & Share via Android Share Sheet or Facebook Web Sharer
+  const handleConfirmUpload = async () => {
     if (!selectedPhoto) return;
     setIsUploading(true);
     playHapticSound('message_sent');
 
-    // Copy caption to clipboard so user can immediately paste it into Facebook
     if (navigator.clipboard && photoCaption) {
-      navigator.clipboard.writeText(photoCaption);
+      navigator.clipboard.writeText(photoCaption).catch(() => {});
     }
 
-    setTimeout(() => {
-      setIsUploading(false);
-      setUploadStatus('success');
+    try {
+      const nativePlugin = getNativeZuzuPlugin();
+      if (nativePlugin?.shareMediaOrText) {
+        await nativePlugin.shareMediaOrText({
+          title: 'Share to Facebook',
+          text: photoCaption,
+          base64Data: selectedPhoto
+        });
+        setUploadStatus('success');
+        return;
+      }
 
-      // Open Facebook official sharer / web intent
       const fbShareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(window.location.origin)}&quote=${encodeURIComponent(photoCaption)}`;
-      window.open(fbShareUrl, '_blank');
-    }, 1200);
+      openFbExternal(fbShareUrl);
+      setUploadStatus('success');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   return (

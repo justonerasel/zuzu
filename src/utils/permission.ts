@@ -110,7 +110,7 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
     androidManifestName: 'android.permission.INTERNET',
     category: 'system',
     permissionType: 'manifest',
-    whyNeeded: 'Connects to Google Gemini 3.8 Flash, xAI Grok, ElevenLabs, and Firebase ZU-ID Cloud Sync.',
+    whyNeeded: 'Connects to Google Gemini 4 Hydrogen, xAI Grok, ElevenLabs, and Firebase ZU-ID Cloud Sync.',
     androidSecurityNote: 'Standard Android network access.',
     isSpecialSystemSetting: false
   },
@@ -355,7 +355,7 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
     category: 'device',
     permissionType: 'runtime',
     nativeAlias: 'camera',
-    whyNeeded: 'Optional visual capture for multimodal Gemini 3.8 Flash vision analysis and captioning.',
+    whyNeeded: 'Optional visual capture for multimodal Gemini 4 Hydrogen vision analysis and captioning.',
     androidSecurityNote: 'Android runtime dangerous permission (used only when opened).',
     isSpecialSystemSetting: false
   }
@@ -801,4 +801,25 @@ export function openAndroidSettings(action?: string): void {
 
 export function openAndroidAppSettingsGuide(): void {
   openAndroidSettings('android.settings.APPLICATION_DETAILS_SETTINGS');
+}
+
+export async function checkAndRequestLocationPermission(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin?.checkAllNativePermissions) {
+    try {
+      const snap = await nativePlugin.checkAllNativePermissions();
+      if (snap?.fine_location === 'granted' || snap?.coarse_location === 'granted') {
+        localStorage.setItem(`${STORAGE_KEY_PREFIX}fine_location`, 'granted');
+        return true;
+      }
+      if (nativePlugin.requestCorePermissions) {
+        const requested = await nativePlugin.requestCorePermissions({ alias: 'location' });
+        const granted = requested?.fine_location === 'granted' || requested?.coarse_location === 'granted';
+        localStorage.setItem(`${STORAGE_KEY_PREFIX}fine_location`, granted ? 'granted' : 'denied');
+        return granted;
+      }
+    } catch {}
+  }
+  return Boolean(typeof navigator !== 'undefined' && navigator.geolocation);
 }

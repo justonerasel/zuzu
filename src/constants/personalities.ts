@@ -230,27 +230,27 @@ export interface VoiceModelOption {
 
 export const VOICE_MODELS: VoiceModelOption[] = [
   {
-    id: 'gemini-3.8-flash',
-    name: 'Gemini 3.8 Flash',
-    description: 'Latest ultra-low latency bilingual English & Bengali chat and voice engine.',
-    apiModelId: 'gemini-3.8-flash',
+    id: 'gemini-4-hydrogen',
+    name: 'Gemini 4 Hydrogen (Recommended)',
+    description: 'High-speed bilingual English & Bengali reasoning and conversational voice.',
+    apiModelId: 'gemini-4-hydrogen',
+    availability: 'Available',
+    isLiveSupported: true
+  },
+  {
+    id: 'gemini-3.1-flash-lite',
+    name: 'Gemini 3.1 Flash Lite',
+    description: 'Ultra-lightweight low-latency model for quick everyday voice commands.',
+    apiModelId: 'gemini-3.1-flash-lite',
     availability: 'Available',
     isLiveSupported: true
   },
   {
     id: 'gemini-3.8-live',
     name: 'Gemini 3.8 Live Native Audio',
-    description: 'Native end-to-end multi-frequency conversational audio modeling.',
+    description: 'Live conversational tier (automatically uses Gemini 4 Hydrogen for turn-based voice).',
     apiModelId: 'gemini-3.8-live',
-    availability: 'Available',
-    isLiveSupported: true
-  },
-  {
-    id: 'gemini-4-hydrogen',
-    name: 'Gemini 4 Hydrogen',
-    description: 'High-speed multimodal reasoning and natural conversational voice.',
-    apiModelId: 'gemini-4-hydrogen',
-    availability: 'Available',
+    availability: 'Requires Live API',
     isLiveSupported: true
   }
 ];

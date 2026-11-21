@@ -1,8 +1,6 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
-import fs from 'fs';
-import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { generateIntelligentAnswer } from './src/utils/aiEngine.ts';
@@ -47,79 +45,8 @@ const CURATED_PREMADE_VOICES = [
   { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', gender: 'female', category: 'premade', description: 'Clear narrative female voice' }
 ];
 
-// ---------------- PERSISTENT ZU-ID ACCOUNT CLOUD STORE ----------------
-const DATA_DIR = path.resolve(__dirname, 'data');
-const ZU_DB_PATH = path.join(DATA_DIR, 'zu_accounts.json');
-
-interface ZuAccountRecord {
-  accountId: string; // canonical lowercase username (e.g., rasel99 -> ZU-rasel99)
-  zu_id: string;
-  username: string;
-  displayName: string;
-  passwordSalt: string;
-  passwordHash: string;
-  sessionToken: string;
-  createdAt: number;
-  lastSyncedAt: number;
-  snapshot: {
-    chatHistory: any[];
-    voiceSessions: any[];
-    memories: any[];
-    settings: Record<string, any>;
-    savedAt?: number;
-  };
-}
-
-function readZuStore(): Record<string, ZuAccountRecord> {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    if (!fs.existsSync(ZU_DB_PATH)) {
-      return {};
-    }
-    const raw = fs.readFileSync(ZU_DB_PATH, 'utf-8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch (err) {
-    console.warn('[ZU Store] Read warning:', err);
-    return {};
-  }
-}
-
-function writeZuStore(store: Record<string, ZuAccountRecord>): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  const tmpPath = `${ZU_DB_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), 'utf-8');
-  fs.renameSync(tmpPath, ZU_DB_PATH);
-}
-
-function hashZuPassword(password: string, salt?: string): { salt: string; hash: string } {
-  const actualSalt = salt || crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, actualSalt, 64).toString('hex');
-  return { salt: actualSalt, hash: derived };
-}
-
-function verifyZuPassword(password: string, salt: string, storedHash: string): boolean {
-  const derived = crypto.scryptSync(password, salt, 64);
-  const storedBuf = Buffer.from(storedHash, 'hex');
-  if (derived.length !== storedBuf.length) return false;
-  return crypto.timingSafeEqual(derived, storedBuf);
-}
-
-function normalizeZuUsername(rawInput: string): { displayUsername: string; canonicalId: string } {
-  const displayUsername = String(rawInput || '').trim().replace(/^(zu|su)-/i, '');
-  return {
-    displayUsername,
-    canonicalId: displayUsername.toLowerCase(),
-  };
-}
-
-function isValidZuUsername(username: string): boolean {
-  return /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$/.test(username);
-}
+// Canonical authentication & cloud sync live in Firebase Firestore (`zu_accounts`).
+// Local JSON file storage on ephemeral Cloud Run containers is intentionally retired.
 
 function compareSemver(a: string, b: string): number {
   const pa = a.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
@@ -136,8 +63,17 @@ function compareSemver(a: string, b: string): number {
 const LATEST_APP_VERSION = '3.7.0';
 const LATEST_VERSION_CODE = 370;
 const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.7.0';
-const GEMINI_PRIMARY_MODEL = 'gemini-3.8-flash';
-const GEMINI_FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-4-hydrogen'];
+const GEMINI_PRIMARY_MODEL = 'gemini-4-hydrogen';
+const GEMINI_FALLBACK_MODELS = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+const GROK_FALLBACK_MODELS = ['grok-3-mini', 'grok-3', 'grok-2-latest'];
+
+function normalizeSupportedGeminiModel(model?: string): string {
+  const clean = (model || GEMINI_PRIMARY_MODEL).replace(/^models\//, '').trim();
+  if (!clean || clean === 'gemini-3.8-flash' || clean === 'gemini-3.8-live' || clean === 'gemini-2.0-flash') {
+    return GEMINI_PRIMARY_MODEL;
+  }
+  return clean;
+}
 
 async function generateWithGeminiResilience(
   clientAi: GoogleGenAI,
@@ -148,7 +84,7 @@ async function generateWithGeminiResilience(
     timeoutMs?: number;
   }
 ): Promise<{ response: any; usedModel: string }> {
-  const preferred = (params.preferredModel || GEMINI_PRIMARY_MODEL).replace(/^models\//, '');
+  const preferred = normalizeSupportedGeminiModel(params.preferredModel);
   const candidates = Array.from(new Set([preferred, ...GEMINI_FALLBACK_MODELS])).filter(Boolean);
   let lastErr: any = null;
 
@@ -227,10 +163,10 @@ app.get('/api/system/check-update', (req, res) => {
     targetCompatibility: 'Android 9.0 (Pie) through Android 16',
     websiteUrl: 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
     message: forceFlag
-      ? `OTA update required (v${LATEST_APP_VERSION}). Syncing Zuzu AI in-app OTA bundle with Gemini 3.8 Flash, 30 Android Permissions & ZU-ID Sync.`
-      : `Zuzu AI is up to date on v${LATEST_APP_VERSION} (OTA Verified). Gemini 3.8 Flash, 30 Android Permissions & ZU-ID Cloud Sync are active.`,
+      ? `OTA update required (v${LATEST_APP_VERSION}). Syncing Zuzu AI in-app OTA bundle with Gemini 4 Hydrogen, 30 Android Permissions & ZU-ID Sync.`
+      : `Zuzu AI is up to date on v${LATEST_APP_VERSION} (OTA Verified). Gemini 4 Hydrogen, 30 Android Permissions & ZU-ID Cloud Sync are active.`,
     changelogSummary: [
-      'Google Gemini 3.8 Flash engine (models/gemini-3.8-flash) for fast bilingual text & voice',
+      'Google Gemini 4 Hydrogen engine (models/gemini-4-hydrogen) for fast bilingual text & voice',
       '30 comprehensive Android permissions (audio, Bluetooth, Wi-Fi/network, wake lock, overlay, location, calls, contacts, storage & vision)',
       'Custom Username & ZU-ID Account login with Firebase Firestore cloud backup & restore',
       'Calibrated Mouth Whistle (শিস) & Finger Snap triggers + Smart Contextual Wake Greetings',
@@ -239,184 +175,19 @@ app.get('/api/system/check-update', (req, res) => {
   });
 });
 
-// ---------------- ZU-ID ACCOUNT API ENDPOINTS ----------------
+// ---------------- ZU-ID ACCOUNT CANONICAL CLOUD ENDPOINT NOTICE ----------------
+// Canonical authentication & cloud sync reside directly in Firebase Firestore (`zu_accounts`).
+const FIREBASE_ZU_MIGRATION_NOTICE = {
+  success: false,
+  canonicalStore: 'firebase_firestore',
+  collection: 'zu_accounts',
+  error: 'ZU-ID account sync is handled canonically via Firebase Firestore (`zu_accounts`). Please update to the latest client bundle.'
+};
 
-// Register a new Custom Username ZU-ID Account
-app.post('/api/zu/register', (req, res) => {
-  try {
-    const { username, password, displayName = 'Zuzu User', initialSnapshot } = req.body || {};
-    const { displayUsername, canonicalId } = normalizeZuUsername(username);
-    if (!isValidZuUsername(displayUsername)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Username must be 3-32 characters (letters & numbers, starting with a letter or digit).'
-      });
-    }
-    if (!password || typeof password !== 'string' || password.trim().length < 6) {
-      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters long.' });
-    }
-
-    const store = readZuStore();
-    if (store[canonicalId]) {
-      return res.status(409).json({
-        success: false,
-        error: `Username "${displayUsername}" is already registered.`
-      });
-    }
-
-    const { salt, hash } = hashZuPassword(password.trim());
-    const sessionToken = crypto.randomBytes(24).toString('hex');
-    const now = Date.now();
-
-    const record: ZuAccountRecord = {
-      accountId: canonicalId,
-      zu_id: canonicalId,
-      username: displayUsername,
-      displayName: String(displayName).trim() || displayUsername,
-      passwordSalt: salt,
-      passwordHash: hash,
-      sessionToken,
-      createdAt: now,
-      lastSyncedAt: now,
-      snapshot: {
-        chatHistory: Array.isArray(initialSnapshot?.chatHistory) ? initialSnapshot.chatHistory : [],
-        voiceSessions: Array.isArray(initialSnapshot?.voiceSessions) ? initialSnapshot.voiceSessions : [],
-        memories: Array.isArray(initialSnapshot?.memories) ? initialSnapshot.memories : [],
-        settings: initialSnapshot?.settings && typeof initialSnapshot.settings === 'object' ? initialSnapshot.settings : {},
-        savedAt: now
-      }
-    };
-
-    store[canonicalId] = record;
-    writeZuStore(store);
-
-    return res.json({
-      success: true,
-      accountId: canonicalId,
-      zu_id: canonicalId,
-      username: displayUsername,
-      displayName: record.displayName,
-      token: sessionToken,
-      lastSyncedAt: now,
-      message: `ZU-ID ZU-${displayUsername} created and synced successfully!`
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message || 'Registration failed.' });
-  }
-});
-
-// Login to existing ZU-ID Account (Username/ZU-ID + Password) & restore full memory snapshot
-app.post('/api/zu/login', (req, res) => {
-  try {
-    const { username, accountId, password } = req.body || {};
-    const { displayUsername, canonicalId } = normalizeZuUsername(username || accountId);
-    if (!isValidZuUsername(displayUsername)) {
-      return res.status(400).json({ success: false, error: 'Enter a valid Username or ZU-ID (3-32 letters/numbers).' });
-    }
-    if (!password || typeof password !== 'string') {
-      return res.status(400).json({ success: false, error: 'Password is required.' });
-    }
-
-    const store = readZuStore();
-    const record = store[canonicalId];
-    if (!record) {
-      return res.status(404).json({ success: false, error: `No ZU-ID Account found for "${displayUsername}".` });
-    }
-
-    if (!verifyZuPassword(password.trim(), record.passwordSalt, record.passwordHash)) {
-      return res.status(401).json({ success: false, error: 'Incorrect password for this ZU-ID Account.' });
-    }
-
-    const newToken = crypto.randomBytes(24).toString('hex');
-    record.sessionToken = newToken;
-    store[canonicalId] = record;
-    writeZuStore(store);
-
-    return res.json({
-      success: true,
-      accountId: record.accountId,
-      zu_id: record.zu_id || record.accountId,
-      username: record.username,
-      displayName: record.displayName,
-      token: newToken,
-      lastSyncedAt: record.lastSyncedAt,
-      snapshot: record.snapshot,
-      message: `Signed in as ZU-${record.username}. All memories and chats restored!`
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message || 'Login failed.' });
-  }
-});
-
-// Sync local data (chats, voice sessions, memories, settings) to ZU-ID Account
-app.post('/api/zu/sync', (req, res) => {
-  try {
-    const { accountId, token, snapshot } = req.body || {};
-    const { canonicalId } = normalizeZuUsername(accountId);
-    const store = readZuStore();
-    const record = store[canonicalId];
-
-    if (!record) {
-      return res.status(404).json({ success: false, error: 'ZU-ID Account not found.' });
-    }
-    if (!token || record.sessionToken !== token) {
-      return res.status(401).json({ success: false, error: 'Session expired. Please sign in again.' });
-    }
-
-    const now = Date.now();
-    record.lastSyncedAt = now;
-    record.snapshot = {
-      chatHistory: Array.isArray(snapshot?.chatHistory) ? snapshot.chatHistory : record.snapshot.chatHistory,
-      voiceSessions: Array.isArray(snapshot?.voiceSessions) ? snapshot.voiceSessions : record.snapshot.voiceSessions,
-      memories: Array.isArray(snapshot?.memories) ? snapshot.memories : record.snapshot.memories,
-      settings: snapshot?.settings && typeof snapshot.settings === 'object'
-        ? { ...record.snapshot.settings, ...snapshot.settings }
-        : record.snapshot.settings,
-      savedAt: now
-    };
-
-    store[canonicalId] = record;
-    writeZuStore(store);
-
-    return res.json({
-      success: true,
-      accountId: record.accountId,
-      zu_id: record.zu_id || record.accountId,
-      username: record.username,
-      lastSyncedAt: now,
-      stats: {
-        chatCount: record.snapshot.chatHistory.length,
-        voiceCount: record.snapshot.voiceSessions.length,
-        memoryCount: record.snapshot.memories.length
-      }
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message || 'Cloud sync failed.' });
-  }
-});
-
-// Check ZU-ID Account metadata status
-app.get('/api/zu/status/:accountId', (req, res) => {
-  const { canonicalId } = normalizeZuUsername(req.params.accountId);
-  const store = readZuStore();
-  const record = store[canonicalId];
-  if (!record) {
-    return res.status(404).json({ exists: false });
-  }
-  return res.json({
-    exists: true,
-    accountId: record.accountId,
-    zu_id: record.zu_id || record.accountId,
-    username: record.username,
-    displayName: record.displayName,
-    lastSyncedAt: record.lastSyncedAt,
-    stats: {
-      chatCount: record.snapshot.chatHistory.length,
-      voiceCount: record.snapshot.voiceSessions.length,
-      memoryCount: record.snapshot.memories.length
-    }
-  });
-});
+app.post('/api/zu/register', (_req, res) => res.status(410).json(FIREBASE_ZU_MIGRATION_NOTICE));
+app.post('/api/zu/login', (_req, res) => res.status(410).json(FIREBASE_ZU_MIGRATION_NOTICE));
+app.post('/api/zu/sync', (_req, res) => res.status(410).json(FIREBASE_ZU_MIGRATION_NOTICE));
+app.get('/api/zu/status/:accountId', (_req, res) => res.status(410).json(FIREBASE_ZU_MIGRATION_NOTICE));
 
 // Endpoint: List ElevenLabs Voices (filtered for premade or account-accessible)
 app.get('/api/elevenlabs/voices', async (req, res) => {
@@ -484,8 +255,8 @@ const handleTestAiProvider = async (req: express.Request, res: express.Response)
         latencyMs: latency,
         message: `Connected successfully (${latency}ms) • ${usedModel}`
       });
-    } catch (err38: any) {
-      console.log('[Zuzu AI] gemini-3.8-flash test note:', err38?.message);
+    } catch (errPrimary: any) {
+      console.log('[Zuzu AI] Gemini provider test note:', errPrimary?.message);
 
       // Fallback to Google REST models endpoint verification
       try {
@@ -504,7 +275,7 @@ const handleTestAiProvider = async (req: express.Request, res: express.Response)
         // ignore network error on fallback
       }
 
-      const rawErr = err38?.message || 'Failed to authenticate with Google Gemini API.';
+      const rawErr = errPrimary?.message || 'Failed to authenticate with Google Gemini API.';
       let userMessage = rawErr;
       if (rawErr.includes('API_KEY_INVALID') || rawErr.includes('API key not valid')) {
         userMessage = 'Invalid API Key. Please verify your key in Google AI Studio.';
@@ -523,44 +294,56 @@ const handleTestAiProvider = async (req: express.Request, res: express.Response)
   }
 
   if (provider === 'grok') {
-    try {
-      const grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${trimmedKey}`
-        },
-        body: JSON.stringify({
-          model: 'grok-2',
-          messages: [{ role: 'user', content: 'Ping test. Reply with "OK" only.' }],
-          max_tokens: 10
-        })
-      });
+    let lastStatus = 400;
+    let lastError = 'Failed to connect to xAI Grok API.';
 
-      if (!grokRes.ok) {
+    for (const modelCandidate of GROK_FALLBACK_MODELS) {
+      try {
+        const grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${trimmedKey}`
+          },
+          body: JSON.stringify({
+            model: modelCandidate,
+            messages: [{ role: 'user', content: 'Ping test. Reply with "OK" only.' }],
+            max_tokens: 10
+          })
+        });
+
+        if (grokRes.ok) {
+          const latency = Date.now() - startTime;
+          return res.json({
+            success: true,
+            provider: 'grok',
+            model: modelCandidate,
+            latencyMs: latency,
+            message: `Connected to xAI Grok successfully (${latency}ms) • ${modelCandidate}`
+          });
+        }
+
+        lastStatus = grokRes.status;
         const errorBody = await grokRes.text();
+        lastError = `xAI Grok Error (${grokRes.status}): ${errorBody.slice(0, 220)}`;
+        if (grokRes.status === 404 || grokRes.status === 400) {
+          continue;
+        }
         return res.status(grokRes.status).json({
           success: false,
           provider: 'grok',
-          error: `xAI Grok Error (${grokRes.status}): ${errorBody}`
+          error: lastError
         });
+      } catch (err: any) {
+        lastError = err?.message || 'Failed to connect to xAI Grok API.';
       }
-
-      const latency = Date.now() - startTime;
-      return res.json({
-        success: true,
-        provider: 'grok',
-        model: 'grok-2',
-        latencyMs: latency,
-        message: `Connected to xAI Grok successfully (${latency}ms)`
-      });
-    } catch (err: any) {
-      return res.status(400).json({
-        success: false,
-        provider: 'grok',
-        error: err.message || 'Failed to connect to xAI Grok API.'
-      });
     }
+
+    return res.status(lastStatus).json({
+      success: false,
+      provider: 'grok',
+      error: lastError
+    });
   }
 
   return res.status(400).json({ success: false, error: 'Unsupported provider.' });
@@ -640,10 +423,10 @@ app.post('/api/generate-image', async (req, res) => {
       model: 'gemini-3.1-flash-lite-image'
     });
   } catch (error: any) {
-    console.error('[Zuzu AI Image Generator Error]:', error);
+    console.error('[Zuzu AI Image Generator Error]:', error?.message || 'Generation error');
     return res.status(500).json({
       success: false,
-      error: error.message || 'Image generation failed. Verify API quota and permissions.'
+      error: error?.message || 'Image generation failed. Verify API quota and permissions.'
     });
   }
 });
@@ -699,8 +482,12 @@ app.post('/api/generate-caption', async (req, res) => {
   }
 });
 
-// Helper to call xAI Grok
-async function callGrokChat(apiKey: string, messages: any[], systemInstruction: string): Promise<string> {
+// Helper to call xAI Grok with active model fallbacks
+async function callGrokChat(
+  apiKey: string,
+  messages: any[],
+  systemInstruction: string
+): Promise<{ reply: string; usedModel: string }> {
   const grokMessages = [
     { role: 'system', content: systemInstruction },
     ...messages.map((m: any) => ({
@@ -709,25 +496,40 @@ async function callGrokChat(apiKey: string, messages: any[], systemInstruction: 
     }))
   ];
 
-  const response = await fetch('https://api.x.ai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey.trim()}`
-    },
-    body: JSON.stringify({
-      model: 'grok-2',
-      messages: grokMessages,
-      temperature: 0.7
-    })
-  });
+  let lastErr: Error | null = null;
+  for (const modelCandidate of GROK_FALLBACK_MODELS) {
+    const response = await fetch('https://api.x.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey.trim()}`
+      },
+      body: JSON.stringify({
+        model: modelCandidate,
+        messages: grokMessages,
+        temperature: 0.7
+      })
+    });
 
-  if (!response.ok) {
-    throw new Error(`xAI Grok HTTP ${response.status}: ${await response.text()}`);
+    if (response.ok) {
+      const data = await response.json();
+      const text = data.choices?.[0]?.message?.content?.trim() || '';
+      if (text) {
+        return { reply: text, usedModel: modelCandidate };
+      }
+      lastErr = new Error('xAI Grok returned an empty response.');
+      continue;
+    }
+
+    const errText = await response.text();
+    lastErr = new Error(`xAI Grok HTTP ${response.status}: ${errText.slice(0, 220)}`);
+    if (response.status === 404 || response.status === 400) {
+      continue;
+    }
+    throw lastErr;
   }
 
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content?.trim() || '';
+  throw lastErr || new Error('xAI Grok request failed.');
 }
 
 // Endpoint: Chat / Voice AI Response
@@ -855,11 +657,11 @@ GUIDELINES FOR GF MODE:
     // 1. Try Grok if default provider is grok
     if (defaultProvider === 'grok' && effectiveGrokKey) {
       try {
-        const grokReply = await callGrokChat(effectiveGrokKey, messages, systemInstruction);
+        const { reply: grokReply, usedModel } = await callGrokChat(effectiveGrokKey, messages, systemInstruction);
         if (grokReply) {
           return res.json({
             reply: grokReply,
-            model: 'grok-2',
+            model: usedModel,
             isCloudAI: true,
             provider: 'xai_grok'
           });
@@ -940,11 +742,11 @@ GUIDELINES FOR GF MODE:
     // 3. Try Grok as fallback if Gemini wasn't primary or failed
     if (aiFallbackEnabled && effectiveGrokKey && defaultProvider !== 'grok') {
       try {
-        const grokFallback = await callGrokChat(effectiveGrokKey, messages, systemInstruction);
+        const { reply: grokFallback, usedModel } = await callGrokChat(effectiveGrokKey, messages, systemInstruction);
         if (grokFallback) {
           return res.json({
             reply: grokFallback,
-            model: 'grok-2-fallback',
+            model: `${usedModel}-fallback`,
             isCloudAI: true,
             provider: 'xai_grok'
           });
@@ -960,7 +762,7 @@ GUIDELINES FOR GF MODE:
         success: false,
         error: lastCloudError.message,
         isCloudAI: false,
-        provider: 'google_gemini'
+        provider: defaultProvider === 'grok' ? 'xai_grok' : 'google_gemini'
       });
     }
 

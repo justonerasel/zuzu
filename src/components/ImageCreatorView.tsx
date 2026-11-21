@@ -16,7 +16,8 @@ import {
 } from 'lucide-react';
 import { AppSettings } from '../types';
 import { playHapticSound } from '../utils/audio';
-import { apiFetch } from '../utils/apiConfig';
+import { apiFetch, directGeminiGenerateImage } from '../utils/apiConfig';
+import { getNativeZuzuPlugin } from '../utils/permission';
 
 interface ImageCreatorViewProps {
   settings: AppSettings;
@@ -104,6 +105,24 @@ export const ImageCreatorView: React.FC<ImageCreatorViewProps> = ({
       if (data.model) setActiveModel(data.model);
       playHapticSound('listen_start');
     } catch (err: any) {
+      if (settings.customGeminiApiKey?.trim()) {
+        try {
+          const direct = await directGeminiGenerateImage(
+            settings.customGeminiApiKey,
+            prompt.trim(),
+            aspectRatio
+          );
+          setGeneratedImage(direct.imageUrl);
+          setActiveModel(direct.model);
+          setRequiresKey(false);
+          playHapticSound('listen_start');
+          return;
+        } catch (directErr: any) {
+          setErrorMsg(directErr?.message || err?.message || 'Image generation failed.');
+          playHapticSound('listen_stop');
+          return;
+        }
+      }
       console.error('Image generation error:', err);
       setErrorMsg(err.message || 'Image generation failed. Ensure your Gemini API Key is configured.');
       playHapticSound('listen_stop');
@@ -112,8 +131,22 @@ export const ImageCreatorView: React.FC<ImageCreatorViewProps> = ({
     }
   };
 
-  const handleSaveImage = () => {
+  const handleSaveImage = async () => {
     if (!generatedImage) return;
+    const nativePlugin = getNativeZuzuPlugin();
+    if (nativePlugin?.saveBase64Image) {
+      try {
+        await nativePlugin.saveBase64Image({
+          base64Data: generatedImage,
+          filename: `zuzu-ai-${Date.now()}.png`
+        });
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2500);
+        playHapticSound('listen_start');
+        return;
+      } catch {}
+    }
+
     try {
       const a = document.createElement('a');
       a.href = generatedImage;
@@ -121,6 +154,8 @@ export const ImageCreatorView: React.FC<ImageCreatorViewProps> = ({
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
       playHapticSound('listen_start');
     } catch (err) {
       console.warn('Download error:', err);
@@ -129,9 +164,20 @@ export const ImageCreatorView: React.FC<ImageCreatorViewProps> = ({
 
   const handleShareImage = async () => {
     if (!generatedImage) return;
+    const nativePlugin = getNativeZuzuPlugin();
+    if (nativePlugin?.shareMediaOrText) {
+      try {
+        await nativePlugin.shareMediaOrText({
+          title: 'Zuzu AI Image Creator',
+          text: `Generated with Zuzu AI: "${prompt.slice(0, 80)}"`,
+          base64Data: generatedImage
+        });
+        return;
+      } catch {}
+    }
+
     if (navigator.share) {
       try {
-        // Convert base64 to Blob if possible
         const res = await fetch(generatedImage);
         const blob = await res.blob();
         const file = new File([blob], 'zuzu-ai-art.png', { type: 'image/png' });
@@ -145,13 +191,11 @@ export const ImageCreatorView: React.FC<ImageCreatorViewProps> = ({
           return;
         }
       } catch (err) {
-        console.warn('Native share failed, falling back to url:', err);
+        console.warn('Native share failed, falling back to save:', err);
       }
     }
 
-    // Fallback: Copy link/notice
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2500);
+    await handleSaveImage();
   };
 
   return (

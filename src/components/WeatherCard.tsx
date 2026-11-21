@@ -13,6 +13,7 @@ import {
   AlertCircle,
   Navigation
 } from 'lucide-react';
+import { checkAndRequestLocationPermission } from '../utils/permission';
 
 interface WeatherData {
   city: string;
@@ -162,9 +163,16 @@ export const WeatherCard: React.FC = () => {
   };
 
   // Acquire current device GPS coordinates
-  const acquireGPSWeather = () => {
+  const acquireGPSWeather = async () => {
     setIsLoading(true);
     setErrorNotice(null);
+
+    const allowed = await checkAndRequestLocationPermission();
+    if (!allowed) {
+      setIsLoading(false);
+      setErrorNotice('Location permission required. Please allow GPS access to update weather.');
+      return;
+    }
 
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       setIsLoading(false);

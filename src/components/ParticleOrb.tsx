@@ -89,8 +89,8 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
     if (densityRef.current === 'eco') count = 800;
     else if (densityRef.current === 'ultra') count = 2100;
 
-    const baseRadius = size * 0.36;
     const currentStyle = resolveStyle(styleRef.current);
+    const baseRadius = currentStyle === 'purple_spiral_globe' ? size * 0.37 : size * 0.43;
     const points: Point3D[] = [];
 
     // =========================================================================
@@ -334,12 +334,21 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
       if (gl === 'soft') glowR = baseRadius * 1.05;
       else if (gl === 'intense') glowR = baseRadius * 1.45;
 
+      const scheme = colorRef.current || 'purple';
+      const schemeAura: Record<OrbColorScheme, [string, string]> = {
+        purple: ['rgba(192, 132, 252, 0.32)', 'rgba(147, 51, 234, 0.18)'],
+        cyan: ['rgba(56, 189, 248, 0.35)', 'rgba(14, 165, 233, 0.2)'],
+        rose: ['rgba(244, 114, 182, 0.35)', 'rgba(225, 29, 72, 0.18)'],
+        mint: ['rgba(52, 211, 153, 0.35)', 'rgba(16, 185, 129, 0.18)'],
+        amber: ['rgba(251, 191, 36, 0.34)', 'rgba(245, 158, 11, 0.18)']
+      };
+      const [auraPrimary, auraSecondary] = schemeAura[scheme] || schemeAura.purple;
+
       if (curStyle === 'glass_iridescent_wave') {
         const auraGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.2, centerX, centerY, glowR);
         auraGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
-        auraGrad.addColorStop(0.3, 'rgba(56, 189, 248, 0.25)'); // Cyan
-        auraGrad.addColorStop(0.6, 'rgba(217, 70, 239, 0.18)'); // Magenta
-        auraGrad.addColorStop(0.85, 'rgba(168, 85, 247, 0.08)'); // Purple
+        auraGrad.addColorStop(0.35, auraPrimary);
+        auraGrad.addColorStop(0.68, auraSecondary);
         auraGrad.addColorStop(1, 'transparent');
         ctx.fillStyle = auraGrad;
         ctx.beginPath();
@@ -347,8 +356,8 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
         ctx.fill();
       } else if (curStyle === 'blue_violet_matrix') {
         const blueGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.1, centerX, centerY, glowR);
-        blueGrad.addColorStop(0, 'rgba(56, 189, 248, 0.35)');
-        blueGrad.addColorStop(0.5, 'rgba(124, 58, 237, 0.2)');
+        blueGrad.addColorStop(0, auraPrimary);
+        blueGrad.addColorStop(0.5, auraSecondary);
         blueGrad.addColorStop(1, 'transparent');
         ctx.fillStyle = blueGrad;
         ctx.beginPath();
@@ -356,18 +365,17 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
         ctx.fill();
       } else if (curStyle === 'magenta_cyan_mesh') {
         const grad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.1, centerX, centerY, glowR);
-        grad.addColorStop(0, 'rgba(236, 72, 153, 0.32)');
-        grad.addColorStop(0.5, 'rgba(6, 182, 212, 0.22)');
+        grad.addColorStop(0, auraPrimary);
+        grad.addColorStop(0.5, auraSecondary);
         grad.addColorStop(1, 'transparent');
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(centerX, centerY, glowR, 0, Math.PI * 2);
         ctx.fill();
       } else if (curStyle === 'purple_spiral_globe') {
-        // Soft luminous lavender-purple ambient aura matching screenshot
         const purpleGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.2, centerX, centerY, glowR * 1.15);
-        purpleGrad.addColorStop(0, 'rgba(192, 132, 252, 0.3)');
-        purpleGrad.addColorStop(0.55, 'rgba(147, 51, 234, 0.18)');
+        purpleGrad.addColorStop(0, auraPrimary);
+        purpleGrad.addColorStop(0.55, auraSecondary);
         purpleGrad.addColorStop(0.85, 'rgba(126, 34, 206, 0.06)');
         purpleGrad.addColorStop(1, 'transparent');
         ctx.fillStyle = purpleGrad;
@@ -455,53 +463,62 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
         let haloColor = 'rgba(56, 189, 248, 0.4)';
         let isOrbit = false;
 
+        const schemePrimaryMap: Record<OrbColorScheme, { solid: string; secondary: string; orbit: string }> = {
+          purple: { solid: '#9333ea', secondary: '#a855f7', orbit: '#c084fc' },
+          cyan: { solid: '#0284c7', secondary: '#38bdf8', orbit: '#7dd3fc' },
+          rose: { solid: '#e11d48', secondary: '#fb7185', orbit: '#fda4af' },
+          mint: { solid: '#059669', secondary: '#34d399', orbit: '#6ee7b7' },
+          amber: { solid: '#d97706', secondary: '#fbbf24', orbit: '#fde68a' }
+        };
+        const schemeColors = schemePrimaryMap[scheme] || schemePrimaryMap.purple;
+
         if (curStyle === 'glass_iridescent_wave') {
           if (pt.colorType === 0) {
-            color = '#38bdf8'; // Cyan
+            color = '#38bdf8';
             haloColor = 'rgba(56, 189, 248, 0.5)';
           } else if (pt.colorType === 1) {
-            color = '#ec4899'; // Magenta
-            haloColor = 'rgba(236, 72, 153, 0.5)';
+            color = scheme === 'purple' ? '#ec4899' : schemeColors.solid;
+            haloColor = 'rgba(236, 72, 153, 0.45)';
           } else if (pt.colorType === 2) {
-            color = '#fde047'; // Gold
+            color = '#fde047';
             haloColor = 'rgba(253, 224, 71, 0.45)';
           } else if (pt.colorType === 3) {
-            color = '#34d399'; // Emerald
+            color = '#34d399';
             haloColor = 'rgba(52, 211, 153, 0.45)';
           } else {
-            color = '#ffffff'; // White shell
+            color = '#ffffff';
             haloColor = 'rgba(255, 255, 255, 0.7)';
           }
         } else if (curStyle === 'blue_violet_matrix') {
           if (pt.colorType === 0) {
-            color = '#38bdf8'; // Electric Sky Blue
-            haloColor = 'rgba(56, 189, 248, 0.5)';
+            color = scheme === 'purple' ? '#38bdf8' : schemeColors.secondary;
+            haloColor = 'rgba(56, 189, 248, 0.45)';
           } else {
-            color = '#a855f7'; // Bright Violet
-            haloColor = 'rgba(168, 85, 247, 0.5)';
+            color = schemeColors.solid;
+            haloColor = 'rgba(168, 85, 247, 0.45)';
           }
         } else if (curStyle === 'magenta_cyan_mesh') {
           if (pt.colorType === 0) {
-            color = '#06b6d4'; // Electric Cyan
-            haloColor = 'rgba(6, 182, 212, 0.5)';
+            color = scheme === 'purple' ? '#06b6d4' : schemeColors.orbit;
+            haloColor = 'rgba(6, 182, 212, 0.45)';
           } else if (pt.colorType === 1) {
-            color = '#a855f7'; // Purple Transition
-            haloColor = 'rgba(168, 85, 247, 0.5)';
+            color = schemeColors.secondary;
+            haloColor = 'rgba(168, 85, 247, 0.45)';
           } else {
-            color = '#ec4899'; // Hot Magenta
-            haloColor = 'rgba(236, 72, 153, 0.5)';
+            color = scheme === 'purple' ? '#ec4899' : schemeColors.solid;
+            haloColor = 'rgba(236, 72, 153, 0.45)';
           }
         } else if (curStyle === 'purple_spiral_globe') {
           if (pt.type === 'orbit_ring') {
-            color = '#c084fc'; // Light purple orbital line
+            color = schemeColors.orbit;
             haloColor = 'rgba(192, 132, 252, 0.4)';
             isOrbit = true;
           } else if (pt.colorType === 0) {
-            color = '#ffffff'; // Crisp white glowing dot
+            color = '#ffffff';
             haloColor = 'rgba(255, 255, 255, 0.75)';
           } else {
-            color = '#9333ea'; // Rich purple dot
-            haloColor = 'rgba(147, 51, 234, 0.6)';
+            color = schemeColors.solid;
+            haloColor = 'rgba(147, 51, 234, 0.55)';
           }
         }
 
@@ -637,7 +654,7 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
         cancelAnimationFrame(animFrameRef.current);
       }
     };
-  }, [size]);
+  }, [size, style, particleDensity]);
 
   return (
     <div 

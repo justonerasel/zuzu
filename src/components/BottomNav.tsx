@@ -20,28 +20,49 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   onMicHoldCancel
 }) => {
   const [isHolding, setIsHolding] = useState(false);
+  const isHoldingRef = useRef(false);
+  const pointerActiveRef = useRef(false);
   const holdTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handleTouchStart = () => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    pointerActiveRef.current = true;
+    isHoldingRef.current = false;
+    setIsHolding(false);
+    if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
     holdTimerRef.current = setTimeout(() => {
+      isHoldingRef.current = true;
       setIsHolding(true);
       if (onMicHoldCancel) {
         onMicHoldCancel();
       }
-    }, 700); // 700ms hold to cancel
+    }, 700);
   };
 
-  const handleTouchEnd = () => {
+  const handlePointerUp = () => {
+    if (!pointerActiveRef.current) return;
+    pointerActiveRef.current = false;
     if (holdTimerRef.current) {
       clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
     }
-    if (!isHolding) {
+    if (!isHoldingRef.current) {
       if (onMicClick) {
         onMicClick();
       } else {
         onSelectTab('voice');
       }
+    }
+    isHoldingRef.current = false;
+    setIsHolding(false);
+  };
+
+  const handlePointerCancel = () => {
+    pointerActiveRef.current = false;
+    isHoldingRef.current = false;
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
     }
     setIsHolding(false);
   };
@@ -77,11 +98,10 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       {/* 3. Central Prominent Elevated Microphone Button */}
       <div className="flex-1 flex justify-center -mt-6">
         <button
-          onMouseDown={handleTouchStart}
-          onMouseUp={handleTouchEnd}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          className={`w-14 h-14 rounded-full bg-gradient-to-tr from-purple-600 via-indigo-600 to-sky-500 shadow-xl shadow-purple-600/30 flex items-center justify-center text-white border-[3.5px] border-[#f5f3ff] transform active:scale-90 transition-all duration-200 relative ${
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          className={`w-14 h-14 rounded-full bg-gradient-to-tr from-purple-600 via-indigo-600 to-sky-500 shadow-xl shadow-purple-600/30 flex items-center justify-center text-white border-[3.5px] border-[#f5f3ff] transform active:scale-90 transition-all duration-200 relative touch-none ${
             isVoiceActive ? 'animate-pulse ring-4 ring-purple-400/30' : ''
           }`}
           title="Tap to Speak • Hold to Cancel"

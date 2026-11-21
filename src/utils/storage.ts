@@ -35,8 +35,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Voice Options & Live Models Defaults
   selectedVoiceOptionId: 'kore_firm',
   selectedVoiceStyleId: 'kore_firm',
-  selectedVoiceModelId: 'gemini-3.8-flash',
-  aiModel: 'gemini-3.8-flash',
+  selectedVoiceModelId: 'gemini-4-hydrogen',
+  aiModel: 'gemini-4-hydrogen',
   stability: 0.5,
   similarityBoost: 0.75,
   speechRate: 1.0,
@@ -333,12 +333,12 @@ export function getAppSettings(): AppSettings {
       combined.elevenLabsFemaleVoiceId = 'EXAVITQu4vr4xnSDxMaL'; // Migrate to Sarah (Free Premade)
       needsResave = true;
     }
-    if (!combined.aiModel || combined.aiModel === 'gemini-2.5-flash' || combined.aiModel === 'gemini-2.0-flash') {
-      combined.aiModel = 'gemini-3.8-flash';
+    if (!combined.aiModel || combined.aiModel === 'gemini-3.8-flash' || combined.aiModel === 'gemini-2.5-flash' || combined.aiModel === 'gemini-2.0-flash') {
+      combined.aiModel = 'gemini-4-hydrogen';
       needsResave = true;
     }
-    if (!combined.selectedVoiceModelId || combined.selectedVoiceModelId === 'gemini-2.5-flash-native-audio' || combined.selectedVoiceModelId === 'gemini-2.5-flash') {
-      combined.selectedVoiceModelId = 'gemini-3.8-flash';
+    if (!combined.selectedVoiceModelId || combined.selectedVoiceModelId === 'gemini-3.8-flash' || combined.selectedVoiceModelId === 'gemini-2.5-flash-native-audio' || combined.selectedVoiceModelId === 'gemini-2.5-flash') {
+      combined.selectedVoiceModelId = 'gemini-4-hydrogen';
       needsResave = true;
     }
 

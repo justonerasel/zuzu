@@ -1,5 +1,5 @@
 import React from 'react';
-import { MessageSquare, Settings } from 'lucide-react';
+import { MessageSquare, Settings, History } from 'lucide-react';
 import { VoiceIdentity, PersonalityId } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { playHapticSound } from '../utils/audio';
@@ -10,6 +10,7 @@ interface TopBarProps {
   onSelectIdentity: (id: VoiceIdentity) => void;
   onOpenSettings: () => void;
   onOpenChat?: () => void;
+  onOpenHistory?: () => void;
   isBackendConnected?: boolean;
 }
 
@@ -19,6 +20,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onSelectIdentity,
   onOpenSettings,
   onOpenChat,
+  onOpenHistory,
   isBackendConnected = true
 }) => {
   const currentIdentity = VOICE_IDENTITIES[activeIdentity];
@@ -32,15 +34,27 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <header className="px-4 pt-[max(env(safe-area-inset-top,0px),0.65rem)] pb-2.5 bg-white/75 backdrop-blur-xl border-b border-purple-100/70 flex items-center justify-between z-30 select-none shadow-sm shadow-purple-950/5">
-      {/* 1. Upper Left: Chat Shortcut */}
-      <button
-        onClick={onOpenChat}
-        className="w-10 h-10 rounded-2xl bg-white/90 hover:bg-white text-purple-700 shadow-sm border border-purple-100/80 flex items-center justify-center transition-all active:scale-95 group relative"
-        title="Open Text Chat"
-      >
-        <MessageSquare className="w-5 h-5 text-purple-600 group-hover:scale-110 transition-transform" />
-        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-gradient-to-tr from-purple-600 to-indigo-600 rounded-full border border-white" />
-      </button>
+      {/* 1. Upper Left: Chat & History Shortcuts */}
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={onOpenChat}
+          className="w-10 h-10 rounded-2xl bg-white/90 hover:bg-white text-purple-700 shadow-sm border border-purple-100/80 flex items-center justify-center transition-all active:scale-95 group relative"
+          title="Open Text Chat"
+        >
+          <MessageSquare className="w-5 h-5 text-purple-600 group-hover:scale-110 transition-transform" />
+          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-gradient-to-tr from-purple-600 to-indigo-600 rounded-full border border-white" />
+        </button>
+
+        {onOpenHistory && (
+          <button
+            onClick={onOpenHistory}
+            className="w-9 h-9 rounded-2xl bg-white/85 hover:bg-white text-slate-600 hover:text-purple-700 shadow-sm border border-purple-100/80 flex items-center justify-center transition-all active:scale-95"
+            title="Conversation & Voice History"
+          >
+            <History className="w-4 h-4" />
+          </button>
+        )}
+      </div>
 
       {/* 2. Center: Zuzu AI Logo & Name */}
       <div className="flex flex-col items-center">

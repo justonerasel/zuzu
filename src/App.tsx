@@ -25,6 +25,7 @@ import { stopSpeaking, speakText, playHapticSound } from './utils/audio';
 import { apiFetch, APP_VERSION, APP_VERSION_CODE } from './utils/apiConfig';
 import { syncBackgroundServicesWithSettings, setMicBusyForActiveSession } from './utils/backgroundService';
 import { buildSmartWakeGreeting, getCachedWeatherSummary, refreshWeatherCacheSilently } from './utils/greetingHelper';
+import { checkMicrophonePermission, getNativeZuzuPlugin } from './utils/permission';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { syncZuCloudNow } from './utils/zuAccount';
@@ -40,24 +41,33 @@ export default function App() {
 
   // Force Update Overlay State (only shown when server signals genuine required update)
   const [forceUpdateInfo, setForceUpdateInfo] = useState<ForceUpdatePayload | null>(null);
+  const [dueReminderToast, setDueReminderToast] = useState<string | null>(null);
 
-  // First-launch permission flow state (Requirement 3)
+  // First-launch permission flow state
   const [showFirstLaunch, setShowFirstLaunch] = useState(() => {
     if (typeof window === 'undefined') return false;
     return !localStorage.getItem('zuzu_first_launch_done');
   });
 
-  // Floating Gemini API Key Popup state (Requirement 4)
+  // Floating Gemini API Key Popup state
   const [apiKeyModalConfig, setApiKeyModalConfig] = useState<{
     isOpen: boolean;
     actionName?: string;
     onResume?: () => void;
   }>({ isOpen: false });
 
-  // Initialize, configure edge-to-edge StatusBar, check Force Update & perform legacy migration on initial mount
+  // Initialize, configure edge-to-edge StatusBar, sync native mic status, check Force Update & migrate history
   useEffect(() => {
     performHistoryMigration();
     updateCounts();
+
+    checkMicrophonePermission()
+      .then((perm) => {
+        if (perm.state === 'granted') {
+          syncBackgroundServicesWithSettings(getAppSettings());
+        }
+      })
+      .catch(() => {});
 
     if (Capacitor.isNativePlatform()) {
       StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
@@ -210,6 +220,51 @@ export default function App() {
     updateCounts();
   }, [activeTab, currentVoiceSession]);
 
+  // Poll due reminders every 20s and notify user
+  useEffect(() => {
+    const checkDueReminders = () => {
+      try {
+        const raw = localStorage.getItem('zuzu_user_reminders');
+        if (!raw) return;
+        const list = JSON.parse(raw);
+        if (!Array.isArray(list) || list.length === 0) return;
+
+        const now = Date.now();
+        let updated = false;
+        const nextList = list.map((rem: any) => {
+          if (rem && !rem.completed && !rem.notified && typeof rem.time === 'number' && rem.time <= now) {
+            updated = true;
+            setDueReminderToast(rem.title || 'Scheduled Reminder');
+            const nativePlugin = getNativeZuzuPlugin();
+            if (nativePlugin?.scheduleReminderNotification) {
+              nativePlugin.scheduleReminderNotification({
+                id: rem.id || `rem-${now}`,
+                title: 'Zuzu AI Reminder',
+                body: rem.title || 'Reminder due now',
+                triggerAtMs: now
+              }).catch(() => {});
+            } else if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+              try {
+                new Notification('Zuzu AI Reminder', { body: rem.title || 'Reminder due now' });
+              } catch {}
+            }
+            return { ...rem, notified: true };
+          }
+          return rem;
+        });
+
+        if (updated) {
+          localStorage.setItem('zuzu_user_reminders', JSON.stringify(nextList));
+          window.dispatchEvent(new CustomEvent('zuzu-notes-reminders-changed'));
+        }
+      } catch {}
+    };
+
+    checkDueReminders();
+    const timer = setInterval(checkDueReminders, 20000);
+    return () => clearInterval(timer);
+  }, []);
+
   const handleUpdateSettings = (partial: Partial<AppSettings>) => {
     const updated = saveAppSettings(partial);
     setSettings(updated);
@@ -253,11 +308,24 @@ export default function App() {
         onSelectIdentity={handleSelectIdentity}
         onOpenSettings={() => setActiveTab('settings')}
         onOpenChat={() => setActiveTab('chat')}
+        onOpenHistory={() => setActiveTab('history')}
         isBackendConnected={isBackendConnected}
       />
 
       {/* Main View Area */}
       <main className="flex-1 flex flex-col overflow-hidden relative">
+        {dueReminderToast && (
+          <div className="mx-4 mt-2 px-3.5 py-2.5 rounded-2xl bg-indigo-600 text-white text-xs font-bold shadow-lg flex items-center justify-between gap-2 z-40 animate-fade-in">
+            <span className="truncate">Reminder: {dueReminderToast}</span>
+            <button
+              onClick={() => setDueReminderToast(null)}
+              className="px-2 py-0.5 rounded-lg bg-white/20 hover:bg-white/30 text-[10px] font-extrabold flex-shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {activeTab === 'dashboard' && (
           <DashboardView
             settings={settings}
@@ -266,6 +334,7 @@ export default function App() {
             textMessageCount={textMessageCount}
             voiceSessionCount={voiceSessionCount}
             isBackendConnected={isBackendConnected}
+            onRequestApiKeyModal={(actionName, onResume) => setApiKeyModalConfig({ isOpen: true, actionName, onResume })}
           />
         )}
 
@@ -282,6 +351,7 @@ export default function App() {
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
             onMinimize={handleMinimizeVoice}
+            onOpenHistory={() => handleSelectTab('history')}
             currentSession={currentVoiceSession}
             setCurrentSession={setCurrentVoiceSession}
             onRequestApiKeyModal={(actionName, onResume) => setApiKeyModalConfig({ isOpen: true, actionName, onResume })}
@@ -296,6 +366,7 @@ export default function App() {
           <SettingsView
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
+            onNavigateTab={handleSelectTab}
           />
         )}
 
@@ -330,7 +401,13 @@ export default function App() {
         onSelectTab={handleSelectTab}
         activeIdentity={settings.activeIdentity}
         isVoiceActive={Boolean(currentVoiceSession || isVoiceMinimized)}
-        onMicClick={() => handleSelectTab('voice')}
+        onMicClick={() => {
+          if (activeTab === 'voice') {
+            window.dispatchEvent(new CustomEvent('zuzu-voice-orb-toggle'));
+          } else {
+            handleSelectTab('voice');
+          }
+        }}
         onMicHoldCancel={() => {
           stopSpeaking();
           setIsVoiceMinimized(false);
@@ -338,18 +415,23 @@ export default function App() {
         }}
       />
 
-      {/* First-Launch Permission Introduction Popup (Requirement 3) */}
+      {/* First-Launch Permission Introduction Popup */}
       <FirstLaunchPermissionModal
         isOpen={showFirstLaunch}
         onFinish={() => setShowFirstLaunch(false)}
       />
 
-      {/* Floating Gemini API Key Popup (Requirement 4) */}
+      {/* Floating Gemini API Key Popup */}
       <ApiKeyModal
         isOpen={apiKeyModalConfig.isOpen}
         onClose={() => setApiKeyModalConfig(prev => ({ ...prev, isOpen: false }))}
         currentKey={settings.customGeminiApiKey}
-        onSaveKey={(newKey) => handleUpdateSettings({ customGeminiApiKey: newKey })}
+        onSaveKey={(newKey) =>
+          handleUpdateSettings({
+            customGeminiApiKey: newKey,
+            geminiEnabled: Boolean(newKey.trim())
+          })
+        }
         pendingActionName={apiKeyModalConfig.actionName}
         onSuccessResume={apiKeyModalConfig.onResume}
       />

@@ -1,4 +1,5 @@
 import { VoiceIdentity } from '../types';
+import { getNativeZuzuPlugin } from './permission';
 
 export interface SwitchIntentResult {
   isSwitchCommand: boolean;
@@ -213,8 +214,58 @@ export interface VoiceActionIntentResult {
   requiresConfirmation?: boolean;
 }
 
+function triggerExternalUrl(url: string): void {
+  const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin?.openExternalUrl) {
+    nativePlugin.openExternalUrl({ url }).catch(() => {
+      if (typeof window !== 'undefined') {
+        try {
+          window.open(url, '_blank');
+        } catch {}
+      }
+    });
+    return;
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      window.open(url, '_blank');
+    } catch {}
+  }
+}
+
+function triggerAppLaunch(appName: string, fallbackUrl: string, specialAction?: string): void {
+  const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin) {
+    if (specialAction === 'camera' && nativePlugin.openSystemCamera) {
+      nativePlugin.openSystemCamera().catch(() => {});
+      return;
+    }
+    if (specialAction === 'settings' && nativePlugin.openDeviceSettingsSection) {
+      nativePlugin.openDeviceSettingsSection({ target: appName.toLowerCase() }).catch(() => {});
+      return;
+    }
+    if (nativePlugin.launchApp) {
+      nativePlugin.launchApp({ appName, fallbackUrl }).catch(() => {
+        if (fallbackUrl) triggerExternalUrl(fallbackUrl);
+      });
+      return;
+    }
+  }
+  if (fallbackUrl && !fallbackUrl.startsWith('#')) {
+    triggerExternalUrl(fallbackUrl);
+  }
+}
+
+function parseReminderDelayMs(text: string): number {
+  const minMatch = text.match(/\bin\s+(\d+)\s*(?:min|mins|minute|minutes)\b/i);
+  if (minMatch) return Math.max(1, parseInt(minMatch[1], 10)) * 60000;
+  const hourMatch = text.match(/\bin\s+(\d+)\s*(?:hr|hrs|hour|hours)\b/i);
+  if (hourMatch) return Math.max(1, parseInt(hourMatch[1], 10)) * 3600000;
+  return 3600000;
+}
+
 /**
- * Natural language intent parser for device actions (Requirement 3)
+ * Natural language intent parser for device actions
  */
 export function detectVoiceActionIntent(rawTranscript: string): VoiceActionIntentResult {
   if (!rawTranscript || typeof rawTranscript !== 'string') {
@@ -225,77 +276,106 @@ export function detectVoiceActionIntent(rawTranscript: string): VoiceActionInten
   const lower = text.toLowerCase();
   const isBengali = /[\u0980-\u09FF]/.test(text);
 
-  // 1. Open App Intent
-  // e.g. "Open YouTube", "Launch WhatsApp", "Open Camera", "ফেসবুক ওপেন করো"
-  const openAppMatch = lower.match(/(?:open|launch|start|run)\s+(youtube|whatsapp|facebook|messenger|chrome|browser|camera|settings|calculator|spotify|maps|calendar)/i) ||
-    (isBengali && text.match(/(ইউটিউব|হোয়াটসঅ্যাপ|ফেসবুক|মেসেঞ্জার|ক্রোম|ক্যামেরা|সেটিংস|ক্যালকুলেটর|ম্যাপ)\s*(?:ওপেন|চালু|খুলো)/i));
+  // 1. Open App / Device Settings Intent
+  const openAppMatch =
+    lower.match(/(?:open|launch|start|run)\s+(youtube|whatsapp|facebook|messenger|chrome|browser|camera|settings|wifi|wi-fi|bluetooth|calculator|spotify|google maps|maps|calendar|gmail|instagram|telegram|phone|dialer|photos|gallery|play store|tiktok)/i) ||
+    (isBengali && text.match(/(ইউটিউব|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|ফেসবুক|মেসেঞ্জার|ক্রোম|ক্যামেরা|সেটিংস|ওয়াইফাই|ব্লুটুথ|ক্যালকুলেটর|ম্যাপ|ইনস্টাগ্রাম|টেলিগ্রাম|জিমেইল)\s*(?:ওপেন|চালু|খুলো|খোলো)/i));
 
   if (openAppMatch) {
     const rawApp = (openAppMatch[1] || '').toLowerCase();
     let appName = 'App';
     let url = '';
+    let special: string | undefined;
 
     if (rawApp.includes('youtube') || rawApp.includes('ইউটিউব')) {
       appName = 'YouTube';
       url = 'https://www.youtube.com';
-    } else if (rawApp.includes('whatsapp') || rawApp.includes('হোয়াটসঅ্যাপ')) {
+    } else if (rawApp.includes('whatsapp') || rawApp.includes('হোয়াটসঅ্যাপ') || rawApp.includes('হোয়াটসঅ্যাপ')) {
       appName = 'WhatsApp';
-      url = 'https://web.whatsapp.com';
+      url = 'https://wa.me';
     } else if (rawApp.includes('facebook') || rawApp.includes('ফেসবুক')) {
       appName = 'Facebook';
       url = 'https://www.facebook.com';
     } else if (rawApp.includes('messenger') || rawApp.includes('মেসেঞ্জার')) {
       appName = 'Messenger';
       url = 'https://www.messenger.com';
+    } else if (rawApp.includes('instagram') || rawApp.includes('ইনস্টাগ্রাম')) {
+      appName = 'Instagram';
+      url = 'https://www.instagram.com';
+    } else if (rawApp.includes('telegram') || rawApp.includes('টেলিগ্রাম')) {
+      appName = 'Telegram';
+      url = 'https://t.me';
+    } else if (rawApp.includes('gmail') || rawApp.includes('জিমেইল')) {
+      appName = 'Gmail';
+      url = 'https://mail.google.com';
     } else if (rawApp.includes('camera') || rawApp.includes('ক্যামেরা')) {
       appName = 'Camera';
-      url = '#camera';
+      special = 'camera';
+    } else if (rawApp.includes('wifi') || rawApp.includes('wi-fi') || rawApp.includes('ওয়াইফাই')) {
+      appName = 'WiFi';
+      special = 'settings';
+    } else if (rawApp.includes('bluetooth') || rawApp.includes('ব্লুটুথ')) {
+      appName = 'Bluetooth';
+      special = 'settings';
     } else if (rawApp.includes('settings') || rawApp.includes('সেটিংস')) {
-      appName = 'Settings';
-      url = '#settings';
+      appName = 'main';
+      special = 'settings';
+    } else if (rawApp.includes('maps') || rawApp.includes('ম্যাপ')) {
+      appName = 'Google Maps';
+      url = 'https://maps.google.com';
+    } else if (rawApp.includes('phone') || rawApp.includes('dialer')) {
+      appName = 'Phone';
+      url = 'tel:';
     } else {
       appName = rawApp.charAt(0).toUpperCase() + rawApp.slice(1);
       url = `https://www.google.com/search?q=${encodeURIComponent(appName)}`;
     }
 
+    const displayApp = appName === 'main' ? 'Settings' : appName;
     const spoken = isBengali
-      ? `ঠিক আছে, আমি ${appName} ওপেন করছি।`
-      : `Opening ${appName} for you right away.`;
+      ? `ঠিক আছে, আমি ${displayApp} ওপেন করছি।`
+      : `Opening ${displayApp} for you right away.`;
 
-    // Attempt native intent or web launch
-    if (typeof window !== 'undefined' && url && !url.startsWith('#')) {
-      try {
-        window.open(url, '_blank');
-      } catch {}
-    }
+    triggerAppLaunch(appName, url, special);
 
     return {
       hasActionIntent: true,
       intentType: 'open_app',
-      appTarget: appName,
+      appTarget: displayApp,
       url,
       spokenConfirmation: spoken
     };
   }
 
-  // 2. Web Search Intent
-  // e.g. "Search for Bangladesh cricket", "Google quantum computing", "গুগলে সার্চ করো..."
-  const searchMatch = lower.match(/(?:search for|search|google|find online|look up)\s+(.+)/i) ||
+  // 2. Web / YouTube Search Intent
+  const ytSearchMatch = lower.match(/(?:search\s+youtube\s+for|youtube\s+search)\s+(.+)/i);
+  if (ytSearchMatch && ytSearchMatch[1]) {
+    const query = ytSearchMatch[1].trim();
+    const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    triggerExternalUrl(ytUrl);
+    return {
+      hasActionIntent: true,
+      intentType: 'web_search',
+      url: ytUrl,
+      spokenConfirmation: isBengali
+        ? `ইউটিউবে "${query}" অনুসন্ধান করছি।`
+        : `Searching YouTube for "${query}".`
+    };
+  }
+
+  const searchMatch =
+    lower.match(/(?:search for|search on google for|search|google|find online|look up)\s+(.+)/i) ||
     (isBengali && text.match(/(.+)\s*(?:সার্চ করো|খুঁজে বের করো)/i));
 
   if (searchMatch && searchMatch[1]) {
-    const query = searchMatch[1].replace(/^(for|online|in google)\s*/i, '').trim();
+    const query = searchMatch[1].replace(/^(for|online|in google|on google)\s*/i, '').trim();
     if (query.length > 1) {
       const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
       const spoken = isBengali
         ? `আমি গুগলে "${query}" অনুসন্ধান করছি।`
-        : `Searching Google for "${query}". Here is what I found.`;
+        : `Searching Google for "${query}".`;
 
-      if (typeof window !== 'undefined') {
-        try {
-          window.open(searchUrl, '_blank');
-        } catch {}
-      }
+      triggerExternalUrl(searchUrl);
 
       return {
         hasActionIntent: true,
@@ -307,9 +387,9 @@ export function detectVoiceActionIntent(rawTranscript: string): VoiceActionInten
   }
 
   // 3. Save Note Intent
-  // e.g. "Note down buy milk", "Save note: meeting at 4pm", "নোট করো কাল পরীক্ষা"
-  const noteMatch = lower.match(/(?:note down|save note|write down|take a note|create note)\s*:?\s*(.+)/i) ||
-    (isBengali && text.match(/(?:নোট করো|লিখে রাখো|একটি নোট রাখো)\s*:?\s*(.+)/i));
+  const noteMatch =
+    lower.match(/(?:note down|save note|save a note|write down|take a note|create note|create a note|add note)\s*:?\s*(.+)/i) ||
+    (isBengali && text.match(/(?:নোট করো|লিখে রাখো|একটি নোট রাখো|নোট সেভ করো)\s*:?\s*(.+)/i));
 
   if (noteMatch && noteMatch[1]) {
     const noteText = noteMatch[1].trim();
@@ -322,11 +402,12 @@ export function detectVoiceActionIntent(rawTranscript: string): VoiceActionInten
           timestamp: Date.now()
         });
         localStorage.setItem('zuzu_notebook_notes', JSON.stringify(stored));
+        window.dispatchEvent(new CustomEvent('zuzu-notes-reminders-changed'));
       } catch {}
 
       const spoken = isBengali
         ? `অবশ্যই, আমি আপনার নোটবুকে সংরক্ষণ করে রেখেছি: "${noteText}"।`
-        : `Saved to your Notebook: "${noteText}". You can access it anytime.`;
+        : `Saved to your Notebook: "${noteText}". Open Notes & Reminders anytime to view or edit it.`;
 
       return {
         hasActionIntent: true,
@@ -338,60 +419,91 @@ export function detectVoiceActionIntent(rawTranscript: string): VoiceActionInten
   }
 
   // 4. Manage Reminder Intent
-  // e.g. "Remind me to call Mom", "Set a reminder for gym", "মনে করিয়ে দিও মিটিং আছে"
-  const reminderMatch = lower.match(/(?:remind me to|set a reminder for|reminder to)\s*:?\s*(.+)/i) ||
-    (isBengali && text.match(/(?:মনে করিয়ে দিও|মনে করাও|রিমাইন্ডার দাও)\s*:?\s*(.+)/i));
+  const reminderMatch =
+    lower.match(/(?:remind me to|set a reminder(?: for| to)?|create reminder(?: for| to)?|reminder to)\s*:?\s*(.+)/i) ||
+    (isBengali && text.match(/(?:মনে করিয়ে দিও|মনে করিয়ে দিও|মনে করাও|রিমাইন্ডার দাও)\s*:?\s*(.+)/i));
 
   if (reminderMatch && reminderMatch[1]) {
-    const reminderText = reminderMatch[1].trim();
-    if (reminderText) {
+    const rawReminderText = reminderMatch[1].trim();
+    const delayMs = parseReminderDelayMs(rawReminderText);
+    const cleanTitle = rawReminderText.replace(/\bin\s+\d+\s*(?:min|mins|minute|minutes|hr|hrs|hour|hours)\b/i, '').trim() || rawReminderText;
+    const triggerAtMs = Date.now() + delayMs;
+    const remId = `rem-${Date.now()}`;
+
+    if (cleanTitle) {
       try {
         const stored = JSON.parse(localStorage.getItem('zuzu_user_reminders') || '[]');
         stored.unshift({
-          id: `rem-${Date.now()}`,
-          title: reminderText,
-          time: Date.now() + 3600000,
-          completed: false
+          id: remId,
+          title: cleanTitle,
+          time: triggerAtMs,
+          completed: false,
+          notified: false
         });
         localStorage.setItem('zuzu_user_reminders', JSON.stringify(stored));
+        window.dispatchEvent(new CustomEvent('zuzu-notes-reminders-changed'));
       } catch {}
 
+      const nativePlugin = getNativeZuzuPlugin();
+      if (nativePlugin?.scheduleReminderNotification) {
+        nativePlugin
+          .scheduleReminderNotification({
+            id: remId,
+            title: 'Zuzu AI Reminder',
+            body: cleanTitle,
+            triggerAtMs
+          })
+          .catch(() => {});
+      }
+
+      const whenLabel = new Date(triggerAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const spoken = isBengali
-        ? `ঠিক আছে, আমি রিমাইন্ডার সেট করে দিলাম: "${reminderText}"।`
-        : `Got it! I have scheduled a reminder for: "${reminderText}".`;
+        ? `ঠিক আছে, আমি ${whenLabel}-এর জন্য রিমাইন্ডার সেট করে দিলাম: "${cleanTitle}"।`
+        : `Got it! I have scheduled a reminder for ${whenLabel}: "${cleanTitle}".`;
 
       return {
         hasActionIntent: true,
         intentType: 'manage_reminder',
-        reminderContent: reminderText,
+        reminderContent: cleanTitle,
         spokenConfirmation: spoken
       };
     }
   }
 
-  // 5. Send Message / Messenger Intent with Confirmation
-  // e.g. "Send a message to Alex saying I will be late", "Message Sarah on Messenger"
-  const msgMatch = lower.match(/(?:send a message to|message|send message to|text)\s+([a-zA-Z\u0980-\u09FF\s]+?)\s+(?:saying|that|with text)\s+(.+)/i) ||
+  // 5. Send Message Intent with Interactive Confirmation
+  const msgMatch =
+    lower.match(/(?:send a message to|message|send message to|text|whatsapp)\s+([a-zA-Z\u0980-\u09FF\s]+?)\s+(?:on\s+(whatsapp|messenger|sms)\s+)?(?:saying|that|with text)\s+(.+)/i) ||
     (isBengali && text.match(/(.+)-কে\s*(?:মেসেজ|বার্তা)\s*পাঠাও\s*(?:যে|বলে)\s*(.+)/i));
 
-  if (msgMatch && msgMatch[1] && msgMatch[2]) {
-    const recipient = msgMatch[1].trim();
-    const content = msgMatch[2].trim();
-    const spoken = isBengali
-      ? `আমি ${recipient}-কে "${content}" মেসেজটি পাঠাতে ড্রাফট প্রস্তুত করেছি। আপনি কি কনফার্ম করছেন?`
-      : `I have prepared a message for ${recipient}: "${content}". Please confirm to send.`;
+  if (msgMatch) {
+    const isEnShape = msgMatch.length >= 4 && !isBengali;
+    const recipient = (msgMatch[1] || '').trim();
+    const explicitApp = isEnShape ? (msgMatch[2] || '').toLowerCase() : '';
+    const content = (isEnShape ? msgMatch[3] : msgMatch[2] || '').trim();
+    if (recipient && content) {
+      const app: 'messenger' | 'whatsapp' | 'sms' =
+        explicitApp === 'whatsapp' || lower.includes('whatsapp')
+          ? 'whatsapp'
+          : explicitApp === 'sms' || lower.includes('sms') || lower.startsWith('text ')
+          ? 'sms'
+          : 'messenger';
 
-    return {
-      hasActionIntent: true,
-      intentType: 'send_message',
-      requiresConfirmation: true,
-      messageDraft: {
-        recipient,
-        text: content,
-        app: 'messenger'
-      },
-      spokenConfirmation: spoken
-    };
+      const spoken = isBengali
+        ? `আমি ${recipient}-কে "${content}" মেসেজটি পাঠাতে ড্রাফট প্রস্তুত করেছি। পাঠাতে Confirm চাপুন।`
+        : `I have prepared a ${app} message for ${recipient}: "${content}". Tap Confirm & Send below.`;
+
+      return {
+        hasActionIntent: true,
+        intentType: 'send_message',
+        requiresConfirmation: true,
+        messageDraft: {
+          recipient,
+          text: content,
+          app
+        },
+        spokenConfirmation: spoken
+      };
+    }
   }
 
   return { hasActionIntent: false, intentType: 'none', spokenConfirmation: '' };

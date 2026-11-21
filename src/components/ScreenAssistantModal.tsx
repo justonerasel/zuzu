@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { AppSettings } from '../types';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
-import { apiFetch, APP_VERSION } from '../utils/apiConfig';
+import { apiFetch, APP_VERSION, directGeminiVisionAnalyze } from '../utils/apiConfig';
 
 interface ScreenAssistantModalProps {
   isOpen: boolean;
@@ -141,8 +141,28 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
     reader.readAsDataURL(file);
   };
 
-  // Call /api/analyze-screen
+  // Call /api/analyze-screen with direct Gemini Vision fallback for APK
   const performScreenAnalysis = async (imageBase64: string, customPrompt?: string) => {
+    const queryText =
+      customPrompt ||
+      (settings.recognitionLanguage === 'bn-BD'
+        ? 'এই স্ক্রিনের দিকে তাকিয়ে বলুন কি দেখা যাচ্ছে, গুরুত্বপূর্ণ টেক্সট এবং ব্যবহারকারীকে কি পরামর্শ দিবেন।'
+        : 'Analyze this full device screen. Read and summarize the on-screen contents, key buttons, and provide helpful guidance.');
+
+    const speakAnalysis = (text: string) => {
+      speakText({
+        text,
+        voiceIdentity: settings.activeIdentity,
+        voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId || 'kore_firm',
+        volume: settings.volume ?? 1.0,
+        speechRate: settings.speechRate || 1.0,
+        customApiKey: settings.customElevenLabsApiKey,
+        onStart: () => setIsSpeakingResult(true),
+        onEnd: () => setIsSpeakingResult(false),
+        onError: () => setIsSpeakingResult(false)
+      });
+    };
+
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json'
@@ -156,36 +176,40 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
         headers,
         body: JSON.stringify({
           imageBase64,
-          query: customPrompt || (settings.recognitionLanguage === 'bn-BD' 
-            ? 'এই স্ক্রিনের দিকে তাকিয়ে বলুন কি দেখা যাচ্ছে, গুরুত্বপূর্ণ টেক্সট এবং ব্যবহারকারীকে কি পরামর্শ দিবেন।'
-            : 'Analyze this full device screen. Read and summarize the on-screen contents, key buttons, and provide helpful guidance.'),
+          query: queryText,
           language: settings.recognitionLanguage
         })
       });
 
       const data = await res.json();
-      if (data.analysis) {
+      if (res.ok && data.analysis) {
         setAnalysisResult(data.analysis);
         setAnalysisModel(data.model || 'Multimodal AI');
         playHapticSound('listen_stop');
-
-        // Spoken audio response
-        speakText({
-          text: data.analysis,
-          voiceIdentity: settings.activeIdentity,
-          voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId || 'kore_firm',
-          volume: settings.volume ?? 1.0,
-          speechRate: settings.speechRate || 1.0,
-          customApiKey: settings.customElevenLabsApiKey,
-          onStart: () => setIsSpeakingResult(true),
-          onEnd: () => setIsSpeakingResult(false),
-          onError: () => setIsSpeakingResult(false)
-        });
-      } else {
-        setErrorNotice(data.error || 'Screen analysis failed.');
+        speakAnalysis(data.analysis);
+        return;
       }
+      throw new Error(data.error || 'Screen analysis failed.');
     } catch (err: any) {
-      setErrorNotice(err.message || 'Network error analyzing screen.');
+      if (settings.customGeminiApiKey?.trim()) {
+        try {
+          const direct = await directGeminiVisionAnalyze(
+            settings.customGeminiApiKey,
+            imageBase64,
+            `${queryText} Respond in ${settings.recognitionLanguage === 'bn-BD' ? 'Bengali' : 'English'}.`,
+            'image/jpeg'
+          );
+          setAnalysisResult(direct.text);
+          setAnalysisModel(`${direct.usedModel}-vision`);
+          playHapticSound('listen_stop');
+          speakAnalysis(direct.text);
+          return;
+        } catch (directErr: any) {
+          setErrorNotice(directErr?.message || err?.message || 'Screen analysis failed.');
+          return;
+        }
+      }
+      setErrorNotice(err?.message || 'Network error analyzing screen.');
     }
   };
 
@@ -227,7 +251,7 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
                 Active Android Cast
               </span>
               <span className="text-[10px] font-mono text-slate-500">
-                Gemini 3.8 Vision
+                Gemini 4 Vision
               </span>
             </div>
             <p className="text-xs text-slate-700 leading-relaxed">

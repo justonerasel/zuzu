@@ -17,7 +17,10 @@ import {
   ChevronRight,
   ExternalLink,
   Share2,
-  Image as ImageIcon
+  Image as ImageIcon,
+  StickyNote,
+  Bell,
+  Send
 } from 'lucide-react';
 import { ActiveTab, AppSettings, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
@@ -37,6 +40,7 @@ import {
 } from '../utils/greetingHelper';
 import { FacebookAutomationModal, FacebookTaskType } from './FacebookAutomationModal';
 import { ScreenAssistantModal } from './ScreenAssistantModal';
+import { NotesRemindersModal, getNotes, getReminders, executeConfirmedMessageIntent } from './NotesRemindersModal';
 import { sendUnifiedAiChat } from '../utils/apiConfig';
 import { startVoiceCapture, VoiceCaptureController } from '../utils/speech';
 import { setMicBusyForActiveSession } from '../utils/backgroundService';
@@ -78,6 +82,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // 3. Quick Action Modals
   const [showScreenModal, setShowScreenModal] = useState<boolean>(false);
   const [screenStreamActive, setScreenStreamActive] = useState<boolean>(false);
+  const [showNotesModal, setShowNotesModal] = useState<boolean>(false);
+  const [notesModalTab, setNotesModalTab] = useState<'notes' | 'reminders'>('notes');
+  const [notesCount, setNotesCount] = useState<number>(() => getNotes().length);
+  const [remindersCount, setRemindersCount] = useState<number>(() => getReminders().filter(r => !r.completed).length);
+  const [pendingMessageDraft, setPendingMessageDraft] = useState<{
+    recipient: string;
+    text: string;
+    app: 'messenger' | 'whatsapp' | 'sms';
+  } | null>(null);
 
   // 4. Facebook & Gallery Automation State
   const [showFacebookModal, setShowFacebookModal] = useState<boolean>(false);
@@ -89,10 +102,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const currentSessionRef = useRef<VoiceSession | null>(null);
   const isCancelledRef = useRef<boolean>(false);
   const hasGreetedSessionRef = useRef<boolean>(false);
-  const memoryCount = getMemories().length;
+  const settingsRef = useRef<AppSettings>(settings);
 
   useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  useEffect(() => {
+    const syncCounts = () => {
+      setNotesCount(getNotes().length);
+      setRemindersCount(getReminders().filter(r => !r.completed).length);
+    };
+    window.addEventListener('zuzu-notes-reminders-changed', syncCounts);
     return () => {
+      window.removeEventListener('zuzu-notes-reminders-changed', syncCounts);
       captureControllerRef.current?.cancel();
       captureControllerRef.current = null;
       setMicBusyForActiveSession(false);
@@ -125,20 +148,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     updateClock();
     const interval = setInterval(updateClock, 1000);
     return () => clearInterval(interval);
-  }, [settings.activePersonality, settings.gfGreetingEnabled, settings.gfIntensity, settings.userNickname, settings.recognitionLanguage]);
+  }, [
+    settings.activePersonality,
+    settings.gfGreetingEnabled,
+    settings.gfIntensity,
+    settings.userNickname,
+    settings.assistantNickname,
+    settings.greetingStyle,
+    settings.timeBasedGreetings,
+    settings.recognitionLanguage
+  ]);
 
   // Begin live microphone speech capture cleanly (shared by post-greeting & continuous turns)
   const beginMicCapture = async () => {
     if (isCancelledRef.current) return;
 
+    const latestSettings = settingsRef.current;
     if (!currentSessionRef.current) {
       currentSessionRef.current = {
         id: `vox-session-${Date.now()}`,
         conversation_type: 'voice',
         title: `Voice Session: ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
         startTime: Date.now(),
-        voiceIdentity: settings.activeIdentity,
-        personality: settings.activePersonality,
+        voiceIdentity: latestSettings.activeIdentity,
+        personality: latestSettings.activePersonality,
         messages: []
       };
     }
@@ -146,7 +179,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     try {
       setMicBusyForActiveSession(true);
       const controller = await startVoiceCapture({
-        language: settings.recognitionLanguage || 'auto',
+        language: latestSettings.recognitionLanguage || 'auto',
         onStart: () => {
           setOrbState('listening');
           setStatusText('LISTENING...');
@@ -294,12 +327,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Process User Speech
   const handleProcessSpeech = async (spoken: string) => {
+    const latestSettings = settingsRef.current;
     setOrbState('thinking');
     setStatusText('THINKING...');
     playHapticSound('message_sent');
 
-    const currentId = settings.activeIdentity;
-    const nickname = (settings.assistantNickname || 'Zuzu').trim();
+    const currentId = latestSettings.activeIdentity;
+    const nickname = (latestSettings.assistantNickname || 'Zuzu').trim();
 
     // 0. Handle Custom Assistant Nickname wake-words (e.g. "Hey Maya", "Maya open weather")
     let cleanedSpoken = spoken.trim();
@@ -391,19 +425,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       return;
     }
 
-    // 1.1 Check Natural Language Voice Action Intents (Requirement 4)
+    // 1.1 Check Natural Language Voice Action Intents
     const actionIntent = detectVoiceActionIntent(cleanedSpoken);
     if (actionIntent.hasActionIntent) {
       playHapticSound('message_sent');
+      if (actionIntent.requiresConfirmation && actionIntent.messageDraft) {
+        setPendingMessageDraft(actionIntent.messageDraft);
+      } else {
+        setPendingMessageDraft(null);
+      }
       setLastAiResponse(actionIntent.spokenConfirmation);
       speakSpokenReply(actionIntent.spokenConfirmation, currentId);
-      setStatusText('COMMAND EXECUTED');
+      setStatusText(actionIntent.requiresConfirmation ? 'CONFIRM ACTION' : 'COMMAND EXECUTED');
       return;
     }
 
     // 2. Auto-extract memory intent if enabled
-    const activeMemories = settings.memoryEnabled ? getMemories() : [];
-    if (settings.memoryEnabled) {
+    const activeMemories = latestSettings.memoryEnabled ? getMemories() : [];
+    if (latestSettings.memoryEnabled) {
       const lower = cleanedSpoken.toLowerCase().trim();
       if (
         lower.startsWith('remember that') ||
@@ -439,7 +478,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       saveVoiceSession(currentSessionRef.current);
     }
 
-    // 3. Request AI Response via unified Gemini pipeline
+    // 3. Request AI Response via unified AI pipeline
     try {
       const historyContext = (currentSessionRef.current?.messages || []).map(m => ({
         sender: m.sender,
@@ -448,7 +487,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       const aiResult = await sendUnifiedAiChat({
         messages: historyContext.length > 0 ? historyContext : [{ sender: 'user', text: cleanedSpoken }],
-        settings,
+        settings: latestSettings,
         memories: activeMemories,
         isVoiceMode: true
       });
@@ -456,7 +495,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (aiResult.isError) {
         setLastAiResponse(aiResult.reply);
         setOrbState('idle');
-        setStatusText('GEMINI API ERROR');
+        setStatusText('AI PROVIDER ERROR');
         setIsVoiceActive(false);
         if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
           onRequestApiKeyModal('Voice Assistant');
@@ -494,25 +533,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Speak response
   const speakSpokenReply = (textToSpeak: string, identity: VoiceIdentity) => {
+    const latestSettings = settingsRef.current;
     setOrbState('speaking');
     setStatusText('SPEAKING...');
     setIsVoiceActive(true);
 
     const voiceId =
       identity === 'female'
-        ? settings.elevenLabsFemaleVoiceId
-        : settings.elevenLabsMaleVoiceId;
+        ? latestSettings.elevenLabsFemaleVoiceId
+        : latestSettings.elevenLabsMaleVoiceId;
 
     speakText({
       text: textToSpeak,
       voiceIdentity: identity,
       customVoiceId: voiceId,
-      customApiKey: settings.customElevenLabsApiKey,
-      stability: settings.stability,
-      similarityBoost: settings.similarityBoost,
-      speechRate: settings.speechRate,
-      volume: settings.volume ?? 1.0,
-      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId,
+      customApiKey: latestSettings.customElevenLabsApiKey,
+      stability: latestSettings.stability,
+      similarityBoost: latestSettings.similarityBoost,
+      speechRate: latestSettings.speechRate,
+      volume: latestSettings.volume ?? 1.0,
+      voiceStyleId: latestSettings.selectedVoiceStyleId || latestSettings.selectedVoiceOptionId,
       onStart: () => {
         setOrbState('speaking');
         setStatusText('SPEAKING...');
@@ -520,7 +560,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       onEnd: () => {
         setOrbState('idle');
         setStatusText('VOICE SESSION ACTIVE');
-        if (settings.continuousListening && !isCancelledRef.current) {
+        if (settingsRef.current.continuousListening && !isCancelledRef.current) {
           setTimeout(() => beginMicCapture(), 500);
         } else {
           setIsVoiceActive(false);
@@ -594,7 +634,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* 2. Brand-New 4-Style 3D Particle Orb Centerpiece (Requirement 1 & 2) */}
+      {/* 2. 3D Particle Orb Centerpiece */}
       <div className="flex flex-col items-center justify-center relative my-1">
         <ParticleOrb
           state={orbState}
@@ -604,7 +644,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           glowIntensity={settings.orbGlowIntensity}
           particleDensity={settings.orbParticleDensity}
           onClick={isVoiceActive ? stopVoiceInteraction : startVoiceInteraction}
-          size={215}
+          size={255}
         />
 
         {/* 3. Compact Voice Status Pill */}
@@ -680,6 +720,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {lastAiResponse}
             </div>
           )}
+
+          {pendingMessageDraft && (
+            <div className="mt-2 p-2.5 rounded-xl bg-purple-50 border border-purple-200 flex items-center justify-between gap-2">
+              <div className="text-[11px] text-purple-900 min-w-0">
+                <div className="font-bold uppercase text-[9px] text-purple-600">{pendingMessageDraft.app} Draft to {pendingMessageDraft.recipient}</div>
+                <div className="truncate font-medium">"{pendingMessageDraft.text}"</div>
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <button
+                  onClick={() => {
+                    executeConfirmedMessageIntent(pendingMessageDraft);
+                    setPendingMessageDraft(null);
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-bold flex items-center gap-1"
+                >
+                  <Send className="w-3 h-3" />
+                  <span>Confirm</span>
+                </button>
+                <button
+                  onClick={() => setPendingMessageDraft(null)}
+                  className="px-2 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-500 text-[10px] font-bold"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -744,7 +811,55 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </button>
       </div>
 
-      {/* Multimodal Screen Assistant Modal (Requirement 7) */}
+      {/* 6. Notes & Reminders Access Strip */}
+      <div className="grid grid-cols-2 gap-2.5">
+        <button
+          onClick={() => {
+            setNotesModalTab('notes');
+            setShowNotesModal(true);
+          }}
+          className="px-3.5 py-2.5 rounded-2xl bg-white/75 hover:bg-white/95 backdrop-blur-xl border border-white/85 shadow-xs transition-all active:scale-[0.98] flex items-center justify-between"
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">
+              <StickyNote className="w-3.5 h-3.5" />
+            </div>
+            <div className="text-left">
+              <div className="text-xs font-bold text-slate-800">Notebook</div>
+              <div className="text-[10px] text-slate-500">{notesCount} saved notes</div>
+            </div>
+          </div>
+          <ChevronRight className="w-4 h-4 text-slate-400" />
+        </button>
+
+        <button
+          onClick={() => {
+            setNotesModalTab('reminders');
+            setShowNotesModal(true);
+          }}
+          className="px-3.5 py-2.5 rounded-2xl bg-white/75 hover:bg-white/95 backdrop-blur-xl border border-white/85 shadow-xs transition-all active:scale-[0.98] flex items-center justify-between"
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center">
+              <Bell className="w-3.5 h-3.5" />
+            </div>
+            <div className="text-left">
+              <div className="text-xs font-bold text-slate-800">Reminders</div>
+              <div className="text-[10px] text-slate-500">{remindersCount} upcoming</div>
+            </div>
+          </div>
+          <ChevronRight className="w-4 h-4 text-slate-400" />
+        </button>
+      </div>
+
+      {/* Notes & Reminders Modal */}
+      <NotesRemindersModal
+        isOpen={showNotesModal}
+        onClose={() => setShowNotesModal(false)}
+        initialTab={notesModalTab}
+      />
+
+      {/* Multimodal Screen Assistant Modal */}
       <ScreenAssistantModal
         isOpen={showScreenModal}
         onClose={() => {
@@ -764,7 +879,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         }}
       />
 
-      {/* Facebook & Gallery Automation Modal (Requirement 10) */}
+      {/* Facebook & Gallery Automation Modal */}
       <FacebookAutomationModal
         isOpen={showFacebookModal}
         onClose={() => setShowFacebookModal(false)}

@@ -1,26 +1,37 @@
 package com.zuzu.ai.assistant;
 
 import android.Manifest;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.util.Base64;
 
+import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 
@@ -35,19 +46,25 @@ import com.getcapacitor.annotation.PermissionCallback;
 
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Capacitor Native Bridge for Zuzu AI.
  * Provides:
  * - Silent Android Foreground Service control
- * - Essential runtime permissions (Microphone & Notifications)
+ * - Essential runtime permissions
  * - Lightweight AudioRecord custom trigger monitor (Mouth Whistle & Finger Snap)
  * - Native Android SpeechRecognizer (Bangla bn-BD & English en-US)
- * - Native Android TextToSpeech fallback for reliable APK voice playback
+ * - Native Android TextToSpeech with queued cold-start & main-thread event safety
+ * - Native app launcher, external URL opener, system settings, camera, media save/share, and reminder notifications
  */
 @CapacitorPlugin(
         name = "ZuzuNative",
@@ -64,6 +81,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 )
 public class ZuzuNativeBridgePlugin extends Plugin {
 
+    private static final String REMINDER_CHANNEL_ID = "zuzu_ai_reminders_v1";
+
     private static class NativeTriggerSpec {
         String id;
         String label;
@@ -78,12 +97,80 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     private SpeechRecognizer speechRecognizer;
     private TextToSpeech textToSpeech;
     private boolean ttsInitialized = false;
+    private boolean ttsInitInProgress = false;
+    private String pendingTtsText = null;
+    private String pendingTtsLang = "en-US";
+    private float pendingTtsRate = 1.0f;
+    private float pendingTtsPitch = 1.0f;
+    private PluginCall pendingTtsCall = null;
+
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final AtomicBoolean isTriggerMonitorRunning = new AtomicBoolean(false);
     private Thread triggerMonitorThread;
     private volatile long lastTriggerFiredAt = 0L;
     private volatile List<NativeTriggerSpec> activeTriggers = new ArrayList<>();
+
+    @Override
+    public void load() {
+        super.load();
+        mainHandler.post(this::ensureTtsInitializedAsync);
+    }
+
+    private void ensureTtsInitializedAsync() {
+        if (textToSpeech != null || ttsInitInProgress) return;
+        Context ctx = getContext();
+        if (ctx == null) return;
+
+        ttsInitInProgress = true;
+        try {
+            textToSpeech = new TextToSpeech(ctx, status -> mainHandler.post(() -> {
+                ttsInitInProgress = false;
+                if (status == TextToSpeech.SUCCESS && textToSpeech != null) {
+                    ttsInitialized = true;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        textToSpeech.setAudioAttributes(
+                                new AudioAttributes.Builder()
+                                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                        .build()
+                        );
+                    }
+                    if (pendingTtsCall != null && pendingTtsText != null) {
+                        PluginCall callToRun = pendingTtsCall;
+                        String textToRun = pendingTtsText;
+                        String langToRun = pendingTtsLang;
+                        float rateToRun = pendingTtsRate;
+                        float pitchToRun = pendingTtsPitch;
+                        clearPendingTts();
+                        performNativeSpeak(textToRun, langToRun, rateToRun, pitchToRun, callToRun);
+                    }
+                } else {
+                    ttsInitialized = false;
+                    textToSpeech = null;
+                    if (pendingTtsCall != null) {
+                        PluginCall callToFail = pendingTtsCall;
+                        clearPendingTts();
+                        callToFail.reject("Android TextToSpeech initialization failed.");
+                    }
+                }
+            }));
+        } catch (Exception e) {
+            ttsInitInProgress = false;
+            ttsInitialized = false;
+            textToSpeech = null;
+            if (pendingTtsCall != null) {
+                PluginCall callToFail = pendingTtsCall;
+                clearPendingTts();
+                callToFail.reject("TextToSpeech initialization error: " + e.getMessage());
+            }
+        }
+    }
+
+    private void clearPendingTts() {
+        pendingTtsCall = null;
+        pendingTtsText = null;
+    }
 
     @PluginMethod
     public void startForegroundService(PluginCall call) {
@@ -207,7 +294,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
 
     private void runAudioTriggerLoop() {
         final int sampleRate = 16000;
-        final int frameSize = 1024; // ~64ms window
+        final int frameSize = 1024;
         int minBuf = AudioRecord.getMinBufferSize(
                 sampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
@@ -353,11 +440,9 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         Context ctx = getContext();
         JSObject res = new JSObject();
 
-        // 1-2. Audio & Voice
         res.put("microphone", hasPerm(ctx, Manifest.permission.RECORD_AUDIO) ? "granted" : "prompt");
         res.put("modify_audio", "granted");
 
-        // 3-6. Bluetooth (API 31+ runtime connect/scan)
         res.put("bluetooth", "granted");
         res.put("bluetooth_admin", "granted");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -368,7 +453,6 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             res.put("bluetooth_scan", "granted");
         }
 
-        // 7-15. Network, Foreground Services, WakeLock, Boot & Battery
         res.put("internet", "granted");
         res.put("access_network", "granted");
         res.put("access_wifi", "granted");
@@ -385,7 +469,6 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         }
         res.put("battery_opt", ignoringBattery ? "granted" : "system_required");
 
-        // 16-22. Notifications, Overlay, System Settings & Package Visibility
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             res.put("notifications", hasPerm(ctx, Manifest.permission.POST_NOTIFICATIONS) ? "granted" : "prompt");
         } else {
@@ -408,7 +491,6 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         }
         res.put("request_install_packages", canInstall ? "granted" : "system_required");
 
-        // 23-30. Location, Calls, Contacts, Storage & Camera
         res.put("fine_location", hasPerm(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ? "granted" : "prompt");
         res.put("coarse_location", hasPerm(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ? "granted" : "prompt");
         res.put("call_phone", hasPerm(ctx, Manifest.permission.CALL_PHONE) ? "granted" : "prompt");
@@ -550,6 +632,9 @@ public class ZuzuNativeBridgePlugin extends Plugin {
 
                 if (speechRecognizer != null) {
                     try {
+                        speechRecognizer.cancel();
+                    } catch (Exception ignored) {}
+                    try {
                         speechRecognizer.destroy();
                     } catch (Exception ignored) {}
                     speechRecognizer = null;
@@ -559,7 +644,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                 speechRecognizer.setRecognitionListener(new RecognitionListener() {
                     @Override
                     public void onReadyForSpeech(Bundle params) {
-                        notifyListeners("nativeSpeechReady", new JSObject());
+                        mainHandler.post(() -> notifyListeners("nativeSpeechReady", new JSObject()));
                     }
 
                     @Override
@@ -573,15 +658,22 @@ public class ZuzuNativeBridgePlugin extends Plugin {
 
                     @Override
                     public void onEndOfSpeech() {
-                        notifyListeners("nativeSpeechEnd", new JSObject());
+                        mainHandler.post(() -> notifyListeners("nativeSpeechEnd", new JSObject()));
                     }
 
                     @Override
                     public void onError(int error) {
+                        if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && speechRecognizer != null) {
+                            try {
+                                speechRecognizer.cancel();
+                                speechRecognizer.destroy();
+                            } catch (Exception ignored) {}
+                            speechRecognizer = null;
+                        }
                         JSObject err = new JSObject();
                         err.put("code", error);
                         err.put("message", mapSpeechError(error));
-                        notifyListeners("nativeSpeechError", err);
+                        mainHandler.post(() -> notifyListeners("nativeSpeechError", err));
                     }
 
                     @Override
@@ -592,7 +684,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                         String text = (matches != null && !matches.isEmpty()) ? matches.get(0) : "";
                         JSObject payload = new JSObject();
                         payload.put("text", text != null ? text : "");
-                        notifyListeners("nativeSpeechResult", payload);
+                        mainHandler.post(() -> notifyListeners("nativeSpeechResult", payload));
                     }
 
                     @Override
@@ -604,7 +696,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                         if (text != null && !text.isEmpty()) {
                             JSObject payload = new JSObject();
                             payload.put("text", text);
-                            notifyListeners("nativeSpeechPartial", payload);
+                            mainHandler.post(() -> notifyListeners("nativeSpeechPartial", payload));
                         }
                     }
 
@@ -676,20 +768,25 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         }
 
         mainHandler.post(() -> {
-            if (textToSpeech == null) {
-                textToSpeech = new TextToSpeech(getContext(), status -> {
-                    if (status == TextToSpeech.SUCCESS) {
-                        ttsInitialized = true;
-                        performNativeSpeak(text, lang, rate, pitch, call);
-                    } else {
-                        ttsInitialized = false;
-                        call.reject("Android TextToSpeech initialization failed.");
-                    }
-                });
-            } else if (ttsInitialized) {
+            if (ttsInitialized && textToSpeech != null) {
                 performNativeSpeak(text, lang, rate, pitch, call);
-            } else {
-                call.reject("TextToSpeech engine is still initializing.");
+                return;
+            }
+
+            if (pendingTtsCall != null) {
+                try {
+                    pendingTtsCall.reject("Replaced by newer speech request.");
+                } catch (Exception ignored) {}
+            }
+
+            pendingTtsText = text;
+            pendingTtsLang = lang;
+            pendingTtsRate = rate;
+            pendingTtsPitch = pitch;
+            pendingTtsCall = call;
+
+            if (textToSpeech == null && !ttsInitInProgress) {
+                ensureTtsInitializedAsync();
             }
         });
     }
@@ -711,21 +808,26 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                 @Override
                 public void onStart(String id) {
-                    notifyListeners("nativeTtsStart", new JSObject().put("id", id));
+                    mainHandler.post(() -> notifyListeners("nativeTtsStart", new JSObject().put("id", id)));
                 }
 
                 @Override
                 public void onDone(String id) {
-                    notifyListeners("nativeTtsEnd", new JSObject().put("id", id));
+                    mainHandler.post(() -> notifyListeners("nativeTtsEnd", new JSObject().put("id", id)));
                 }
 
                 @Override
                 public void onError(String id) {
-                    notifyListeners("nativeTtsError", new JSObject().put("id", id));
+                    mainHandler.post(() -> notifyListeners("nativeTtsError", new JSObject().put("id", id)));
                 }
             });
 
-            textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
+            int speakResult = textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
+            if (speakResult == TextToSpeech.ERROR) {
+                call.reject("TTS speak returned ERROR.");
+                return;
+            }
+
             JSObject ret = new JSObject();
             ret.put("speaking", true);
             ret.put("utteranceId", utteranceId);
@@ -738,6 +840,12 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     @PluginMethod
     public void stopNativeSpeak(PluginCall call) {
         mainHandler.post(() -> {
+            if (pendingTtsCall != null) {
+                try {
+                    pendingTtsCall.reject("Speech stopped.");
+                } catch (Exception ignored) {}
+                clearPendingTts();
+            }
             if (textToSpeech != null) {
                 try {
                     textToSpeech.stop();
@@ -747,6 +855,338 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             ret.put("stopped", true);
             call.resolve(ret);
         });
+    }
+
+    @PluginMethod
+    public void launchApp(PluginCall call) {
+        String appName = call.getString("appName", "").trim();
+        String explicitPackage = call.getString("packageName", "").trim();
+        String fallbackUrl = call.getString("fallbackUrl", "").trim();
+        Context ctx = getContext();
+        PackageManager pm = ctx.getPackageManager();
+
+        try {
+            String targetPkg = explicitPackage;
+            if (targetPkg.isEmpty() && !appName.isEmpty()) {
+                targetPkg = resolveKnownPackageName(appName.toLowerCase(Locale.US));
+            }
+
+            if (!targetPkg.isEmpty()) {
+                Intent launchIntent = pm.getLaunchIntentForPackage(targetPkg);
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ctx.startActivity(launchIntent);
+                    JSObject ret = new JSObject();
+                    ret.put("launched", true);
+                    ret.put("packageName", targetPkg);
+                    ret.put("matchedLabel", appName);
+                    call.resolve(ret);
+                    return;
+                }
+            }
+
+            if (!appName.isEmpty()) {
+                String needle = appName.toLowerCase(Locale.US);
+                List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
+                for (ApplicationInfo info : apps) {
+                    CharSequence labelSeq = pm.getApplicationLabel(info);
+                    if (labelSeq == null) continue;
+                    String label = labelSeq.toString().toLowerCase(Locale.US);
+                    if (label.equals(needle) || label.contains(needle)) {
+                        Intent launchIntent = pm.getLaunchIntentForPackage(info.packageName);
+                        if (launchIntent != null) {
+                            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            ctx.startActivity(launchIntent);
+                            JSObject ret = new JSObject();
+                            ret.put("launched", true);
+                            ret.put("packageName", info.packageName);
+                            ret.put("matchedLabel", labelSeq.toString());
+                            call.resolve(ret);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if (!fallbackUrl.isEmpty()) {
+                Intent viewIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl));
+                viewIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                ctx.startActivity(viewIntent);
+                JSObject ret = new JSObject();
+                ret.put("launched", true);
+                ret.put("fallbackUrl", fallbackUrl);
+                call.resolve(ret);
+                return;
+            }
+
+            JSObject ret = new JSObject();
+            ret.put("launched", false);
+            ret.put("reason", "App not installed on device.");
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Could not launch app: " + e.getMessage());
+        }
+    }
+
+    private String resolveKnownPackageName(String lowerName) {
+        Map<String, String> known = new HashMap<>();
+        known.put("youtube", "com.google.android.youtube");
+        known.put("whatsapp", "com.whatsapp");
+        known.put("facebook", "com.facebook.katana");
+        known.put("messenger", "com.facebook.orca");
+        known.put("chrome", "com.android.chrome");
+        known.put("browser", "com.android.chrome");
+        known.put("instagram", "com.instagram.android");
+        known.put("telegram", "org.telegram.messenger");
+        known.put("spotify", "com.spotify.music");
+        known.put("gmail", "com.google.android.gm");
+        known.put("maps", "com.google.android.apps.maps");
+        known.put("google maps", "com.google.android.apps.maps");
+        known.put("calendar", "com.google.android.calendar");
+        known.put("calculator", "com.google.android.calculator");
+        known.put("clock", "com.google.android.deskclock");
+        known.put("play store", "com.android.vending");
+        known.put("photos", "com.google.android.apps.photos");
+        known.put("gallery", "com.google.android.apps.photos");
+        known.put("tiktok", "com.zhiliaoapp.musically");
+
+        for (Map.Entry<String, String> entry : known.entrySet()) {
+            if (lowerName.contains(entry.getKey())) {
+                return entry.getValue();
+            }
+        }
+        return "";
+    }
+
+    @PluginMethod
+    public void openExternalUrl(PluginCall call) {
+        String url = call.getString("url", "").trim();
+        if (url.isEmpty()) {
+            call.reject("URL is required.");
+            return;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            JSObject ret = new JSObject();
+            ret.put("opened", true);
+            ret.put("url", url);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Could not open URL: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void openSystemCamera(PluginCall call) {
+        Context ctx = getContext();
+        try {
+            Intent camIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            camIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (camIntent.resolveActivity(ctx.getPackageManager()) != null) {
+                ctx.startActivity(camIntent);
+                JSObject ret = new JSObject();
+                ret.put("opened", true);
+                call.resolve(ret);
+                return;
+            }
+            call.reject("No system camera activity found.");
+        } catch (Exception e) {
+            call.reject("Could not open camera: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void openDeviceSettingsSection(PluginCall call) {
+        String target = call.getString("target", "main").toLowerCase(Locale.US);
+        Context ctx = getContext();
+        try {
+            String action = Settings.ACTION_SETTINGS;
+            if ("wifi".equals(target) || "wi-fi".equals(target)) {
+                action = Settings.ACTION_WIFI_SETTINGS;
+            } else if ("bluetooth".equals(target)) {
+                action = Settings.ACTION_BLUETOOTH_SETTINGS;
+            } else if ("display".equals(target)) {
+                action = Settings.ACTION_DISPLAY_SETTINGS;
+            } else if ("sound".equals(target)) {
+                action = Settings.ACTION_SOUND_SETTINGS;
+            } else if ("location".equals(target)) {
+                action = Settings.ACTION_LOCATION_SOURCE_SETTINGS;
+            }
+            Intent intent = new Intent(action);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(intent);
+            JSObject ret = new JSObject();
+            ret.put("opened", true);
+            ret.put("target", target);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Could not open Android settings section: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void saveBase64Image(PluginCall call) {
+        String base64Data = call.getString("base64Data", "");
+        String filename = call.getString("filename", "zuzu-art-" + System.currentTimeMillis() + ".png");
+        if (base64Data == null || base64Data.trim().isEmpty()) {
+            call.reject("Image base64 data is required.");
+            return;
+        }
+
+        Context ctx = getContext();
+        try {
+            String cleanBase64 = base64Data.replaceFirst("^data:image/[a-zA-Z0-9+.-]+;base64,", "");
+            byte[] decoded = Base64.decode(cleanBase64, Base64.DEFAULT);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentResolver resolver = ctx.getContentResolver();
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, filename);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "image/png");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ZuzuAI");
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+                Uri uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    call.reject("Could not create MediaStore image entry.");
+                    return;
+                }
+                try (OutputStream out = resolver.openOutputStream(uri)) {
+                    if (out != null) out.write(decoded);
+                }
+                values.clear();
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                resolver.update(uri, values, null, null);
+
+                JSObject ret = new JSObject();
+                ret.put("saved", true);
+                ret.put("uri", uri.toString());
+                ret.put("filename", filename);
+                call.resolve(ret);
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ZuzuAI");
+                if (!dir.exists()) dir.mkdirs();
+                File file = new File(dir, filename);
+                try (FileOutputStream fos = new FileOutputStream(file)) {
+                    fos.write(decoded);
+                }
+                MediaScannerConnection.scanFile(ctx, new String[]{ file.getAbsolutePath() }, new String[]{ "image/png" }, null);
+
+                JSObject ret = new JSObject();
+                ret.put("saved", true);
+                ret.put("uri", file.getAbsolutePath());
+                ret.put("filename", filename);
+                call.resolve(ret);
+            }
+        } catch (Exception e) {
+            call.reject("Failed to save image: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void shareMediaOrText(PluginCall call) {
+        String title = call.getString("title", "Share from Zuzu AI");
+        String text = call.getString("text", "");
+        String base64Data = call.getString("base64Data", "");
+        Context ctx = getContext();
+
+        try {
+            if (base64Data != null && !base64Data.trim().isEmpty()) {
+                String cleanBase64 = base64Data.replaceFirst("^data:image/[a-zA-Z0-9+.-]+;base64,", "");
+                byte[] decoded = Base64.decode(cleanBase64, Base64.DEFAULT);
+
+                ContentResolver resolver = ctx.getContentResolver();
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, "zuzu-share-" + System.currentTimeMillis() + ".png");
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "image/png");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ZuzuAI");
+                }
+
+                Uri contentUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (contentUri != null) {
+                    try (OutputStream out = resolver.openOutputStream(contentUri)) {
+                        if (out != null) out.write(decoded);
+                    }
+                    Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                    shareIntent.setType("image/png");
+                    shareIntent.putExtra(Intent.EXTRA_STREAM, contentUri);
+                    if (!text.isEmpty()) shareIntent.putExtra(Intent.EXTRA_TEXT, text);
+                    shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                    Intent chooser = Intent.createChooser(shareIntent, title);
+                    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ctx.startActivity(chooser);
+
+                    JSObject ret = new JSObject();
+                    ret.put("shared", true);
+                    call.resolve(ret);
+                    return;
+                }
+            }
+
+            Intent shareTextIntent = new Intent(Intent.ACTION_SEND);
+            shareTextIntent.setType("text/plain");
+            shareTextIntent.putExtra(Intent.EXTRA_TEXT, text.isEmpty() ? title : text);
+            Intent chooser = Intent.createChooser(shareTextIntent, title);
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(chooser);
+
+            JSObject ret = new JSObject();
+            ret.put("shared", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Share failed: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void scheduleReminderNotification(PluginCall call) {
+        String id = call.getString("id", "rem-" + System.currentTimeMillis());
+        String title = call.getString("title", "Zuzu AI Reminder");
+        String body = call.getString("body", "You have a scheduled reminder.");
+        long triggerAtMs = call.getLong("triggerAtMs", System.currentTimeMillis());
+        long delayMs = Math.max(0L, triggerAtMs - System.currentTimeMillis());
+
+        Context ctx = getContext();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager != null && manager.getNotificationChannel(REMINDER_CHANNEL_ID) == null) {
+                NotificationChannel ch = new NotificationChannel(
+                        REMINDER_CHANNEL_ID,
+                        "Zuzu AI Reminders",
+                        NotificationManager.IMPORTANCE_HIGH
+                );
+                ch.setDescription("Reminder alerts created via Zuzu AI");
+                manager.createNotificationChannel(ch);
+            }
+        }
+
+        mainHandler.postDelayed(() -> {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                        && !hasPerm(ctx, Manifest.permission.POST_NOTIFICATIONS)) {
+                    return;
+                }
+                int iconRes = ctx.getApplicationInfo().icon;
+                NotificationCompat.Builder builder = new NotificationCompat.Builder(ctx, REMINDER_CHANNEL_ID)
+                        .setSmallIcon(iconRes != 0 ? iconRes : android.R.drawable.ic_popup_reminder)
+                        .setContentTitle(title)
+                        .setContentText(body)
+                        .setPriority(NotificationCompat.PRIORITY_HIGH)
+                        .setAutoCancel(true);
+
+                NotificationManagerCompat.from(ctx).notify(id.hashCode(), builder.build());
+            } catch (SecurityException | IllegalStateException ignored) {}
+        }, delayMs);
+
+        JSObject ret = new JSObject();
+        ret.put("scheduled", true);
+        ret.put("id", id);
+        ret.put("triggerAtMs", triggerAtMs);
+        call.resolve(ret);
     }
 
     @PluginMethod
@@ -819,6 +1259,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     protected void handleOnDestroy() {
         stopMonitorInternal();
         mainHandler.post(() -> {
+            clearPendingTts();
             if (speechRecognizer != null) {
                 try {
                     speechRecognizer.destroy();

@@ -11,11 +11,21 @@ import { getAppSettings } from './storage';
 // Current Application Build Version (Keep synchronized across Gradle, Server, UI & CI)
 export const APP_VERSION = '3.7.0';
 export const APP_VERSION_CODE = 370;
-export const GEMINI_PRIMARY_MODEL = 'gemini-3.8-flash';
-const GEMINI_MODEL_CANDIDATES = ['gemini-3.8-flash', 'gemini-4-hydrogen'];
+export const GEMINI_PRIMARY_MODEL = 'gemini-4-hydrogen';
+export const GEMINI_IMAGE_MODEL = 'gemini-3.1-flash-lite-image';
+const GEMINI_MODEL_CANDIDATES = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+const GROK_MODEL_CANDIDATES = ['grok-3-mini', 'grok-3', 'grok-2-latest'];
 
 // Deployed Cloud Run Production Backend URL for Android APK
-export const DEFAULT_REMOTE_BACKEND_URL = 'https://ais-dev-requvmmuycwborvooarj55-817905745905.asia-east1.run.app';
+export const DEFAULT_REMOTE_BACKEND_URL = 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app';
+
+export function resolveSupportedGeminiModel(modelId?: string): string {
+  const clean = (modelId || '').replace(/^models\//, '').trim();
+  if (!clean || clean === 'gemini-3.8-flash' || clean === 'gemini-3.8-live' || clean === 'gemini-2.0-flash') {
+    return GEMINI_PRIMARY_MODEL;
+  }
+  return clean;
+}
 
 export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') {
@@ -92,6 +102,23 @@ export function formatGeminiFriendlyError(rawMessage: string, status?: number): 
   return msg || `Google Gemini API error${status ? ` (${status})` : ''}.`;
 }
 
+export function formatGrokFriendlyError(rawMessage: string, status?: number): string {
+  const msg = rawMessage || '';
+  if (status === 401 || /invalid.*key|incorrect api key|unauthorized/i.test(msg)) {
+    return 'Invalid xAI Grok API Key. Please check your key in Settings > Zuzu AI.';
+  }
+  if (status === 403 || /permission|credits|billing/i.test(msg)) {
+    return 'xAI Grok access denied or credits depleted (403). Please check your xAI Console account.';
+  }
+  if (status === 429 || /rate limit|quota/i.test(msg)) {
+    return 'xAI Grok rate limit reached (429). Please wait a moment and try again.';
+  }
+  if (/Failed to fetch|NetworkError|timeout|ENOTFOUND/i.test(msg)) {
+    return 'Network error: Unable to reach xAI Grok servers. Check your internet connection.';
+  }
+  return msg || `xAI Grok API error${status ? ` (${status})` : ''}.`;
+}
+
 export async function validateGeminiKeyDirectly(apiKey: string): Promise<{
   success: boolean;
   message: string;
@@ -159,17 +186,19 @@ export async function validateAiKey(
       if (res.ok && data.success) {
         return {
           success: true,
-          model: data.model || GEMINI_PRIMARY_MODEL,
+          model: data.model || (provider === 'gemini' ? GEMINI_PRIMARY_MODEL : 'grok-3-mini'),
           latencyMs: data.latencyMs,
-          message: data.message || `Valid ✓ Connected to ${provider === 'gemini' ? 'Google Gemini 3.8 Flash' : 'xAI Grok'}`
+          message:
+            data.message ||
+            `Valid ✓ Connected to ${provider === 'gemini' ? 'Google Gemini 4 Hydrogen' : 'xAI Grok'}`
         };
       }
-      if (data?.error && provider === 'grok') {
-        return { success: false, message: data.error };
+      if (data?.error && provider === 'grok' && res.status !== 404) {
+        return { success: false, message: formatGrokFriendlyError(String(data.error), res.status) };
       }
     }
-  } catch (err: any) {
-    console.warn('[Zuzu AI] Backend validation ping unreachable, using direct API check:', err);
+  } catch {
+    // Fallback cleanly to direct provider check (standard on standalone APK or local offline dev)
   }
 
   // 2. Direct fallback for Gemini (essential inside standalone Android APK)
@@ -186,38 +215,52 @@ export async function validateAiKey(
   // 3. Direct fallback for Grok
   if (provider === 'grok') {
     const startTime = Date.now();
-    try {
-      const grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${trimmed}`
-        },
-        body: JSON.stringify({
-          model: 'grok-2',
-          messages: [{ role: 'user', content: 'Ping' }],
-          max_tokens: 5
-        })
-      });
-      const latencyMs = Date.now() - startTime;
-      if (grokRes.ok) {
+    let lastStatus = 0;
+    let lastMsg = '';
+    for (const modelName of GROK_MODEL_CANDIDATES) {
+      try {
+        const grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${trimmed}`
+          },
+          body: JSON.stringify({
+            model: modelName,
+            messages: [{ role: 'user', content: 'Ping' }],
+            max_tokens: 5
+          })
+        });
+        const latencyMs = Date.now() - startTime;
+        if (grokRes.ok) {
+          return {
+            success: true,
+            model: modelName,
+            latencyMs,
+            message: `Valid ✓ Connected to xAI Grok (${modelName}, ${latencyMs}ms)`
+          };
+        }
+        lastStatus = grokRes.status;
+        const errJson = await grokRes.json().catch(() => null);
+        lastMsg = errJson?.error?.message || errJson?.error || `HTTP ${grokRes.status}`;
+        if (grokRes.status === 404 || /model.*not found|does not exist/i.test(String(lastMsg))) {
+          continue;
+        }
         return {
-          success: true,
-          model: 'grok-2',
-          latencyMs,
-          message: `Valid ✓ Connected to xAI Grok (${latencyMs}ms)`
+          success: false,
+          message: formatGrokFriendlyError(String(lastMsg), grokRes.status)
+        };
+      } catch (gErr: any) {
+        return {
+          success: false,
+          message: formatGrokFriendlyError(gErr?.message || 'Network unreachable')
         };
       }
-      return {
-        success: false,
-        message: `xAI Grok authentication failed (Status ${grokRes.status})`
-      };
-    } catch (gErr: any) {
-      return {
-        success: false,
-        message: `Network error reaching xAI Grok: ${gErr.message}`
-      };
     }
+    return {
+      success: false,
+      message: formatGrokFriendlyError(lastMsg || `xAI Grok authentication failed`, lastStatus || undefined)
+    };
   }
 
   return { success: false, message: 'Unsupported provider' };
@@ -288,7 +331,7 @@ export async function directGeminiGenerateContent(
   promptOrMessages: string | Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>,
   systemInstruction?: string,
   preferredModel: string = GEMINI_PRIMARY_MODEL
-): Promise<string> {
+): Promise<{ text: string; usedModel: string }> {
   const cleanKey = apiKey.trim();
 
   let contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
@@ -318,7 +361,8 @@ export async function directGeminiGenerateContent(
     };
   }
 
-  const modelsToTry = Array.from(new Set([preferredModel, ...GEMINI_MODEL_CANDIDATES])).filter(Boolean);
+  const resolvedPreferred = resolveSupportedGeminiModel(preferredModel);
+  const modelsToTry = Array.from(new Set([resolvedPreferred, ...GEMINI_MODEL_CANDIDATES])).filter(Boolean);
   let lastErrorMsg = 'Google Gemini API error.';
 
   for (const modelId of modelsToTry) {
@@ -335,22 +379,191 @@ export async function directGeminiGenerateContent(
       const errJson = await res.json().catch(() => ({}));
       const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
       lastErrorMsg = formatGeminiFriendlyError(rawMsg, res.status);
-      // Only fall back to secondary model if endpoint reports 404 model-not-found
-      if (res.status === 404 || /NOT_FOUND|not found for API version/i.test(rawMsg)) {
+      if (res.status === 404 || /NOT_FOUND|not found for API version|not supported/i.test(rawMsg)) {
         continue;
       }
       throw new Error(lastErrorMsg);
     }
 
     const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text || !text.trim()) {
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const text = parts.map((p: any) => p?.text || '').join('').trim();
+    if (!text) {
       throw new Error('Gemini returned an empty response. Please try again.');
     }
-    return text.trim();
+    return { text, usedModel: cleanModel };
   }
 
   throw new Error(lastErrorMsg);
+}
+
+/**
+ * Direct Multi-Turn xAI Grok REST API call (used when backend proxy is unreachable or in APK).
+ */
+export async function directGrokGenerateContent(
+  apiKey: string,
+  promptOrMessages: string | Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>,
+  systemInstruction?: string
+): Promise<{ text: string; usedModel: string }> {
+  const cleanKey = apiKey.trim();
+  const grokMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+
+  if (systemInstruction) {
+    grokMessages.push({ role: 'system', content: systemInstruction });
+  }
+
+  if (typeof promptOrMessages === 'string') {
+    grokMessages.push({ role: 'user', content: promptOrMessages });
+  } else {
+    for (const m of promptOrMessages) {
+      const txt = (m?.text || '').trim();
+      if (!txt) continue;
+      grokMessages.push({
+        role: m.sender === 'assistant' || m.sender === 'model' ? 'assistant' : 'user',
+        content: txt
+      });
+    }
+  }
+
+  let lastErrMsg = 'xAI Grok request failed.';
+  for (const modelName of GROK_MODEL_CANDIDATES) {
+    const res = await fetch('https://api.x.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cleanKey}`
+      },
+      body: JSON.stringify({
+        model: modelName,
+        messages: grokMessages,
+        temperature: 0.7
+      })
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null);
+      const rawMsg = errData?.error?.message || errData?.error || `HTTP ${res.status}`;
+      lastErrMsg = formatGrokFriendlyError(String(rawMsg), res.status);
+      if (res.status === 404 || /model.*not found|does not exist/i.test(String(rawMsg))) {
+        continue;
+      }
+      throw new Error(lastErrMsg);
+    }
+
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content?.trim();
+    if (!content) {
+      throw new Error('xAI Grok returned an empty response.');
+    }
+    return { text: content, usedModel: modelName };
+  }
+
+  throw new Error(lastErrMsg);
+}
+
+/**
+ * Direct Gemini Vision REST call for Screen Assistant & Photo Captioning in standalone APK
+ */
+export async function directGeminiVisionAnalyze(
+  apiKey: string,
+  imageBase64: string,
+  prompt: string,
+  mimeType = 'image/jpeg'
+): Promise<{ text: string; usedModel: string }> {
+  const cleanKey = apiKey.trim();
+  const base64Data = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+
+  let lastErr = 'Gemini vision analysis failed.';
+  for (const modelId of GEMINI_MODEL_CANDIDATES) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType, data: base64Data } },
+              { text: prompt }
+            ]
+          }
+        ]
+      })
+    });
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
+      lastErr = formatGeminiFriendlyError(rawMsg, res.status);
+      if (res.status === 404 || /NOT_FOUND|not found/i.test(rawMsg)) {
+        continue;
+      }
+      throw new Error(lastErr);
+    }
+
+    const data = await res.json();
+    const text = (data?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('').trim();
+    if (text) {
+      return { text, usedModel: modelId };
+    }
+  }
+  throw new Error(lastErr);
+}
+
+/**
+ * Direct Gemini Image Generation REST call (for standalone Android APK)
+ */
+export async function directGeminiGenerateImage(
+  apiKey: string,
+  prompt: string,
+  aspectRatio = '1:1'
+): Promise<{ imageUrl: string; model: string }> {
+  const cleanKey = apiKey.trim();
+  const validRatios = ['1:1', '3:4', '4:3', '9:16', '16:9'];
+  const selectedRatio = validRatios.includes(aspectRatio) ? aspectRatio : '1:1';
+  const modelCandidates = [GEMINI_IMAGE_MODEL, 'gemini-nano-banana-2.1'];
+  let lastError = 'Image generation failed.';
+
+  for (const modelId of modelCandidates) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt.trim() }] }],
+        generationConfig: {
+          imageConfig: {
+            aspectRatio: selectedRatio
+          }
+        }
+      })
+    });
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      const rawMsg = errJson?.error?.message || `Google Gemini Image API error (${res.status})`;
+      lastError = formatGeminiFriendlyError(rawMsg, res.status);
+      if (res.status === 404 || /NOT_FOUND|not found/i.test(rawMsg)) {
+        continue;
+      }
+      throw new Error(lastError);
+    }
+
+    const data = await res.json();
+    for (const part of data?.candidates?.[0]?.content?.parts || []) {
+      if (part?.inlineData?.data) {
+        const mime = part.inlineData.mimeType || 'image/png';
+        return {
+          imageUrl: `data:${mime};base64,${part.inlineData.data}`,
+          model: modelId
+        };
+      }
+    }
+    lastError = 'Model completed request without image data. Try refining your prompt.';
+  }
+
+  throw new Error(lastError);
 }
 
 export interface UnifiedChatResult {
@@ -363,9 +576,9 @@ export interface UnifiedChatResult {
 
 /**
  * Unified AI Chat pipeline for Text Chat, Voice Studio, and Dashboard Orb.
- * 1. Always reads latest saved API keys from localStorage merged with React state.
- * 2. Routes via backend /api/chat first; if unreachable (e.g. Android APK offline proxy), calls Gemini REST directly.
- * 3. Surfaces real API/quota/network errors transparently when an API key is configured—never replaces real failures with static intros.
+ * 1. Reads latest saved API keys & provider preferences from localStorage merged with React state.
+ * 2. Routes via backend /api/chat first; falls back cleanly to direct Gemini or Grok REST (essential on APK!).
+ * 3. Honors selectedVoiceModelId in voice mode and defaultAiProvider ('gemini' | 'grok' | 'hybrid' | 'local').
  */
 export async function sendUnifiedAiChat(params: {
   messages: Array<{ sender: 'user' | 'assistant'; text: string }>;
@@ -383,7 +596,16 @@ export async function sendUnifiedAiChat(params: {
 
   const latestUserMsg = [...params.messages].reverse().find(m => m.sender === 'user')?.text || '';
   const hasUserGeminiKey = settings.customGeminiApiKey.length > 0 && settings.geminiEnabled !== false;
-  const hasUserGrokKey = settings.customGrokApiKey.length > 0 && settings.grokEnabled;
+  const hasUserGrokKey =
+    settings.customGrokApiKey.length > 0 &&
+    (settings.grokEnabled || settings.defaultAiProvider === 'grok');
+  const hasAnyCloudKey = hasUserGeminiKey || hasUserGrokKey;
+
+  const preferredModel = resolveSupportedGeminiModel(
+    params.isVoiceMode
+      ? settings.selectedVoiceModelId || settings.aiModel
+      : settings.aiModel
+  );
 
   // 1. Try Backend /api/chat first
   let backendExplicitError: string | null = null;
@@ -395,17 +617,17 @@ export async function sendUnifiedAiChat(params: {
         personality: settings.activePersonality,
         voiceIdentity: settings.activeIdentity,
         customPersonalityPrompt: settings.customPersonalityPrompt,
-        customGeminiKey: settings.customGeminiApiKey,
-        customGrokApiKey: settings.customGrokApiKey,
-        defaultProvider: settings.defaultAiProvider,
-        aiFallbackEnabled: settings.aiFallbackEnabled,
+        customGeminiKey: hasUserGeminiKey ? settings.customGeminiApiKey : '',
+        customGrokApiKey: hasUserGrokKey ? settings.customGrokApiKey : '',
+        defaultProvider: settings.defaultAiProvider || 'gemini',
+        aiFallbackEnabled: settings.aiFallbackEnabled !== false,
         isVoiceMode: params.isVoiceMode,
         memories: params.memories,
         memoryEnabled: settings.memoryEnabled,
         assistantNickname: settings.assistantNickname || 'Zuzu',
         userNickname: settings.userNickname || 'Friend',
         gfIntensity: settings.gfIntensity || 'sweet',
-        model: settings.aiModel || GEMINI_PRIMARY_MODEL
+        model: preferredModel
       })
     });
 
@@ -413,11 +635,10 @@ export async function sendUnifiedAiChat(params: {
     if (contentType.includes('application/json')) {
       const data = await res.json();
       if (res.ok && data?.reply && typeof data.reply === 'string' && data.reply.trim().length > 0) {
-        // If user HAS a custom key saved, do NOT settle for local-engine placeholder if backend somehow didn't use it
-        if (!hasUserGeminiKey || data.isCloudAI || settings.defaultAiProvider === 'local') {
+        if (!hasAnyCloudKey || data.isCloudAI || settings.defaultAiProvider === 'local') {
           return {
             reply: data.reply.trim(),
-            model: data.model || GEMINI_PRIMARY_MODEL,
+            model: data.model || preferredModel,
             isCloudAI: Boolean(data.isCloudAI),
             requiresKey: Boolean(data.requiresKey)
           };
@@ -427,31 +648,60 @@ export async function sendUnifiedAiChat(params: {
         backendExplicitError = String(data.error);
       }
     }
-  } catch (networkErr: any) {
-    console.warn('[Zuzu AI] Backend /api/chat unreachable, checking direct Gemini call:', networkErr?.message);
+  } catch {
+    // Backend unreachable; fall through to direct provider REST calls
   }
 
-  // 2. If user has Gemini API Key saved, try direct Gemini REST call cleanly (critical for standalone Android APK!)
-  if (hasUserGeminiKey && settings.defaultAiProvider !== 'local') {
-    try {
-      const targetModel = settings.aiModel || GEMINI_PRIMARY_MODEL;
-      const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
-      const reply = await directGeminiGenerateContent(
-        settings.customGeminiApiKey,
-        params.messages,
-        sysPrompt,
-        targetModel
-      );
+  // 2. Direct Client Provider Pipeline (Critical for Android APK / Offline Proxy)
+  if (hasAnyCloudKey && settings.defaultAiProvider !== 'local') {
+    const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
+    const providerOrder: Array<'gemini' | 'grok'> =
+      settings.defaultAiProvider === 'grok'
+        ? [
+            ...(hasUserGrokKey ? (['grok'] as const) : []),
+            ...(settings.aiFallbackEnabled !== false && hasUserGeminiKey ? (['gemini'] as const) : [])
+          ]
+        : [
+            ...(hasUserGeminiKey ? (['gemini'] as const) : []),
+            ...(settings.aiFallbackEnabled !== false && hasUserGrokKey ? (['grok'] as const) : [])
+          ];
+
+    let lastProviderError = backendExplicitError || '';
+    for (const provider of providerOrder) {
+      try {
+        if (provider === 'grok') {
+          const grokRes = await directGrokGenerateContent(
+            settings.customGrokApiKey,
+            params.messages,
+            sysPrompt
+          );
+          return {
+            reply: grokRes.text,
+            model: grokRes.usedModel,
+            isCloudAI: true
+          };
+        } else {
+          const geminiRes = await directGeminiGenerateContent(
+            settings.customGeminiApiKey,
+            params.messages,
+            sysPrompt,
+            preferredModel
+          );
+          return {
+            reply: geminiRes.text,
+            model: geminiRes.usedModel,
+            isCloudAI: true
+          };
+        }
+      } catch (directErr: any) {
+        lastProviderError = directErr?.message || lastProviderError || `${provider} API failed.`;
+      }
+    }
+
+    if (lastProviderError) {
       return {
-        reply,
-        model: targetModel,
-        isCloudAI: true
-      };
-    } catch (directErr: any) {
-      const msg = directErr?.message || backendExplicitError || 'Failed to get response from Google Gemini.';
-      return {
-        reply: msg,
-        model: 'gemini-error',
+        reply: lastProviderError,
+        model: settings.defaultAiProvider === 'grok' ? 'grok-error' : 'gemini-error',
         isCloudAI: false,
         isError: true
       };

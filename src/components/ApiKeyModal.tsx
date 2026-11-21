@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Key, 
   Sparkles, 
@@ -9,7 +9,6 @@ import {
   X, 
   ExternalLink, 
   RefreshCw,
-  Cpu,
   Lock
 } from 'lucide-react';
 import { playHapticSound } from '../utils/audio';
@@ -39,6 +38,13 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     success?: boolean;
     message?: string;
   } | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setKeyInput(currentKey || '');
+      setTestStatus(null);
+    }
+  }, [isOpen, currentKey]);
 
   if (!isOpen) return null;
 
