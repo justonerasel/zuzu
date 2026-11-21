@@ -124,134 +124,207 @@ export const VOICE_IDENTITIES: Record<VoiceIdentity, VoiceIdentityConfig> = {
   male: {
     id: 'male',
     name: 'Male Zuzu',
-    tagline: 'Deep, crisp, articulate & authoritative',
-    description: 'Commanding male resonance with natural pacing and crisp technical cadence.',
+    tagline: 'Firm, articulate, balanced & warm',
+    description: 'Natural male resonance powered by Gemini neural voice with crisp clarity.',
     genderBadge: '♂ MALE',
-    defaultVoiceId: 'nPczCjzI2devNBz1zQrb', // Brian (Free Premade Voice)
-    voiceName: 'Brian (ElevenLabs Premade)',
+    defaultVoiceId: 'Orus',
+    voiceName: 'Orus (Gemini Voice)',
     avatarGradient: 'from-cyan-500 via-blue-600 to-indigo-900',
     orbColorPrimary: '#00f2fe',
     orbColorSecondary: '#4facfe',
     borderColor: 'border-cyan-500/40',
     shadowColor: 'shadow-cyan-500/30',
     bengaliPromptName: 'মেল জুজু',
-    characteristics: ['Deep timbre', 'Crisp articulation', 'Natural cadence', 'High clarity']
+    characteristics: ['Firm clarity', 'Balanced tone', 'Natural cadence', 'Conversational']
   },
   female: {
     id: 'female',
     name: 'Female Zuzu',
     tagline: 'Warm, melodic, expressive & empathetic',
-    description: 'Luminous female tone with gentle warmth, rich inflections, and vibrant presence.',
+    description: 'Natural female tone powered by Gemini neural voice with rich warmth and gentle presence.',
     genderBadge: '♀ FEMALE',
-    defaultVoiceId: 'EXAVITQu4vr4xnSDxMaL', // Sarah (Free Premade Voice)
-    voiceName: 'Sarah (ElevenLabs Premade)',
+    defaultVoiceId: 'Kore',
+    voiceName: 'Kore (Gemini Voice)',
     avatarGradient: 'from-fuchsia-500 via-rose-500 to-purple-900',
     orbColorPrimary: '#f43f5e',
     orbColorSecondary: '#d946ef',
     borderColor: 'border-rose-500/40',
     shadowColor: 'shadow-rose-500/30',
     bengaliPromptName: 'ফিমেল জুজু',
-    characteristics: ['Melodic resonance', 'Warm inflection', 'Expressive pitch', 'Gentle presence']
+    characteristics: ['Melodic warmth', 'Natural inflection', 'Expressive tone', 'Gentle clarity']
   }
 };
 
-export interface VoiceStyleOption {
+export interface GeminiVoiceOption {
   id: string;
   name: string;
-  styleDescription: string;
-  genderLabel: 'male' | 'female' | 'neutral';
+  gender: VoiceIdentity;
   toneTag: string;
-  previewSample: string;
-  recommendedPitch: number;
-  recommendedRate: number;
-}
-
-export const VOICE_STYLE_OPTIONS: VoiceStyleOption[] = [
-  {
-    id: 'kore_firm',
-    name: 'Kore (Firm & Melodic)',
-    styleDescription: 'Firm, confident, melodic feminine presence with articulate cadence.',
-    genderLabel: 'female',
-    toneTag: 'Firm & Melodic',
-    previewSample: "হুম বস, আপনার কথাই আমি ভাবতেছিলাম! I am Kore, firm and melodic.",
-    recommendedPitch: 1.12,
-    recommendedRate: 1.0
-  },
-  {
-    id: 'sarah_soft',
-    name: 'Sarah (Soft & Sweet)',
-    styleDescription: 'Delicate, soothing, warm and affectionate companion tone.',
-    genderLabel: 'female',
-    toneTag: 'Sweet & Caring',
-    previewSample: "Hi sweetheart... I'm right here with you. Take a deep breath.",
-    recommendedPitch: 1.2,
-    recommendedRate: 0.98
-  },
-  {
-    id: 'aria_expressive',
-    name: 'Aria (Expressive & Radiant)',
-    styleDescription: 'Vibrant, cheerful, playful with animated and radiant inflections.',
-    genderLabel: 'female',
-    toneTag: 'Vibrant & Playful',
-    previewSample: "আরে বস! চলুন আজকে দারুণ কিছু করে দেখাই! Ready for action!",
-    recommendedPitch: 1.25,
-    recommendedRate: 1.05
-  },
-  {
-    id: 'brian_deep',
-    name: 'Brian (Deep & Authoritative)',
-    styleDescription: 'Deep, crisp, commanding male resonance with high clarity.',
-    genderLabel: 'male',
-    toneTag: 'Authoritative',
-    previewSample: "Greetings Boss. Systems are fully calibrated and operational.",
-    recommendedPitch: 0.85,
-    recommendedRate: 1.0
-  },
-  {
-    id: 'george_warm',
-    name: 'George (Warm Baritone)',
-    styleDescription: 'Warm, executive British-inspired baritone with calm acoustic depth.',
-    genderLabel: 'male',
-    toneTag: 'Executive Baritone',
-    previewSample: "Good day Boss. How may I direct our next workflow with precision?",
-    recommendedPitch: 0.92,
-    recommendedRate: 1.02
-  }
-];
-
-export interface VoiceModelOption {
-  id: string;
-  name: string;
   description: string;
-  apiModelId: string;
-  availability: 'Available' | 'Requires Live API' | 'Preview Tier';
-  isLiveSupported: boolean;
+  previewSample: string;
+  featured?: boolean;
 }
 
-export const VOICE_MODELS: VoiceModelOption[] = [
+export const GEMINI_VOICE_OPTIONS: GeminiVoiceOption[] = [
+  // Female Gemini Prebuilt Voices
   {
-    id: 'gemini-4-hydrogen',
-    name: 'Gemini 4 Hydrogen (Recommended)',
-    description: 'High-speed bilingual English & Bengali reasoning and conversational voice.',
-    apiModelId: 'gemini-4-hydrogen',
-    availability: 'Available',
-    isLiveSupported: true
+    id: 'Kore',
+    name: 'Kore',
+    gender: 'female',
+    toneTag: 'Firm & Melodic',
+    description: 'Confident, poised feminine voice with warm clarity and natural rhythm.',
+    previewSample: "Hi there! I'm Kore. Whenever you're ready, just ask and we'll figure it out together.",
+    featured: true
   },
   {
-    id: 'gemini-3.1-flash-lite',
-    name: 'Gemini 3.1 Flash Lite',
-    description: 'Ultra-lightweight low-latency model for quick everyday voice commands.',
-    apiModelId: 'gemini-3.1-flash-lite',
-    availability: 'Available',
-    isLiveSupported: true
+    id: 'Aoede',
+    name: 'Aoede',
+    gender: 'female',
+    toneTag: 'Breezy & Warm',
+    description: 'Light, effortless conversational warmth suited for everyday chat.',
+    previewSample: "Hey! I'm Aoede. Nice to talk with you — what's on your mind right now?"
   },
   {
-    id: 'gemini-3.8-live',
-    name: 'Gemini 3.8 Live Native Audio',
-    description: 'Live conversational tier (automatically uses Gemini 4 Hydrogen for turn-based voice).',
-    apiModelId: 'gemini-3.8-live',
-    availability: 'Requires Live API',
-    isLiveSupported: true
+    id: 'Zephyr',
+    name: 'Zephyr',
+    gender: 'female',
+    toneTag: 'Bright & Vibrant',
+    description: 'Energetic, upbeat tone that feels lively and encouraging.',
+    previewSample: "Hey! I'm Zephyr, bright and ready to help with whatever you're working on today!"
+  },
+  {
+    id: 'Leda',
+    name: 'Leda',
+    gender: 'female',
+    toneTag: 'Youthful & Natural',
+    description: 'Fresh, approachable feminine timbre with smooth pacing.',
+    previewSample: "Hi! I'm Leda. Let's keep things easy and get straight to what you need."
+  },
+  {
+    id: 'Callirrhoe',
+    name: 'Callirrhoe',
+    gender: 'female',
+    toneTag: 'Easy-going',
+    description: 'Relaxed, calm presence for gentle late-night or study conversations.',
+    previewSample: "Hello there, I'm Callirrhoe. Take your time — I'm right here listening."
+  },
+  {
+    id: 'Autonoe',
+    name: 'Autonoe',
+    gender: 'female',
+    toneTag: 'Bright & Clear',
+    description: 'Crisp, articulate delivery great for quick explanations and facts.',
+    previewSample: "Hi, I'm Autonoe. Ask me anything and I'll walk you through it clearly."
+  },
+  {
+    id: 'Despina',
+    name: 'Despina',
+    gender: 'female',
+    toneTag: 'Smooth & Poised',
+    description: 'Velvety, reassuring tone with expressive emotional nuance.',
+    previewSample: "Hello! I'm Despina. Let's make today feel a little smoother together."
+  },
+  {
+    id: 'Erinome',
+    name: 'Erinome',
+    gender: 'female',
+    toneTag: 'Clear & Expressive',
+    description: 'Dynamic, story-friendly voice with balanced vocal warmth.',
+    previewSample: "Hey there, I'm Erinome. Tell me what you're curious about today!"
+  },
+  {
+    id: 'Sulafat',
+    name: 'Sulafat',
+    gender: 'female',
+    toneTag: 'Warm & Caring',
+    description: 'Gentle, supportive companion voice with comforting warmth.',
+    previewSample: "হ্যালো! আমি সুলাফাত। আপনার যেকোনো কথায় আমি পাশে আছি।"
+  },
+
+  // Male Gemini Prebuilt Voices
+  {
+    id: 'Orus',
+    name: 'Orus',
+    gender: 'male',
+    toneTag: 'Firm & Crisp',
+    description: 'Grounded, crisp male voice built for clear everyday assistance.',
+    previewSample: "Hey there, I'm Orus. Everything is ready whenever you want to dive in.",
+    featured: true
+  },
+  {
+    id: 'Puck',
+    name: 'Puck',
+    gender: 'male',
+    toneTag: 'Upbeat & Friendly',
+    description: 'Cheerful, conversational male voice with quick witty energy.',
+    previewSample: "Hey! I'm Puck. Got an idea or a tough question? Let's tackle it!"
+  },
+  {
+    id: 'Charon',
+    name: 'Charon',
+    gender: 'male',
+    toneTag: 'Informative & Deep',
+    description: 'Rich, calm baritone well-suited for deep explanations and focus.',
+    previewSample: "Good to hear from you. I'm Charon — let's explore whatever you need."
+  },
+  {
+    id: 'Fenrir',
+    name: 'Fenrir',
+    gender: 'male',
+    toneTag: 'Energetic',
+    description: 'Expressive, bold tone with lively conversational momentum.',
+    previewSample: "Hey! I'm Fenrir. Ready when you are — let's get things moving!"
+  },
+  {
+    id: 'Iapetus',
+    name: 'Iapetus',
+    gender: 'male',
+    toneTag: 'Clear & Steady',
+    description: 'Clean, composed male voice with crisp pronunciation.',
+    previewSample: "Hello, I'm Iapetus. Ask away and I'll give you a clear answer."
+  },
+  {
+    id: 'Umbriel',
+    name: 'Umbriel',
+    gender: 'male',
+    toneTag: 'Easy-going',
+    description: 'Laid-back, natural friend-like male tone without stiffness.',
+    previewSample: "Hey, I'm Umbriel. Just tell me what you're thinking and we'll sort it out."
+  },
+  {
+    id: 'Algieba',
+    name: 'Algieba',
+    gender: 'male',
+    toneTag: 'Smooth & Warm',
+    description: 'Warm, even-toned male companion voice with pleasant resonance.',
+    previewSample: "Hi there, I'm Algieba. Let me know how I can help out today."
+  },
+  {
+    id: 'Enceladus',
+    name: 'Enceladus',
+    gender: 'male',
+    toneTag: 'Soft & Calm',
+    description: 'Gentle, low-key breathy voice ideal for quiet conversations.',
+    previewSample: "হ্যালো! আমি এন্সেলাডাস। একদম শান্তভাবে বলুন, কী নিয়ে কথা বলব?"
   }
 ];
+
+export function getGeminiVoiceByName(voiceName?: string): GeminiVoiceOption | undefined {
+  if (!voiceName) return undefined;
+  const clean = voiceName.trim().toLowerCase();
+  return GEMINI_VOICE_OPTIONS.find(v => v.id.toLowerCase() === clean);
+}
+
+export function getDefaultGeminiVoiceForIdentity(identity: VoiceIdentity): GeminiVoiceOption {
+  return identity === 'female'
+    ? GEMINI_VOICE_OPTIONS.find(v => v.id === 'Kore')!
+    : GEMINI_VOICE_OPTIONS.find(v => v.id === 'Orus')!;
+}
+
+export function resolveGeminiVoiceForSettings(voiceName: string | undefined, identity: VoiceIdentity): GeminiVoiceOption {
+  const matched = getGeminiVoiceByName(voiceName);
+  if (matched) return matched;
+  return getDefaultGeminiVoiceForIdentity(identity);
+}
+
 

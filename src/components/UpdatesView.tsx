@@ -285,16 +285,16 @@ export const UpdatesView: React.FC<UpdatesViewProps> = ({ onForceUpdateTriggered
           <div className="grid grid-cols-1 gap-2 pt-1">
             {[
               {
-                title: 'Google Gemini 4 Hydrogen AI Engine',
-                desc: 'Upgraded all text and voice interactions to models/gemini-4-hydrogen for reliable bilingual English & Bengali responses.'
+                title: 'Unified Google Gemini Voice & Text Engine',
+                desc: 'One Google Gemini API key powers real-time streaming text chat, curated Gemini neural voices, screen vision, and image creation.'
+              },
+              {
+                title: 'Instant Voice Listening & Interruption',
+                desc: 'Tapping the voice button or orb immediately starts live listening with instant tap-to-interrupt and zero startup greeting delays.'
               },
               {
                 title: 'Calibrated Whistle & Snap Audio Triggers',
                 desc: 'Acoustic trigger detection tuned to recognize mouth whistles (শিস) and finger snaps accurately while filtering out normal conversation.'
-              },
-              {
-                title: 'Smart Contextual Greetings',
-                desc: 'Automatic wake-up greetings delivering respectful acknowledgment ("Yes Boss"), live time, local weather, day, and date.'
               },
               {
                 title: 'Edge-to-Edge & Scaled App Icons',
@@ -328,7 +328,7 @@ export const UpdatesView: React.FC<UpdatesViewProps> = ({ onForceUpdateTriggered
           <span>Application Environment &amp; Low-Latency Architecture</span>
         </div>
         <div>Target Platform: Android 9.0 (API 28) - 16 (API 36) / Mobile Web</div>
-        <div>Neural Backend: Google Gemini 4 Hydrogen + ElevenLabs Multilingual V2</div>
+        <div>Neural Backend: Google Gemini Unified Voice, Vision &amp; Text Engine</div>
         <div>OTA Delivery: Seamless in-app delta verification via Check Status</div>
       </div>
     </div>

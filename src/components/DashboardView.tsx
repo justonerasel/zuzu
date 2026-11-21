@@ -23,7 +23,12 @@ import {
   Send
 } from 'lucide-react';
 import { ActiveTab, AppSettings, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
-import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
+import {
+  PERSONALITIES,
+  VOICE_IDENTITIES,
+  getDefaultGeminiVoiceForIdentity,
+  resolveGeminiVoiceForSettings
+} from '../constants/personalities';
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { BengaliMarqueeWidget } from './BengaliMarqueeWidget';
 import { WeatherCard } from './WeatherCard';
@@ -32,16 +37,11 @@ import { checkMicrophonePermission } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import { detectVoiceSwitchIntent, detectVoiceActionIntent } from '../utils/intentDetector';
 import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
-import { 
-  getPersonalizedGreeting, 
-  buildSmartWakeGreeting, 
-  getCachedWeatherSummary, 
-  refreshWeatherCacheSilently 
-} from '../utils/greetingHelper';
+import { getPersonalizedGreeting } from '../utils/greetingHelper';
 import { FacebookAutomationModal, FacebookTaskType } from './FacebookAutomationModal';
 import { ScreenAssistantModal } from './ScreenAssistantModal';
 import { NotesRemindersModal, getNotes, getReminders, executeConfirmedMessageIntent } from './NotesRemindersModal';
-import { sendUnifiedAiChat } from '../utils/apiConfig';
+import { streamUnifiedAiChat } from '../utils/apiConfig';
 import { startVoiceCapture, VoiceCaptureController } from '../utils/speech';
 import { setMicBusyForActiveSession } from '../utils/backgroundService';
 
@@ -99,9 +99,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Audio & Speech Recognition Refs
   const captureControllerRef = useRef<VoiceCaptureController | null>(null);
+  const aiAbortControllerRef = useRef<AbortController | null>(null);
   const currentSessionRef = useRef<VoiceSession | null>(null);
   const isCancelledRef = useRef<boolean>(false);
-  const hasGreetedSessionRef = useRef<boolean>(false);
   const settingsRef = useRef<AppSettings>(settings);
 
   useEffect(() => {
@@ -116,6 +116,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     window.addEventListener('zuzu-notes-reminders-changed', syncCounts);
     return () => {
       window.removeEventListener('zuzu-notes-reminders-changed', syncCounts);
+      aiAbortControllerRef.current?.abort();
+      aiAbortControllerRef.current = null;
       captureControllerRef.current?.cancel();
       captureControllerRef.current = null;
       setMicBusyForActiveSession(false);
@@ -228,18 +230,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
-  // Start voice interaction using smart greeting on fresh tap + dual-mode Android/Web Speech capture
+  // Immediately verify microphone permission and start listening (no automatic greeting speech)
   const startVoiceInteraction = async () => {
     isCancelledRef.current = false;
     setTranscriptText('');
+    setLastAiResponse(null);
     stopSpeaking();
+
+    if (aiAbortControllerRef.current) {
+      aiAbortControllerRef.current.abort();
+      aiAbortControllerRef.current = null;
+    }
 
     if (captureControllerRef.current) {
       captureControllerRef.current.cancel();
       captureControllerRef.current = null;
     }
 
-    // Check mic permission first cleanly
     try {
       const perm = await checkMicrophonePermission();
       if (perm.state !== 'granted') {
@@ -248,72 +255,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
     } catch {}
 
-    if (hasGreetedSessionRef.current) {
-      setLastAiResponse(null);
-      await beginMicCapture();
-      return;
-    }
-
-    hasGreetedSessionRef.current = true;
-    setMicBusyForActiveSession(true);
-    setOrbState('speaking');
-    setStatusText('GREETING BOSS...');
-    setIsVoiceActive(true);
-
-    const weather = await refreshWeatherCacheSilently(settings).catch(() => getCachedWeatherSummary());
-    if (isCancelledRef.current) {
-      setMicBusyForActiveSession(false);
-      setIsVoiceActive(false);
-      setOrbState('idle');
-      return;
-    }
-
-    const smartGreeting = buildSmartWakeGreeting(settings, { weather });
-    setLastAiResponse(smartGreeting);
-
-    const voiceId =
-      settings.activeIdentity === 'female'
-        ? settings.elevenLabsFemaleVoiceId
-        : settings.elevenLabsMaleVoiceId;
-
-    speakText({
-      text: smartGreeting,
-      voiceIdentity: settings.activeIdentity,
-      customVoiceId: voiceId,
-      customApiKey: settings.customElevenLabsApiKey,
-      stability: settings.stability,
-      similarityBoost: settings.similarityBoost,
-      speechRate: settings.speechRate,
-      volume: settings.volume ?? 1.0,
-      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId,
-      onStart: () => {
-        if (!isCancelledRef.current) {
-          setOrbState('speaking');
-          setStatusText('SPEAKING...');
-        }
-      },
-      onEnd: () => {
-        if (!isCancelledRef.current) {
-          beginMicCapture();
-        } else {
-          setMicBusyForActiveSession(false);
-        }
-      },
-      onError: () => {
-        if (!isCancelledRef.current) {
-          beginMicCapture();
-        } else {
-          setMicBusyForActiveSession(false);
-        }
-      }
-    });
+    await beginMicCapture();
   };
 
   // Stop / Cancel voice interaction
   const stopVoiceInteraction = () => {
     isCancelledRef.current = true;
-    hasGreetedSessionRef.current = false;
     setMicBusyForActiveSession(false);
+    if (aiAbortControllerRef.current) {
+      aiAbortControllerRef.current.abort();
+      aiAbortControllerRef.current = null;
+    }
     if (captureControllerRef.current) {
       captureControllerRef.current.cancel();
       captureControllerRef.current = null;
@@ -323,6 +275,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setStatusText('ZUZU AI OFF • TAP TO START');
     setIsVoiceActive(false);
     playHapticSound('listen_stop');
+  };
+
+  // Handle Orb / Status button clicks with instant speech interruption
+  const handleOrbTap = () => {
+    if (orbState === 'speaking') {
+      stopSpeaking();
+      beginMicCapture();
+      return;
+    }
+    if (isVoiceActive) {
+      stopVoiceInteraction();
+      return;
+    }
+    startVoiceInteraction();
   };
 
   // Process User Speech
@@ -416,7 +382,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const switchIntent = detectVoiceSwitchIntent(cleanedSpoken, currentId);
     if (switchIntent.isSwitchCommand && switchIntent.targetIdentity) {
       const newIdentity = switchIntent.targetIdentity;
-      onUpdateSettings({ activeIdentity: newIdentity });
+      onUpdateSettings({
+        activeIdentity: newIdentity,
+        geminiVoiceName: getDefaultGeminiVoiceForIdentity(newIdentity).id
+      });
       playHapticSound('switch');
 
       const confirmation = switchIntent.confirmationSpoken;
@@ -478,24 +447,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       saveVoiceSession(currentSessionRef.current);
     }
 
-    // 3. Request AI Response via unified AI pipeline
+    // 3. Request AI Response via fast unified Gemini streaming pipeline
     try {
       const historyContext = (currentSessionRef.current?.messages || []).map(m => ({
         sender: m.sender,
         text: m.text
       }));
 
-      const aiResult = await sendUnifiedAiChat({
+      if (aiAbortControllerRef.current) {
+        aiAbortControllerRef.current.abort();
+      }
+      const controller = new AbortController();
+      aiAbortControllerRef.current = controller;
+
+      const aiResult = await streamUnifiedAiChat({
         messages: historyContext.length > 0 ? historyContext : [{ sender: 'user', text: cleanedSpoken }],
         settings: latestSettings,
         memories: activeMemories,
-        isVoiceMode: true
+        isVoiceMode: true,
+        signal: controller.signal
       });
+
+      if (controller.signal.aborted || isCancelledRef.current) {
+        return;
+      }
 
       if (aiResult.isError) {
         setLastAiResponse(aiResult.reply);
         setOrbState('idle');
-        setStatusText('AI PROVIDER ERROR');
+        setStatusText('GEMINI API ERROR');
         setIsVoiceActive(false);
         if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
           onRequestApiKeyModal('Voice Assistant');
@@ -524,44 +504,45 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       speakSpokenReply(reply, currentId);
     } catch (err: any) {
+      if (err?.name === 'AbortError' || isCancelledRef.current) {
+        return;
+      }
       setOrbState('idle');
       setStatusText('ZUZU AI OFF • TAP TO START');
-      setLastAiResponse(err?.message || 'Could not reach AI service.');
+      setLastAiResponse(err?.message || 'Could not reach Gemini service.');
       setIsVoiceActive(false);
+    } finally {
+      aiAbortControllerRef.current = null;
     }
   };
 
-  // Speak response
+  // Speak response using configured Gemini prebuilt neural voice
   const speakSpokenReply = (textToSpeak: string, identity: VoiceIdentity) => {
     const latestSettings = settingsRef.current;
-    setOrbState('speaking');
-    setStatusText('SPEAKING...');
-    setIsVoiceActive(true);
+    const resolved = resolveGeminiVoiceForSettings(latestSettings.geminiVoiceName, identity);
+    const voiceName =
+      resolved.gender === identity ? resolved.id : getDefaultGeminiVoiceForIdentity(identity).id;
 
-    const voiceId =
-      identity === 'female'
-        ? latestSettings.elevenLabsFemaleVoiceId
-        : latestSettings.elevenLabsMaleVoiceId;
+    setOrbState('speaking');
+    setStatusText('SPEAKING... • TAP TO INTERRUPT');
+    setIsVoiceActive(true);
 
     speakText({
       text: textToSpeak,
       voiceIdentity: identity,
-      customVoiceId: voiceId,
-      customApiKey: latestSettings.customElevenLabsApiKey,
-      stability: latestSettings.stability,
-      similarityBoost: latestSettings.similarityBoost,
+      voiceName,
+      customGeminiKey: latestSettings.customGeminiApiKey,
       speechRate: latestSettings.speechRate,
       volume: latestSettings.volume ?? 1.0,
-      voiceStyleId: latestSettings.selectedVoiceStyleId || latestSettings.selectedVoiceOptionId,
       onStart: () => {
         setOrbState('speaking');
-        setStatusText('SPEAKING...');
+        setStatusText('SPEAKING... • TAP TO INTERRUPT');
       },
       onEnd: () => {
         setOrbState('idle');
         setStatusText('VOICE SESSION ACTIVE');
         if (settingsRef.current.continuousListening && !isCancelledRef.current) {
-          setTimeout(() => beginMicCapture(), 500);
+          setTimeout(() => beginMicCapture(), 350);
         } else {
           setIsVoiceActive(false);
           setStatusText('ZUZU AI OFF • TAP TO START');
@@ -643,14 +624,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           rotationSpeed={settings.orbRotationSpeed}
           glowIntensity={settings.orbGlowIntensity}
           particleDensity={settings.orbParticleDensity}
-          onClick={isVoiceActive ? stopVoiceInteraction : startVoiceInteraction}
+          onClick={handleOrbTap}
           size={255}
         />
 
         {/* 3. Compact Voice Status Pill */}
         <div className="mt-1 flex items-center justify-center">
           <button
-            onClick={isVoiceActive ? stopVoiceInteraction : startVoiceInteraction}
+            onClick={handleOrbTap}
             className={`px-4 py-1.5 rounded-full text-[11px] font-bold font-mono tracking-wider transition-all duration-300 flex items-center gap-2 shadow-sm border ${
               orbState === 'listening'
                 ? 'bg-cyan-50 border-cyan-300 text-cyan-800 shadow-cyan-200/50 scale-105'

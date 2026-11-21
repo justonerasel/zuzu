@@ -59,7 +59,7 @@ export const ImageCreatorView: React.FC<ImageCreatorViewProps> = ({
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
-  const [activeModel, setActiveModel] = useState<string>('gemini-3.1-flash-lite-image');
+  const [activeModel, setActiveModel] = useState<string>('Gemini Image Studio');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [requiresKey, setRequiresKey] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -113,7 +113,7 @@ export const ImageCreatorView: React.FC<ImageCreatorViewProps> = ({
             aspectRatio
           );
           setGeneratedImage(direct.imageUrl);
-          setActiveModel(direct.model);
+          setActiveModel('Gemini Image Studio');
           setRequiresKey(false);
           playHapticSound('listen_start');
           return;

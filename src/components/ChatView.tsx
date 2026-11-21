@@ -8,13 +8,14 @@ import {
   Copy, 
   Check, 
   ShieldCheck,
-  AlertCircle
+  AlertCircle,
+  Square
 } from 'lucide-react';
 import { AppSettings, ChatMessage, VoiceIdentity } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { getChatMessages, saveChatMessage, clearChatHistory, getMemories, saveMemory } from '../utils/storage';
 import { playHapticSound } from '../utils/audio';
-import { sendUnifiedAiChat } from '../utils/apiConfig';
+import { streamUnifiedAiChat } from '../utils/apiConfig';
 
 interface ChatViewProps {
   settings: AppSettings;
@@ -26,10 +27,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
   const [messages, setMessages] = useState<ChatMessage[]>(() => getChatMessages());
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [streamingText, setStreamingText] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [apiErrorBanner, setApiErrorBanner] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const activeIdentity = VOICE_IDENTITIES[settings.activeIdentity];
   const activePersonality = PERSONALITIES[settings.activePersonality] || PERSONALITIES.Normal;
@@ -40,12 +43,37 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isLoading]);
+  }, [messages, isLoading, streamingText]);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
+  }, []);
+
+  const handleStopStreaming = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setStreamingText(null);
+    setIsLoading(false);
+    playHapticSound('listen_stop');
+  };
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const text = inputText.trim();
-    if (!text || isLoading) return;
+    if (!text) return;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     playHapticSound('message_sent');
     setApiErrorBanner(null);
@@ -66,6 +94,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
     const updatedMessages = [...messages, userMsg];
     setMessages(updatedMessages);
     setInputText('');
+    setStreamingText('');
     setIsLoading(true);
 
     try {
@@ -99,12 +128,20 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
         text: m.text
       }));
 
-      const aiResult = await sendUnifiedAiChat({
+      const aiResult = await streamUnifiedAiChat({
         messages: conversationContext,
         settings,
         memories: activeMemories,
-        isVoiceMode: false
+        isVoiceMode: false,
+        signal: controller.signal,
+        onDelta: (accumulated) => {
+          if (!controller.signal.aborted) {
+            setStreamingText(accumulated);
+          }
+        }
       });
+
+      if (controller.signal.aborted) return;
 
       if (aiResult.isError) {
         setApiErrorBanner(aiResult.reply);
@@ -128,9 +165,16 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
       saveChatMessage(assistantMsg);
       setMessages(prev => [...prev, assistantMsg]);
     } catch (err: any) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) {
+        return;
+      }
       setApiErrorBanner(err?.message || 'Could not complete request. Please check your connection and Gemini API key.');
       playHapticSound('listen_stop');
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
+      setStreamingText(null);
       setIsLoading(false);
     }
   };
@@ -272,7 +316,28 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
           })
         )}
 
-        {isLoading && (
+        {isLoading && streamingText && streamingText.length > 0 ? (
+          <div className="flex gap-2.5 justify-start group">
+            <div
+              className={`w-7 h-7 rounded-lg bg-gradient-to-tr ${activeIdentity.avatarGradient} p-0.5 flex-shrink-0 mt-0.5`}
+            >
+              <div className="w-full h-full bg-[#0a0d16] rounded-[6px] flex items-center justify-center">
+                <Sparkles
+                  className={`w-3.5 h-3.5 animate-pulse ${
+                    settings.activeIdentity === 'female' ? 'text-rose-400' : 'text-cyan-400'
+                  }`}
+                />
+              </div>
+            </div>
+            <div className="max-w-[82%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed bg-[#111625] text-slate-200 border border-cyan-500/25 rounded-bl-xs shadow-md">
+              <div className="text-[10px] font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
+                <span className="text-slate-300">{activeIdentity.name}</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+              </div>
+              <div className="whitespace-pre-wrap break-words">{streamingText}</div>
+            </div>
+          </div>
+        ) : isLoading ? (
           <div className="flex gap-2.5 items-center">
             <div
               className={`w-7 h-7 rounded-lg bg-gradient-to-tr ${activeIdentity.avatarGradient} p-0.5 flex-shrink-0 animate-pulse`}
@@ -291,10 +356,10 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
                 className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce"
                 style={{ animationDelay: '0.3s' }}
               ></span>
-              <span className="text-[11px] ml-1">{activeIdentity.name} is typing...</span>
+              <span className="text-[11px] ml-1">{activeIdentity.name} is thinking...</span>
             </div>
           </div>
-        )}
+        ) : null}
 
         <div ref={messagesEndRef} />
       </div>
@@ -328,11 +393,22 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
           className="flex-1 bg-[#121624] text-slate-100 placeholder-slate-400 text-xs px-4 py-2.5 rounded-2xl border border-white/10 focus:outline-none focus:border-cyan-500 transition-colors"
         />
 
+        {isLoading && (
+          <button
+            type="button"
+            onClick={handleStopStreaming}
+            className="p-2.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition-all shadow-md"
+            title="Stop Response"
+          >
+            <Square className="w-4 h-4 fill-current" />
+          </button>
+        )}
+
         <button
           type="submit"
-          disabled={!inputText.trim() || isLoading}
+          disabled={!inputText.trim()}
           className={`p-2.5 rounded-2xl text-white font-bold transition-all shadow-md ${
-            inputText.trim() && !isLoading
+            inputText.trim()
               ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:opacity-95 shadow-cyan-600/30'
               : 'bg-white/10 text-slate-400 cursor-not-allowed'
           }`}

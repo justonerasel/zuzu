@@ -1,12 +1,17 @@
 import { VoiceIdentity } from '../types';
-import { apiFetch } from './apiConfig';
+import { apiFetch, directGeminiSpeechGenerate } from './apiConfig';
 import { getNativeZuzuPlugin } from './permission';
+import { resolveGeminiVoiceForSettings } from '../constants/personalities';
+import { getAppSettings } from './storage';
 
 let currentAudio: HTMLAudioElement | null = null;
+let currentAudioObjectUrl: string | null = null;
+let currentTtsAbortController: AbortController | null = null;
 let nativeTtsHandles: Array<{ remove: () => Promise<void> | void }> = [];
 let browserSpeechFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+let speechGenerationSeq = 0;
 
-// Audio context for sound effects and analysis
+// Audio context for subtle UI sound effects
 let audioCtx: AudioContext | null = null;
 function getAudioContext(): AudioContext {
   if (!audioCtx) {
@@ -19,7 +24,6 @@ function getAudioContext(): AudioContext {
   return audioCtx;
 }
 
-// Android assistant sound effects
 export function playHapticSound(type: 'switch' | 'listen_start' | 'listen_stop' | 'message_sent'): void {
   try {
     const ctx = getAudioContext();
@@ -77,13 +81,10 @@ export function playHapticSound(type: 'switch' | 'listen_start' | 'listen_stop' 
 export interface SpeakOptions {
   text: string;
   voiceIdentity: VoiceIdentity;
-  customVoiceId?: string;
-  customApiKey?: string;
-  stability?: number;
-  similarityBoost?: number;
+  voiceName?: string;
+  customGeminiKey?: string;
   speechRate?: number;
   volume?: number;
-  voiceStyleId?: string;
   onStart?: () => void;
   onEnd?: () => void;
   onError?: (error: any) => void;
@@ -98,11 +99,40 @@ function clearNativeTtsListeners(): void {
   nativeTtsHandles = [];
 }
 
+function releaseCurrentAudioElement(): void {
+  if (currentAudio) {
+    try {
+      currentAudio.onplay = null;
+      currentAudio.onended = null;
+      currentAudio.onerror = null;
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+    } catch {}
+    currentAudio = null;
+  }
+  if (currentAudioObjectUrl) {
+    try {
+      URL.revokeObjectURL(currentAudioObjectUrl);
+    } catch {}
+    currentAudioObjectUrl = null;
+  }
+}
+
 export function stopSpeaking(): void {
+  speechGenerationSeq += 1;
+
+  if (currentTtsAbortController) {
+    try {
+      currentTtsAbortController.abort();
+    } catch {}
+    currentTtsAbortController = null;
+  }
+
   if (browserSpeechFallbackTimer) {
     clearTimeout(browserSpeechFallbackTimer);
     browserSpeechFallbackTimer = null;
   }
+
   clearNativeTtsListeners();
   const nativePlugin = getNativeZuzuPlugin();
   if (nativePlugin?.stopNativeSpeak) {
@@ -111,13 +141,8 @@ export function stopSpeaking(): void {
     } catch {}
   }
 
-  if (currentAudio) {
-    try {
-      currentAudio.pause();
-      currentAudio.currentTime = 0;
-      currentAudio = null;
-    } catch {}
-  }
+  releaseCurrentAudioElement();
+
   if (typeof window !== 'undefined' && window.speechSynthesis) {
     try {
       window.speechSynthesis.cancel();
@@ -133,16 +158,56 @@ function cleanTextForSpeech(text: string): string {
     .trim();
 }
 
+async function playAudioBlob(
+  blob: Blob,
+  seq: number,
+  safeRate: number,
+  safeVolume: number,
+  callbacks: { onStart?: () => void; onEnd?: () => void; onFallback: () => void }
+): Promise<boolean> {
+  if (seq !== speechGenerationSeq) return false;
+  releaseCurrentAudioElement();
+
+  const audioUrl = URL.createObjectURL(blob);
+  currentAudioObjectUrl = audioUrl;
+  const audio = new Audio(audioUrl);
+  currentAudio = audio;
+
+  audio.playbackRate = safeRate;
+  audio.volume = safeVolume;
+  audio.onplay = () => {
+    if (seq === speechGenerationSeq) callbacks.onStart?.();
+  };
+  audio.onended = () => {
+    releaseCurrentAudioElement();
+    if (seq === speechGenerationSeq) callbacks.onEnd?.();
+  };
+  audio.onerror = () => {
+    releaseCurrentAudioElement();
+    if (seq === speechGenerationSeq) callbacks.onFallback();
+  };
+
+  try {
+    await audio.play();
+    return true;
+  } catch {
+    releaseCurrentAudioElement();
+    return false;
+  }
+}
+
 async function speakWithDeviceFallback(params: {
   text: string;
   voiceIdentity: VoiceIdentity;
   speechRate: number;
   volume: number;
-  voiceStyleId?: string;
+  seq: number;
   onStart?: () => void;
   onEnd?: () => void;
   onError?: (err: any) => void;
 }): Promise<void> {
+  if (params.seq !== speechGenerationSeq) return;
+
   const cleanText = cleanTextForSpeech(params.text);
   if (!cleanText) {
     params.onEnd?.();
@@ -151,18 +216,8 @@ async function speakWithDeviceFallback(params: {
 
   const isBengali = /[\u0980-\u09FF]/.test(cleanText);
   const safeRate = Math.max(0.75, Math.min(1.5, params.speechRate));
-  const pitch =
-    params.voiceIdentity === 'male'
-      ? params.voiceStyleId === 'george_warm'
-        ? 0.92
-        : 0.85
-      : params.voiceStyleId === 'kore_firm'
-      ? 1.12
-      : params.voiceStyleId === 'aria_expressive'
-      ? 1.25
-      : 1.18;
+  const pitch = params.voiceIdentity === 'male' ? 0.92 : 1.12;
 
-  // 1. Try Native Android TextToSpeech on Capacitor APK (reliable even when WebView speechSynthesis is muted)
   const nativePlugin = getNativeZuzuPlugin();
   if (nativePlugin?.speakNative) {
     try {
@@ -172,27 +227,26 @@ async function speakWithDeviceFallback(params: {
         if (doneCalled) return;
         doneCalled = true;
         clearNativeTtsListeners();
-        params.onEnd?.();
+        if (params.seq === speechGenerationSeq) {
+          params.onEnd?.();
+        }
       };
 
       if (nativePlugin.addListener) {
         nativeTtsHandles.push(
           await nativePlugin.addListener('nativeTtsStart', () => {
-            params.onStart?.();
+            if (params.seq === speechGenerationSeq) params.onStart?.();
           })
         );
         nativeTtsHandles.push(
-          await nativePlugin.addListener('nativeTtsEnd', () => {
-            done();
-          })
+          await nativePlugin.addListener('nativeTtsEnd', () => done())
         );
         nativeTtsHandles.push(
-          await nativePlugin.addListener('nativeTtsError', () => {
-            done();
-          })
+          await nativePlugin.addListener('nativeTtsError', () => done())
         );
       }
 
+      if (params.seq !== speechGenerationSeq) return;
       params.onStart?.();
       await nativePlugin.speakNative({
         text: cleanText,
@@ -207,79 +261,128 @@ async function speakWithDeviceFallback(params: {
     }
   }
 
-  // 2. Web / Browser speechSynthesis fallback
   speakWithBrowserSpeech({
-    ...params,
-    text: cleanText
+    text: cleanText,
+    voiceIdentity: params.voiceIdentity,
+    speechRate: safeRate,
+    volume: params.volume,
+    seq: params.seq,
+    onStart: params.onStart,
+    onEnd: params.onEnd,
+    onError: params.onError
   });
 }
 
-// Speak via ElevenLabs backend TTS (when API key set), Native Android TTS, or Browser Speech fallback
+/**
+ * Primary TTS entrypoint powered by Google Gemini Prebuilt Neural Voices.
+ * Falls back cleanly to native Android/Browser speech only when Gemini TTS is offline or unconfigured.
+ */
 export async function speakText(options: SpeakOptions): Promise<void> {
   const {
     text,
     voiceIdentity,
-    customVoiceId,
-    customApiKey,
-    stability = 0.5,
-    similarityBoost = 0.75,
+    voiceName,
+    customGeminiKey,
     speechRate = 1.0,
     volume = 1.0,
-    voiceStyleId,
     onStart,
     onEnd,
     onError
   } = options;
 
   stopSpeaking();
+  const seq = speechGenerationSeq;
+
+  const cleanText = cleanTextForSpeech(text);
+  if (!cleanText) {
+    onEnd?.();
+    return;
+  }
+
+  const latestSettings = getAppSettings();
+  const effectiveGeminiKey = (customGeminiKey ?? latestSettings.customGeminiApiKey ?? '').trim();
+  const resolvedVoice = resolveGeminiVoiceForSettings(voiceName || latestSettings.geminiVoiceName, voiceIdentity);
 
   const safeRate = Math.max(0.75, Math.min(1.5, speechRate));
   const safeVolume = Math.max(0, Math.min(1, volume));
 
-  try {
-    // Only hit /api/tts if custom ElevenLabs key exists OR backend has one configured
-    const response = await apiFetch('/api/tts', {
-      method: 'POST',
-      body: JSON.stringify({
-        text,
-        voiceIdentity,
-        customVoiceId,
-        customApiKey,
-        stability,
-        similarityBoost
-      })
+  const controller = new AbortController();
+  currentTtsAbortController = controller;
+
+  const runFallback = () => {
+    if (seq !== speechGenerationSeq) return;
+    speakWithDeviceFallback({
+      text: cleanText,
+      voiceIdentity: resolvedVoice.gender,
+      speechRate: safeRate,
+      volume: safeVolume,
+      seq,
+      onStart,
+      onEnd,
+      onError
     });
+  };
+
+  try {
+    // 1. Request Gemini TTS via backend /api/tts proxy
+    const response = await apiFetch(
+      '/api/tts',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          text: cleanText,
+          voiceIdentity: resolvedVoice.gender,
+          voiceName: resolvedVoice.id,
+          customGeminiKey: effectiveGeminiKey
+        })
+      },
+      12000,
+      controller.signal
+    );
+
+    if (seq !== speechGenerationSeq) return;
 
     const contentType = response.headers.get('content-type') || '';
-
-    if (contentType.includes('audio/mpeg') || contentType.includes('audio/')) {
+    if (response.ok && contentType.includes('audio/')) {
       const blob = await response.blob();
-      const audioUrl = URL.createObjectURL(blob);
-      const audio = new Audio(audioUrl);
-      currentAudio = audio;
-
-      audio.playbackRate = safeRate;
-      audio.volume = safeVolume;
-      audio.onplay = () => onStart?.();
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-        currentAudio = null;
-        onEnd?.();
-      };
-      audio.onerror = () => {
-        URL.revokeObjectURL(audioUrl);
-        currentAudio = null;
-        speakWithDeviceFallback({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
-      };
-
-      await audio.play();
-      return;
+      const played = await playAudioBlob(blob, seq, safeRate, safeVolume, {
+        onStart,
+        onEnd,
+        onFallback: runFallback
+      });
+      if (played) return;
+    } else {
+      await response.json().catch(() => null);
     }
+  } catch (err: any) {
+    if (err?.name === 'AbortError' && seq !== speechGenerationSeq) return;
+    // Backend unavailable; proceed to direct Gemini TTS REST call
+  }
 
-    await response.json().catch(() => null);
-    await speakWithDeviceFallback({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
-  } catch {
-    await speakWithDeviceFallback({ text, voiceIdentity, speechRate: safeRate, volume: safeVolume, voiceStyleId, onStart, onEnd, onError });
+  // 2. Direct Gemini TTS REST fallback (for standalone Android APK)
+  if (effectiveGeminiKey && seq === speechGenerationSeq) {
+    try {
+      const directBlob = await directGeminiSpeechGenerate({
+        apiKey: effectiveGeminiKey,
+        text: cleanText,
+        voiceName: resolvedVoice.id,
+        signal: controller.signal
+      });
+      if (directBlob && seq === speechGenerationSeq) {
+        const played = await playAudioBlob(directBlob, seq, safeRate, safeVolume, {
+          onStart,
+          onEnd,
+          onFallback: runFallback
+        });
+        if (played) return;
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError' && seq !== speechGenerationSeq) return;
+    }
+  }
+
+  if (seq === speechGenerationSeq) {
+    runFallback();
   }
 }
 
@@ -288,7 +391,7 @@ function speakWithBrowserSpeech({
   voiceIdentity,
   speechRate = 1.0,
   volume = 1.0,
-  voiceStyleId,
+  seq,
   onStart,
   onEnd,
   onError
@@ -297,13 +400,13 @@ function speakWithBrowserSpeech({
   voiceIdentity: VoiceIdentity;
   speechRate?: number;
   volume?: number;
-  voiceStyleId?: string;
+  seq: number;
   onStart?: () => void;
   onEnd?: () => void;
   onError?: (err: any) => void;
 }): void {
-  if (typeof window === 'undefined' || !window.speechSynthesis) {
-    onEnd?.();
+  if (typeof window === 'undefined' || !window.speechSynthesis || seq !== speechGenerationSeq) {
+    if (seq === speechGenerationSeq) onEnd?.();
     return;
   }
 
@@ -322,7 +425,7 @@ function speakWithBrowserSpeech({
   utterance.volume = safeVolume;
 
   if (voiceIdentity === 'male') {
-    utterance.pitch = voiceStyleId === 'george_warm' ? 0.92 : 0.85;
+    utterance.pitch = 0.92;
     if (isBengali) {
       const bnVoice = voices.find(v => v.lang.startsWith('bn') && (v.name.includes('Male') || v.name.includes('David') || v.name.includes('Natural')));
       if (bnVoice) utterance.voice = bnVoice;
@@ -335,7 +438,7 @@ function speakWithBrowserSpeech({
       if (maleVoice) utterance.voice = maleVoice;
     }
   } else {
-    utterance.pitch = voiceStyleId === 'kore_firm' ? 1.12 : voiceStyleId === 'aria_expressive' ? 1.28 : 1.2;
+    utterance.pitch = 1.12;
     if (isBengali) {
       const bnVoice = voices.find(v => v.lang.startsWith('bn') && (v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Natural')));
       if (bnVoice) utterance.voice = bnVoice;
@@ -357,10 +460,12 @@ function speakWithBrowserSpeech({
       clearTimeout(browserSpeechFallbackTimer);
       browserSpeechFallbackTimer = null;
     }
-    onEnd?.();
+    if (seq === speechGenerationSeq) onEnd?.();
   };
 
-  utterance.onstart = () => onStart?.();
+  utterance.onstart = () => {
+    if (seq === speechGenerationSeq) onStart?.();
+  };
   utterance.onend = () => finish();
   utterance.onerror = (e) => {
     if (ended) return;
@@ -369,10 +474,9 @@ function speakWithBrowserSpeech({
       clearTimeout(browserSpeechFallbackTimer);
       browserSpeechFallbackTimer = null;
     }
-    onError?.(e);
+    if (seq === speechGenerationSeq) onError?.(e);
   };
 
-  // Safety guard if mobile WebView swallows onend
   const estMs = Math.max(4000, Math.min(25000, cleanText.length * 85));
   browserSpeechFallbackTimer = setTimeout(() => finish(), estMs);
 

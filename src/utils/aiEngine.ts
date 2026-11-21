@@ -142,7 +142,7 @@ export function generateIntelligentAnswer(options: GenerateResponseOptions): str
       return `I'm ${identityName}! I'm always right here by your side whenever you need someone to talk to, laugh with, or help you through your day ❤️.`;
     }
     if (personality === 'Developer') {
-      return `I am ${identityName}. System architecture: Dual-identity neural conversational assistant running on Android with ElevenLabs TTS, Gemini intelligence, and isolated message storage.`;
+      return `I am ${identityName}. System architecture: Dual-identity neural conversational assistant running on Android with Gemini neural voice, unified Gemini intelligence, and isolated message storage.`;
     }
 
     return `My name is ${identityName} (Zuzu AI, formerly STONIC AI). I am your intelligent Android assistant equipped with dual voice identities, 10 personalities, and continuous listening. How can I help you today?`;

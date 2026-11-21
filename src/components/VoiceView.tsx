@@ -16,18 +16,22 @@ import {
   Send
 } from 'lucide-react';
 import { AppSettings, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
-import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
+import {
+  PERSONALITIES,
+  VOICE_IDENTITIES,
+  getDefaultGeminiVoiceForIdentity,
+  resolveGeminiVoiceForSettings
+} from '../constants/personalities';
 import { detectVoiceSwitchIntent, detectVoiceActionIntent } from '../utils/intentDetector';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
 import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
 import { checkMicrophonePermission } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import { executeConfirmedMessageIntent } from './NotesRemindersModal';
-import { sendUnifiedAiChat } from '../utils/apiConfig';
+import { streamUnifiedAiChat } from '../utils/apiConfig';
 import { startVoiceCapture, VoiceCaptureController } from '../utils/speech';
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { setMicBusyForActiveSession } from '../utils/backgroundService';
-import { buildSmartWakeGreeting, getCachedWeatherSummary, refreshWeatherCacheSilently } from '../utils/greetingHelper';
 
 interface VoiceViewProps {
   settings: AppSettings;
@@ -62,14 +66,14 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   } | null>(null);
 
   const captureControllerRef = useRef<VoiceCaptureController | null>(null);
+  const aiAbortControllerRef = useRef<AbortController | null>(null);
   const isContinuousRef = useRef(settings.continuousListening);
   const activeIdentityRef = useRef(settings.activeIdentity);
   const settingsRef = useRef(settings);
   const sessionRef = useRef(currentSession);
   const isCancelledRef = useRef(false);
-  const hasGreetedSessionRef = useRef(false);
   const handleUserVoiceInputRef = useRef<(spokenText: string) => void>(() => {});
-  const ensurePermissionAndStartRef = useRef<(skipGreeting?: boolean) => void>(() => {});
+  const ensurePermissionAndStartRef = useRef<() => void>(() => {});
   const toggleOrbStateRef = useRef<() => void>(() => {});
 
   // Sync refs with latest props
@@ -83,9 +87,11 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     sessionRef.current = currentSession;
   }, [currentSession]);
 
-  // Cleanup active voice capture on unmount
+  // Cleanup active voice capture and in-flight requests on unmount
   useEffect(() => {
     return () => {
+      aiAbortControllerRef.current?.abort();
+      aiAbortControllerRef.current = null;
       captureControllerRef.current?.cancel();
       captureControllerRef.current = null;
       setMicBusyForActiveSession(false);
@@ -136,11 +142,18 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     saveVoiceSession(updatedSession);
   };
 
-  // Start Speech Recognition via unified native Android + Web Speech controller (no stale closure bugs)
+  // Start Speech Recognition via unified native Android + Web Speech controller
   const startListening = async () => {
     setErrorNotice(null);
     isCancelledRef.current = false;
     stopSpeaking();
+    setIsSpeaking(false);
+
+    if (aiAbortControllerRef.current) {
+      aiAbortControllerRef.current.abort();
+      aiAbortControllerRef.current = null;
+      setIsProcessing(false);
+    }
 
     if (captureControllerRef.current) {
       captureControllerRef.current.cancel();
@@ -202,8 +215,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     }
   };
 
-  // Check microphone permission & optionally greet once per voice session before opening mic
-  const ensurePermissionAndStart = async (skipGreeting = false) => {
+  // Verify microphone permission and immediately open microphone listening (no automatic greeting speech)
+  const ensurePermissionAndStart = async () => {
     try {
       const perm = await checkMicrophonePermission();
       if (perm.state !== 'granted') {
@@ -212,89 +225,19 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       }
     } catch {}
 
-    if (skipGreeting || hasGreetedSessionRef.current) {
-      await startListening();
-      return;
-    }
-
-    hasGreetedSessionRef.current = true;
-    isCancelledRef.current = false;
-    setErrorNotice(null);
-    setMicBusyForActiveSession(true);
-
-    const weather = await refreshWeatherCacheSilently(settings).catch(() => getCachedWeatherSummary());
-    if (isCancelledRef.current) {
-      setMicBusyForActiveSession(false);
-      return;
-    }
-
-    const smartGreeting = buildSmartWakeGreeting(settings, { weather });
-    setTranscript(smartGreeting);
-    setIsSpeaking(true);
-    setStatusMessage(`Greeting Boss as ${VOICE_IDENTITIES[settings.activeIdentity].name}...`);
-
-    const voiceId =
-      settings.activeIdentity === 'female'
-        ? settings.elevenLabsFemaleVoiceId
-        : settings.elevenLabsMaleVoiceId;
-
-    speakText({
-      text: smartGreeting,
-      voiceIdentity: settings.activeIdentity,
-      customVoiceId: voiceId,
-      customApiKey: settings.customElevenLabsApiKey,
-      stability: settings.stability,
-      similarityBoost: settings.similarityBoost,
-      speechRate: settings.speechRate,
-      volume: settings.volume ?? 1.0,
-      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId,
-      onStart: () => {
-        if (!isCancelledRef.current) {
-          setIsSpeaking(true);
-        }
-      },
-      onEnd: () => {
-        setIsSpeaking(false);
-        if (!isCancelledRef.current) {
-          startListening();
-        } else {
-          setMicBusyForActiveSession(false);
-        }
-      },
-      onError: () => {
-        setIsSpeaking(false);
-        if (!isCancelledRef.current) {
-          startListening();
-        } else {
-          setMicBusyForActiveSession(false);
-        }
-      }
-    });
+    await startListening();
   };
 
-  // Display wake greeting emitted from App.tsx and auto-start listening cleanly using fresh refs
+  // Listen for wake-word auto-start and orb toggle events
   useEffect(() => {
-    const onWakeGreeting = (e: Event) => {
-      const detail = (e as CustomEvent)?.detail || {};
-      const greetingText = typeof detail.greetingText === 'string' ? detail.greetingText : '';
-      hasGreetedSessionRef.current = true;
-      isCancelledRef.current = false;
-      if (greetingText) {
-        setTranscript(greetingText);
-      }
-      setIsSpeaking(true);
-      setStatusMessage(detail.triggerLabel ? `Woken by ${detail.triggerLabel}...` : 'Yes Boss! Waking up...');
-    };
-
     const onAutoStartVoice = (e: Event) => {
       const detail = (e as CustomEvent)?.detail || {};
       const cmd = typeof detail.remainingCommand === 'string' ? detail.remainingCommand.trim() : '';
-      hasGreetedSessionRef.current = true;
       setIsSpeaking(false);
       if (cmd) {
         handleUserVoiceInputRef.current(cmd);
       } else {
-        ensurePermissionAndStartRef.current(true);
+        ensurePermissionAndStartRef.current();
       }
     };
 
@@ -302,11 +245,9 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       toggleOrbStateRef.current();
     };
 
-    window.addEventListener('zuzu-wake-greeting', onWakeGreeting);
     window.addEventListener('zuzu-auto-start-voice', onAutoStartVoice);
     window.addEventListener('zuzu-voice-orb-toggle', onOrbToggle);
     return () => {
-      window.removeEventListener('zuzu-wake-greeting', onWakeGreeting);
       window.removeEventListener('zuzu-auto-start-voice', onAutoStartVoice);
       window.removeEventListener('zuzu-voice-orb-toggle', onOrbToggle);
     };
@@ -322,10 +263,20 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     playHapticSound('listen_stop');
   };
 
+  // Interrupt active AI speaking immediately and start listening for the user's next turn
+  const interruptSpeechAndListen = () => {
+    stopSpeaking();
+    setIsSpeaking(false);
+    ensurePermissionAndStart();
+  };
+
   // Cancel action: stops everything immediately
   const handleCancel = () => {
     isCancelledRef.current = true;
-    hasGreetedSessionRef.current = false;
+    if (aiAbortControllerRef.current) {
+      aiAbortControllerRef.current.abort();
+      aiAbortControllerRef.current = null;
+    }
     if (captureControllerRef.current) {
       captureControllerRef.current.cancel();
       captureControllerRef.current = null;
@@ -339,31 +290,29 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     playHapticSound('listen_stop');
   };
 
-  // Speak with active or switched identity
+  // Speak response using selected Gemini prebuilt voice
   const speakZuzuResponse = (
     responseText: string,
     targetIdentity: VoiceIdentity,
     onFinishCallback?: () => void
   ) => {
     const latestSettings = settingsRef.current;
+    const resolved = resolveGeminiVoiceForSettings(latestSettings.geminiVoiceName, targetIdentity);
+    const voiceName =
+      resolved.gender === targetIdentity
+        ? resolved.id
+        : getDefaultGeminiVoiceForIdentity(targetIdentity).id;
+
     setIsSpeaking(true);
     setStatusMessage(`Speaking as ${VOICE_IDENTITIES[targetIdentity].name}...`);
-
-    const voiceId =
-      targetIdentity === 'female'
-        ? latestSettings.elevenLabsFemaleVoiceId
-        : latestSettings.elevenLabsMaleVoiceId;
 
     speakText({
       text: responseText,
       voiceIdentity: targetIdentity,
-      customVoiceId: voiceId,
-      customApiKey: latestSettings.customElevenLabsApiKey,
-      stability: latestSettings.stability,
-      similarityBoost: latestSettings.similarityBoost,
+      voiceName,
+      customGeminiKey: latestSettings.customGeminiApiKey,
       speechRate: latestSettings.speechRate,
       volume: latestSettings.volume ?? 1.0,
-      voiceStyleId: latestSettings.selectedVoiceStyleId || latestSettings.selectedVoiceOptionId,
       onStart: () => {
         setIsSpeaking(true);
       },
@@ -378,14 +327,14 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             if (!isCancelledRef.current) {
               startListening();
             }
-          }, 400);
+          }, 350);
         }
       },
       onError: (err) => {
         console.warn('Speech playback error:', err);
         setIsSpeaking(false);
         if (isContinuousRef.current && !isCancelledRef.current) {
-          setTimeout(() => startListening(), 400);
+          setTimeout(() => startListening(), 350);
         }
       }
     });
@@ -406,10 +355,11 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     // Case A: Unambiguous Switch Command Detected
     if (switchIntent.isSwitchCommand && switchIntent.targetIdentity) {
       const newIdentity = switchIntent.targetIdentity;
+      const newVoice = getDefaultGeminiVoiceForIdentity(newIdentity).id;
       playHapticSound('switch');
 
-      // Update active identity preference in state and storage
-      onUpdateSettings({ activeIdentity: newIdentity });
+      // Update active identity & matching Gemini voice in state and storage
+      onUpdateSettings({ activeIdentity: newIdentity, geminiVoiceName: newVoice });
       activeIdentityRef.current = newIdentity;
 
       // Save user switch command to Voice History
@@ -435,7 +385,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
       setIsProcessing(false);
 
-      // Speak using the NEW identity's ElevenLabs voice!
+      // Speak using the NEW identity's Gemini neural voice
       speakZuzuResponse(confirmationText, newIdentity);
       return;
     }
@@ -536,18 +486,30 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         }
       }
 
-      // Call unified AI pipeline
-      const aiResult = await sendUnifiedAiChat({
+      // Call fast unified Gemini streaming pipeline
+      if (aiAbortControllerRef.current) {
+        aiAbortControllerRef.current.abort();
+      }
+      const controller = new AbortController();
+      aiAbortControllerRef.current = controller;
+
+      const aiResult = await streamUnifiedAiChat({
         messages: [...historyContext, { sender: 'user', text: spokenText }],
         settings: latestSettings,
         memories: activeMemories,
-        isVoiceMode: true
+        isVoiceMode: true,
+        signal: controller.signal
       });
+
+      if (controller.signal.aborted || isCancelledRef.current) {
+        setIsProcessing(false);
+        return;
+      }
 
       if (aiResult.isError) {
         setIsProcessing(false);
         setErrorNotice(aiResult.reply);
-        setStatusMessage('AI provider error');
+        setStatusMessage('Gemini API error');
         if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
           onRequestApiKeyModal('Voice Studio');
         }
@@ -567,11 +529,17 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       setIsProcessing(false);
       setTranscript('');
 
-      // Speak the response using the active identity's voice
+      // Speak the response using the active identity's Gemini voice
       speakZuzuResponse(aiReply, currentId);
     } catch (err: any) {
+      if (err?.name === 'AbortError' || isCancelledRef.current) {
+        setIsProcessing(false);
+        return;
+      }
       setIsProcessing(false);
       setErrorNotice(err?.message || 'Failed to get AI voice response.');
+    } finally {
+      aiAbortControllerRef.current = null;
     }
   };
 
@@ -579,7 +547,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   ensurePermissionAndStartRef.current = ensurePermissionAndStart;
   toggleOrbStateRef.current = () => {
     if (isListening) stopListening();
-    else if (isSpeaking) handleCancel();
+    else if (isSpeaking) interruptSpeechAndListen();
+    else if (isProcessing) handleCancel();
     else ensurePermissionAndStart();
   };
 
@@ -593,8 +562,11 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   // Manual Identity Switch Button
   const handleManualSwitch = () => {
     const target: VoiceIdentity = settings.activeIdentity === 'male' ? 'female' : 'male';
+    const resolved = resolveGeminiVoiceForSettings(settings.geminiVoiceName, target);
+    const nextVoice =
+      resolved.gender === target ? resolved.id : getDefaultGeminiVoiceForIdentity(target).id;
     playHapticSound('switch');
-    onUpdateSettings({ activeIdentity: target });
+    onUpdateSettings({ activeIdentity: target, geminiVoiceName: nextVoice });
     setStatusMessage(`Switched to ${VOICE_IDENTITIES[target].name}.`);
   };
 
@@ -670,7 +642,15 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             glowIntensity={settings.orbGlowIntensity}
             particleDensity={settings.orbParticleDensity}
             size={265}
-            onClick={() => (isListening ? stopListening() : isSpeaking ? handleCancel() : ensurePermissionAndStart())}
+            onClick={() =>
+              isListening
+                ? stopListening()
+                : isSpeaking
+                ? interruptSpeechAndListen()
+                : isProcessing
+                ? handleCancel()
+                : ensurePermissionAndStart()
+            }
           />
 
           {/* Status Pill below Orb */}
@@ -690,7 +670,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
               {isListening
                 ? 'LISTENING... • TAP TO STOP'
                 : isSpeaking
-                ? 'SPEAKING... • TAP TO PAUSE'
+                ? 'SPEAKING... • TAP TO INTERRUPT'
                 : isProcessing
                 ? 'THINKING...'
                 : 'ZUZU AI ACTIVE • TAP ORB TO SPEAK'}
@@ -760,7 +740,15 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         <div className="w-full max-w-xs mt-3 flex items-center justify-center gap-2.5 z-20 pb-2">
           {/* Main Voice Toggle */}
           <button
-            onClick={() => (isListening ? stopListening() : isSpeaking ? handleCancel() : ensurePermissionAndStart())}
+            onClick={() =>
+              isListening
+                ? stopListening()
+                : isSpeaking
+                ? interruptSpeechAndListen()
+                : isProcessing
+                ? handleCancel()
+                : ensurePermissionAndStart()
+            }
             className={`flex-1 py-2.5 px-4 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-all ${
               isListening
                 ? 'bg-rose-500 hover:bg-rose-600 text-white'

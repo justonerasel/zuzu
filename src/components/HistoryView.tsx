@@ -17,8 +17,12 @@ import {
   Clock,
   AlertCircle
 } from 'lucide-react';
-import { VoiceSession, VoiceMessage, VoiceIdentity, AppSettings } from '../types';
-import { VOICE_IDENTITIES } from '../constants/personalities';
+import { VoiceSession, VoiceMessage, AppSettings } from '../types';
+import {
+  VOICE_IDENTITIES,
+  getDefaultGeminiVoiceForIdentity,
+  resolveGeminiVoiceForSettings
+} from '../constants/personalities';
 import { getVoiceSessions, deleteVoiceSession, clearVoiceHistory } from '../utils/storage';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
 
@@ -48,16 +52,19 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ settings }) => {
     stopSpeaking();
     setPlayingMessageId(msg.id);
 
-    const voiceId =
-      msg.voiceIdentity === 'female'
-        ? settings.elevenLabsFemaleVoiceId
-        : settings.elevenLabsMaleVoiceId;
+    const resolved = resolveGeminiVoiceForSettings(settings.geminiVoiceName, msg.voiceIdentity);
+    const voiceName =
+      resolved.gender === msg.voiceIdentity
+        ? resolved.id
+        : getDefaultGeminiVoiceForIdentity(msg.voiceIdentity).id;
 
     speakText({
       text: msg.text,
       voiceIdentity: msg.voiceIdentity,
-      customVoiceId: voiceId,
-      customApiKey: settings.customElevenLabsApiKey,
+      voiceName,
+      customGeminiKey: settings.customGeminiApiKey,
+      speechRate: settings.speechRate,
+      volume: settings.volume ?? 1.0,
       onStart: () => setPlayingMessageId(msg.id),
       onEnd: () => setPlayingMessageId(null),
       onError: () => setPlayingMessageId(null)

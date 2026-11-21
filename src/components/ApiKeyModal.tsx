@@ -9,10 +9,12 @@ import {
   X, 
   ExternalLink, 
   RefreshCw,
-  Lock
+  Lock,
+  ClipboardPaste,
+  Trash2
 } from 'lucide-react';
 import { playHapticSound } from '../utils/audio';
-import { validateAiKey } from '../utils/apiConfig';
+import { validateGeminiApiKey } from '../utils/apiConfig';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -64,17 +66,17 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     playHapticSound('message_sent');
 
     try {
-      const result = await validateAiKey('gemini', trimmed);
+      const result = await validateGeminiApiKey(trimmed);
       if (result.success) {
         setTestStatus({
           success: true,
-          message: result.message || `Valid ✓ Connected to Google Gemini (${result.latencyMs || 120}ms)`
+          message: result.message || `Connected to Google Gemini (${result.latencyMs || 120}ms)`
         });
         playHapticSound('listen_start');
       } else {
         setTestStatus({
           success: false,
-          message: result.message || result.error || 'Connection failed: Invalid API key or model unreachable.'
+          message: result.message || result.error || 'Connection failed: Invalid API key or Gemini unreachable.'
         });
         playHapticSound('listen_stop');
       }
@@ -87,6 +89,27 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     } finally {
       setTesting(false);
     }
+  };
+
+  const handlePasteClipboard = async () => {
+    try {
+      const clip = await navigator.clipboard.readText();
+      if (clip && clip.trim()) {
+        setKeyInput(clip.trim());
+        setTestStatus(null);
+        playHapticSound('message_sent');
+      } else {
+        setTestStatus({ success: false, message: 'Clipboard is empty.' });
+      }
+    } catch {
+      setTestStatus({ success: false, message: 'Clipboard access blocked. Please paste directly into the box.' });
+    }
+  };
+
+  const handleClearInput = () => {
+    setKeyInput('');
+    setTestStatus(null);
+    playHapticSound('listen_stop');
   };
 
   const handleSave = () => {
@@ -170,6 +193,26 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               title={showKey ? 'Hide key' : 'Show key'}
             >
               {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePasteClipboard}
+              className="flex-1 py-1.5 px-2.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors"
+            >
+              <ClipboardPaste className="w-3.5 h-3.5 text-purple-600" />
+              <span>Paste Clipboard</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleClearInput}
+              disabled={!keyInput}
+              className="py-1.5 px-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 text-slate-600 text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors disabled:opacity-40"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear</span>
             </button>
           </div>
         </div>

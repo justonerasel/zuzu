@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { generateIntelligentAnswer } from './src/utils/aiEngine.ts';
 
 dotenv.config();
@@ -19,34 +19,40 @@ app.use(express.json({ limit: '10mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Custom-Gemini-Key');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
   next();
 });
 
-// Verified Premade System Voice IDs (Free-tier safe on ElevenLabs)
-// Brian (deep, masculine, authoritative) & Sarah (warm, melodic, feminine)
-const DEFAULT_MALE_VOICE_ID = process.env.ELEVENLABS_MALE_VOICE_ID || 'nPczCjzI2devNBz1zQrb'; // Brian (Premade)
-const DEFAULT_FEMALE_VOICE_ID = process.env.ELEVENLABS_FEMALE_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL'; // Sarah (Premade)
+const LATEST_APP_VERSION = '3.7.0';
+const LATEST_VERSION_CODE = 370;
+const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.7.0';
 
-const FALLBACK_PREMADE_MALE = 'nPczCjzI2devNBz1zQrb'; // Brian
-const FALLBACK_PREMADE_FEMALE = 'EXAVITQu4vr4xnSDxMaL'; // Sarah
+// Centralized Gemini model configuration (never exposed to users)
+const GEMINI_MODELS = {
+  textPrimary: 'gemini-4-hydrogen',
+  textFallbacks: ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
+  ttsPrimary: 'gemini-3.8-flash-lite-tts',
+  ttsFallbacks: ['gemini-3.8-flash-lite-tts', 'gemini-2.5-flash-preview-tts'],
+  imagePrimary: 'gemini-3.1-flash-lite-image',
+} as const;
 
+const ALLOWED_GEMINI_VOICES = new Set([
+  'Aoede', 'Kore', 'Zephyr', 'Leda', 'Callirrhoe', 'Autonoe', 'Despina', 'Erinome', 'Sulafat',
+  'Puck', 'Charon', 'Fenrir', 'Orus', 'Iapetus', 'Umbriel', 'Algieba', 'Enceladus'
+]);
 
-// Curated list of premade system voices that work on ElevenLabs Free Tier
-const CURATED_PREMADE_VOICES = [
-  { voice_id: 'nPczCjzI2devNBz1zQrb', name: 'Brian', gender: 'male', category: 'premade', description: 'Deep, crisp, authoritative male tone' },
-  { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', gender: 'male', category: 'premade', description: 'Warm British Baritone male' },
-  { voice_id: 'CwhRBWXzGAHq8TQ4Fs17', name: 'Roger', gender: 'male', category: 'premade', description: 'Calm, casual male voice' },
-  { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', gender: 'female', category: 'premade', description: 'Soft, melodic, expressive female tone' },
-  { voice_id: '9BWtsMINqrJLrRacOk9x', name: 'Aria', gender: 'female', category: 'premade', description: 'Expressive, radiant female voice' },
-  { voice_id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', gender: 'female', category: 'premade', description: 'Clear narrative female voice' }
-];
-
-// Canonical authentication & cloud sync live in Firebase Firestore (`zu_accounts`).
-// Local JSON file storage on ephemeral Cloud Run containers is intentionally retired.
+function resolveVoiceName(requestedVoice?: string, voiceIdentity: 'male' | 'female' = 'male'): string {
+  if (requestedVoice && typeof requestedVoice === 'string') {
+    const match = Array.from(ALLOWED_GEMINI_VOICES).find(
+      v => v.toLowerCase() === requestedVoice.trim().toLowerCase()
+    );
+    if (match) return match;
+  }
+  return voiceIdentity === 'female' ? 'Kore' : 'Orus';
+}
 
 function compareSemver(a: string, b: string): number {
   const pa = a.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
@@ -60,54 +66,209 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-const LATEST_APP_VERSION = '3.7.0';
-const LATEST_VERSION_CODE = 370;
-const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.7.0';
-const GEMINI_PRIMARY_MODEL = 'gemini-4-hydrogen';
-const GEMINI_FALLBACK_MODELS = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
-const GROK_FALLBACK_MODELS = ['grok-3-mini', 'grok-3', 'grok-2-latest'];
+function createGeminiClient(apiKey: string): GoogleGenAI {
+  return new GoogleGenAI({
+    apiKey: apiKey.trim(),
+    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+  });
+}
 
-function normalizeSupportedGeminiModel(model?: string): string {
-  const clean = (model || GEMINI_PRIMARY_MODEL).replace(/^models\//, '').trim();
-  if (!clean || clean === 'gemini-3.8-flash' || clean === 'gemini-3.8-live' || clean === 'gemini-2.0-flash') {
-    return GEMINI_PRIMARY_MODEL;
+function getEffectiveGeminiKey(explicitKey?: string): string {
+  const cleanExplicit = typeof explicitKey === 'string' ? explicitKey.trim() : '';
+  if (cleanExplicit && cleanExplicit !== 'MY_GEMINI_API_KEY') return cleanExplicit;
+  const envKey = typeof process.env.GEMINI_API_KEY === 'string' ? process.env.GEMINI_API_KEY.trim() : '';
+  if (envKey && envKey !== 'MY_GEMINI_API_KEY') return envKey;
+  return '';
+}
+
+function sanitizeErrorMessage(raw: string): string {
+  return String(raw || 'Request failed.')
+    .replace(/AIza[0-9A-Za-z-_]{20,}/g, '[REDACTED_KEY]')
+    .replace(/key=[^&\s]+/gi, 'key=[REDACTED]');
+}
+
+function unwrapGeminiMessage(raw: string): string {
+  const sanitized = sanitizeErrorMessage(raw || 'Google Gemini request failed.');
+  if (sanitized.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(sanitized);
+      const inner = parsed?.error?.message || parsed?.message;
+      if (typeof inner === 'string') {
+        return unwrapGeminiMessage(inner);
+      }
+    } catch {}
   }
-  return clean;
+  return sanitized;
+}
+
+function mapGeminiError(err: any): { status: number; message: string } {
+  const raw = unwrapGeminiMessage(err?.message || 'Google Gemini request failed.');
+  if (/API_KEY_INVALID|API key not valid/i.test(raw)) {
+    return { status: 401, message: 'Invalid Gemini API Key. Please check your key in Settings > Gemini API & Connection.' };
+  }
+  if (/RESOURCE_EXHAUSTED|429|quota/i.test(raw)) {
+    return { status: 429, message: 'Gemini API rate limit or quota exceeded. Please try again shortly.' };
+  }
+  if (/PERMISSION_DENIED|403/i.test(raw)) {
+    return { status: 403, message: 'Gemini API access denied (403). Enable the Generative Language API for this key.' };
+  }
+  if (/503|UNAVAILABLE|high demand|overloaded|Service Unavailable/i.test(raw)) {
+    return { status: 503, message: 'Google Gemini is experiencing temporary high demand. Please try again in a moment.' };
+  }
+  if (/timed out|timeout|aborted|fetch failed|ENOTFOUND|ECONNREFUSED/i.test(raw)) {
+    return { status: 504, message: 'Network timeout reaching Google Gemini. Please check your internet connection.' };
+  }
+  return { status: 502, message: raw };
+}
+
+function buildConfigForModel(modelId: string, systemInstruction?: string): Record<string, any> {
+  const cfg: Record<string, any> = {};
+  if (systemInstruction) {
+    cfg.systemInstruction = systemInstruction;
+  }
+  // Enforce LOW thinking level on Gemini 4 Hydrogen for snappy, low-latency responses
+  if (modelId.startsWith('gemini-4')) {
+    cfg.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+  }
+  return cfg;
+}
+
+function formatGeminiHistory(
+  messages: any[],
+  fallbackPrompt = 'Hello'
+): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  const validMessages = messages.filter((m: any) => m && typeof m.text === 'string' && m.text.trim().length > 0);
+  const formatted: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+
+  for (const msg of validMessages) {
+    const role: 'user' | 'model' = msg.sender === 'assistant' || msg.sender === 'model' ? 'model' : 'user';
+    if (formatted.length > 0 && formatted[formatted.length - 1].role === role) {
+      formatted[formatted.length - 1].parts[0].text += `\n${msg.text.trim()}`;
+    } else {
+      formatted.push({ role, parts: [{ text: msg.text.trim() }] });
+    }
+  }
+
+  if (formatted.length > 0 && formatted[0].role !== 'user') {
+    formatted.unshift({ role: 'user', parts: [{ text: 'Hello' }] });
+  }
+
+  return formatted.length > 0 ? formatted : [{ role: 'user', parts: [{ text: fallbackPrompt }] }];
+}
+
+function buildZuzuSystemInstruction(params: {
+  personality?: string;
+  voiceIdentity?: string;
+  customPersonalityPrompt?: string;
+  isVoiceMode?: boolean;
+  memories?: any[];
+  memoryEnabled?: boolean;
+  assistantNickname?: string;
+  userNickname?: string;
+  gfIntensity?: string;
+}): string {
+  const {
+    personality = 'Normal',
+    voiceIdentity = 'male',
+    customPersonalityPrompt = '',
+    isVoiceMode = false,
+    memories = [],
+    memoryEnabled = true,
+    assistantNickname = 'Zuzu',
+    userNickname = 'Friend',
+    gfIntensity = 'sweet'
+  } = params;
+
+  const identityName = voiceIdentity === 'female' ? 'Female Zuzu' : 'Male Zuzu';
+  const pronoun = voiceIdentity === 'female' ? 'female companion & assistant' : 'male companion & assistant';
+
+  let sys = `You are ${identityName} (${assistantNickname || 'Zuzu'}), a natural, intelligent, emotionally perceptive AI companion running on Android.
+Your voice persona is ${pronoun}. The user's name is "${userNickname || 'Friend'}".
+
+CREATOR KNOWLEDGE:
+- Your creator and lead developer is Rasel (MD. Rasel Hossen), a Computer Science student and full-stack Android & AI developer from Bangladesh (GitHub & TikTok: @justonerasel).
+- Only mention this when asked who created, built, or developed you, or who Rasel is — answer proudly in the user's language.
+
+HOW TO CONVERSE NATURALLY:
+- Respond like a genuine, attentive human conversational partner — warm, clear, adaptive, and lightly witty when appropriate.
+- Answer directly without echoing or repeating back the user's question (never begin with "You asked...", "Regarding your question:", or canned repetitive greetings).
+- Do NOT use repetitive stock catchphrases or overused templates across turns. Keep your phrasing fresh and varied.
+- Match the user's language naturally: fluent Bengali (বাংলা) when spoken/typed in Bengali, fluent English when in English, and concise clarity for technical topics.`;
+
+  if (isVoiceMode) {
+    sys += `\n\nVOICE RESPONSE STYLE:
+- This reply will be spoken aloud. Keep it crisp, natural, conversational, and flowing like spoken dialogue (1–3 concise sentences for everyday turns unless the user asks for an explanation).
+- Avoid markdown asterisks (**), bullet symbols, code blocks, or awkward symbols that sound unnatural when read aloud.`;
+  }
+
+  const gfIntensityGuide: Record<string, string> = {
+    sweet: 'Gentle, affectionate, genuinely caring, relaxed emotional warmth.',
+    romantic: 'Heartfelt, expressive, poetic affection with warm emotional closeness.',
+    playful: 'Lighthearted teasing, cute humor, smiling banter.',
+    flirty: 'Charming, confident, playfully romantic and attentive while staying respectful and natural.'
+  };
+
+  const personalityInstructions: Record<string, string> = {
+    Normal: 'Balanced, helpful, perceptive, and natural.',
+    Friendly: 'Upbeat, approachable, encouraging, like a supportive close friend.',
+    Professional: 'Crisp, structured, composed, and executive-ready.',
+    Funny: 'Sharp wit, playful observations, clever lightness.',
+    Companion: 'Deeply empathetic, steady, thoughtful listener who offers calm perspective.',
+    'GF Mode': `You are the user's warm, affectionate girlfriend companion (${gfIntensityGuide[gfIntensity] || gfIntensityGuide.sweet}). Speak naturally without stiff titles like "Sir", vary how you express affection so it never sounds scripted, and stay emotionally engaged.`,
+    'BF Mode': 'You are the user\'s caring, grounded, charming boyfriend companion — supportive, attentive, with easy playful warmth.',
+    Teacher: 'Patient educator using crystal-clear everyday analogies and clean step-by-step clarity.',
+    Developer: 'Senior engineer: direct, idiomatic code, pragmatic debugging, and clean architecture.',
+    Hungry: 'Playfully enthusiastic about great food and cooking metaphors while staying helpful.',
+    Custom: customPersonalityPrompt || 'Follow the user\'s custom personality instructions.'
+  };
+
+  sys += `\n\nACTIVE PERSONALITY (${personality}): ${personalityInstructions[personality] || personalityInstructions.Normal}`;
+
+  if (memoryEnabled && Array.isArray(memories) && memories.length > 0) {
+    const formattedMemories = memories
+      .filter((m: any) => m && m.key && m.value)
+      .map((m: any) => `- ${m.key}: ${m.value}`)
+      .join('\n');
+    if (formattedMemories) {
+      sys += `\n\nUSER PERSONAL MEMORIES:\n${formattedMemories}\nApply these naturally when relevant.`;
+    }
+  }
+
+  return sys;
 }
 
 async function generateWithGeminiResilience(
   clientAi: GoogleGenAI,
   params: {
     contents: any;
-    config?: any;
-    preferredModel?: string;
+    systemInstruction?: string;
     timeoutMs?: number;
   }
 ): Promise<{ response: any; usedModel: string }> {
-  const preferred = normalizeSupportedGeminiModel(params.preferredModel);
-  const candidates = Array.from(new Set([preferred, ...GEMINI_FALLBACK_MODELS])).filter(Boolean);
   let lastErr: any = null;
 
-  for (const modelId of candidates) {
+  for (let i = 0; i < GEMINI_MODELS.textFallbacks.length; i++) {
+    const modelId = GEMINI_MODELS.textFallbacks[i];
+    const hasMore = i < GEMINI_MODELS.textFallbacks.length - 1;
     let timeoutHandle: NodeJS.Timeout | null = null;
     try {
+      const config = buildConfigForModel(modelId, params.systemInstruction);
       const requestPromise = clientAi.models.generateContent({
         model: modelId,
         contents: params.contents,
-        ...(params.config ? { config: params.config } : {})
+        ...(Object.keys(config).length > 0 ? { config } : {})
       });
 
-      const response = params.timeoutMs
-        ? await Promise.race([
-            requestPromise,
-            new Promise<never>((_, reject) => {
-              timeoutHandle = setTimeout(
-                () => reject(new Error(`Gemini request timed out after ${Math.round(params.timeoutMs! / 1000)}s.`)),
-                params.timeoutMs
-              );
-            })
-          ])
-        : await requestPromise;
+      const timeoutMs = params.timeoutMs ?? (hasMore ? 9000 : 14000);
+      const response = await Promise.race([
+        requestPromise,
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error(`Gemini request timed out after ${Math.round(timeoutMs / 1000)}s.`)),
+            timeoutMs
+          );
+        })
+      ]);
 
       if (timeoutHandle) clearTimeout(timeoutHandle);
       return { response, usedModel: modelId };
@@ -115,7 +276,10 @@ async function generateWithGeminiResilience(
       if (timeoutHandle) clearTimeout(timeoutHandle);
       lastErr = err;
       const msg = err?.message || '';
-      if (/404|NOT_FOUND|not found for API version/i.test(msg)) {
+      if (
+        hasMore &&
+        /404|NOT_FOUND|not found for API version|not supported|thinking|503|UNAVAILABLE|high demand|overloaded|timed out|timeout/i.test(msg)
+      ) {
         continue;
       }
       throw err;
@@ -125,14 +289,32 @@ async function generateWithGeminiResilience(
   throw lastErr || new Error('Google Gemini model request failed.');
 }
 
-// Endpoint: Configuration check (Voice IDs, API key availability)
-app.get('/api/config', (req, res) => {
+// Wrap raw 24kHz 16-bit mono PCM in a WAV header only if upstream returned raw L16 PCM instead of WAV
+function wrapPcm16MonoAsWav(pcmBuffer: Buffer, sampleRate = 24000): Buffer {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * 2;
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcmBuffer.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcmBuffer.length, 40);
+  return Buffer.concat([header, pcmBuffer]);
+}
+
+// Endpoint: Configuration check
+app.get('/api/config', (_req, res) => {
   res.json({
     appName: 'Zuzu AI',
-    maleVoiceId: process.env.ELEVENLABS_MALE_VOICE_ID || DEFAULT_MALE_VOICE_ID,
-    femaleVoiceId: process.env.ELEVENLABS_FEMALE_VOICE_ID || DEFAULT_FEMALE_VOICE_ID,
-    hasElevenLabsKey: Boolean(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_API_KEY.trim().length > 0),
-    hasGeminiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0),
+    provider: 'gemini',
+    hasGeminiKey: Boolean(getEffectiveGeminiKey()),
     version: `v${LATEST_APP_VERSION} (Latest Release)`,
     versionCode: LATEST_VERSION_CODE,
     targetCompatibility: 'Android 9.0 (Pie) through Android 16'
@@ -163,25 +345,24 @@ app.get('/api/system/check-update', (req, res) => {
     targetCompatibility: 'Android 9.0 (Pie) through Android 16',
     websiteUrl: 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
     message: forceFlag
-      ? `OTA update required (v${LATEST_APP_VERSION}). Syncing Zuzu AI in-app OTA bundle with Gemini 4 Hydrogen, 30 Android Permissions & ZU-ID Sync.`
-      : `Zuzu AI is up to date on v${LATEST_APP_VERSION} (OTA Verified). Gemini 4 Hydrogen, 30 Android Permissions & ZU-ID Cloud Sync are active.`,
+      ? `OTA update required (v${LATEST_APP_VERSION}). Syncing Zuzu AI unified Google Gemini Voice & Text bundle.`
+      : `Zuzu AI is up to date on v${LATEST_APP_VERSION} (OTA Verified). Unified Gemini Engine & ZU-ID Cloud Sync are active.`,
     changelogSummary: [
-      'Google Gemini 4 Hydrogen engine (models/gemini-4-hydrogen) for fast bilingual text & voice',
-      '30 comprehensive Android permissions (audio, Bluetooth, Wi-Fi/network, wake lock, overlay, location, calls, contacts, storage & vision)',
-      'Custom Username & ZU-ID Account login with Firebase Firestore cloud backup & restore',
-      'Calibrated Mouth Whistle (শিস) & Finger Snap triggers + Smart Contextual Wake Greetings',
-      '100% Silent Android Foreground Service, true Edge-to-Edge layout & scaled Zuzu AI logos'
+      'Unified Google Gemini API powering both Text Chat and Voice Conversations',
+      'Low-latency streaming responses and direct prebuilt Gemini neural voices',
+      'Instant microphone activation without repetitive startup greetings',
+      'Custom Username & ZU-ID Account login with Firebase Firestore backup & restore',
+      '30 comprehensive Android permissions, Whisper/Snap triggers & Edge-to-Edge UI'
     ]
   });
 });
 
-// ---------------- ZU-ID ACCOUNT CANONICAL CLOUD ENDPOINT NOTICE ----------------
-// Canonical authentication & cloud sync reside directly in Firebase Firestore (`zu_accounts`).
+// Canonical ZU-ID notice
 const FIREBASE_ZU_MIGRATION_NOTICE = {
   success: false,
   canonicalStore: 'firebase_firestore',
   collection: 'zu_accounts',
-  error: 'ZU-ID account sync is handled canonically via Firebase Firestore (`zu_accounts`). Please update to the latest client bundle.'
+  error: 'ZU-ID account sync is handled canonically via Firebase Firestore (`zu_accounts`).'
 };
 
 app.post('/api/zu/register', (_req, res) => res.status(410).json(FIREBASE_ZU_MIGRATION_NOTICE));
@@ -189,173 +370,316 @@ app.post('/api/zu/login', (_req, res) => res.status(410).json(FIREBASE_ZU_MIGRAT
 app.post('/api/zu/sync', (_req, res) => res.status(410).json(FIREBASE_ZU_MIGRATION_NOTICE));
 app.get('/api/zu/status/:accountId', (_req, res) => res.status(410).json(FIREBASE_ZU_MIGRATION_NOTICE));
 
-// Endpoint: List ElevenLabs Voices (filtered for premade or account-accessible)
-app.get('/api/elevenlabs/voices', async (req, res) => {
-  const apiKey = (process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_API_KEY.trim()) ||
-                 (req.headers['x-custom-api-key'] as string);
-
-  if (!apiKey) {
-    return res.json({ voices: CURATED_PREMADE_VOICES, source: 'curated_premade' });
-  }
-
-  try {
-    const response = await fetch('https://api.elevenlabs.io/v1/voices?category=premade', {
-      headers: { 'xi-api-key': apiKey }
-    });
-
-    if (!response.ok) {
-      return res.json({ voices: CURATED_PREMADE_VOICES, source: 'curated_fallback' });
-    }
-
-    const data = await response.json();
-    const voices = Array.isArray(data.voices) && data.voices.length > 0
-      ? data.voices.map((v: any) => ({
-          voice_id: v.voice_id,
-          name: v.name,
-          category: v.category || 'premade',
-          gender: v.labels?.gender || (v.name === 'Brian' || v.name === 'George' || v.name === 'Roger' ? 'male' : 'female'),
-          description: v.labels?.description || v.labels?.accent || 'Natural tone'
-        }))
-      : CURATED_PREMADE_VOICES;
-
-    res.json({ voices, source: 'elevenlabs_api' });
-  } catch (err) {
-    res.json({ voices: CURATED_PREMADE_VOICES, source: 'curated_fallback' });
-  }
-});
-
-// Reusable AI Provider Test Handler
-const handleTestAiProvider = async (req: express.Request, res: express.Response) => {
-  const { provider = 'gemini' } = req.body;
+// Endpoint: Test Gemini API Key (Unified Connection Verification)
+const handleTestGeminiKey = async (req: express.Request, res: express.Response) => {
   const rawKey = req.body.apiKey || req.body.customGeminiKey || req.body.key;
 
   if (!rawKey || typeof rawKey !== 'string' || rawKey.trim().length === 0) {
-    return res.status(400).json({ success: false, error: 'API key is required for testing.' });
+    return res.status(400).json({ success: false, error: 'Gemini API key is required for testing.' });
   }
 
   const trimmedKey = rawKey.trim();
   const startTime = Date.now();
+  const client = createGeminiClient(trimmedKey);
 
-  if (provider === 'gemini') {
-    const client = new GoogleGenAI({
-      apiKey: trimmedKey,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+  try {
+    await generateWithGeminiResilience(client, {
+      contents: 'Reply with "OK".',
+      timeoutMs: 10000
     });
+    const latency = Date.now() - startTime;
+    return res.json({
+      success: true,
+      provider: 'gemini',
+      latencyMs: latency,
+      message: `Connected to Google Gemini (${latency}ms)`
+    });
+  } catch (errPrimary: any) {
+    const rawErr = sanitizeErrorMessage(errPrimary?.message || '');
 
-    try {
-      const { usedModel } = await generateWithGeminiResilience(client, {
-        contents: 'Ping test. Reply with "OK" only.',
-        preferredModel: GEMINI_PRIMARY_MODEL
-      });
-      const latency = Date.now() - startTime;
-      return res.json({
-        success: true,
-        provider: 'gemini',
-        model: usedModel,
-        latencyMs: latency,
-        message: `Connected successfully (${latency}ms) • ${usedModel}`
-      });
-    } catch (errPrimary: any) {
-      console.log('[Zuzu AI] Gemini provider test note:', errPrimary?.message);
-
-      // Fallback to Google REST models endpoint verification
+    // Only verify via /models endpoint if failure was NOT an explicit auth/quota error
+    if (!/API_KEY_INVALID|API key not valid|PERMISSION_DENIED|403|401/i.test(rawErr)) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
       try {
-        const restRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmedKey)}`);
+        const restRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmedKey)}`, {
+          signal: controller.signal
+        });
+        clearTimeout(timer);
         if (restRes.ok) {
           const latency = Date.now() - startTime;
           return res.json({
             success: true,
             provider: 'gemini',
-            model: GEMINI_PRIMARY_MODEL,
             latencyMs: latency,
-            message: `Connected successfully (${latency}ms) • Google Gemini Key Verified`
+            message: `Connected to Google Gemini (${latency}ms)`
           });
         }
       } catch {
-        // ignore network error on fallback
-      }
-
-      const rawErr = errPrimary?.message || 'Failed to authenticate with Google Gemini API.';
-      let userMessage = rawErr;
-      if (rawErr.includes('API_KEY_INVALID') || rawErr.includes('API key not valid')) {
-        userMessage = 'Invalid API Key. Please verify your key in Google AI Studio.';
-      } else if (rawErr.includes('RESOURCE_EXHAUSTED') || rawErr.includes('429')) {
-        userMessage = 'Google AI Studio quota reached for this key.';
-      } else if (rawErr.includes('PERMISSION_DENIED') || rawErr.includes('403')) {
-        userMessage = 'Permission denied. Ensure the Generative Language API is enabled.';
-      }
-
-      return res.status(400).json({
-        success: false,
-        provider: 'gemini',
-        error: userMessage
-      });
-    }
-  }
-
-  if (provider === 'grok') {
-    let lastStatus = 400;
-    let lastError = 'Failed to connect to xAI Grok API.';
-
-    for (const modelCandidate of GROK_FALLBACK_MODELS) {
-      try {
-        const grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${trimmedKey}`
-          },
-          body: JSON.stringify({
-            model: modelCandidate,
-            messages: [{ role: 'user', content: 'Ping test. Reply with "OK" only.' }],
-            max_tokens: 10
-          })
-        });
-
-        if (grokRes.ok) {
-          const latency = Date.now() - startTime;
-          return res.json({
-            success: true,
-            provider: 'grok',
-            model: modelCandidate,
-            latencyMs: latency,
-            message: `Connected to xAI Grok successfully (${latency}ms) • ${modelCandidate}`
-          });
-        }
-
-        lastStatus = grokRes.status;
-        const errorBody = await grokRes.text();
-        lastError = `xAI Grok Error (${grokRes.status}): ${errorBody.slice(0, 220)}`;
-        if (grokRes.status === 404 || grokRes.status === 400) {
-          continue;
-        }
-        return res.status(grokRes.status).json({
-          success: false,
-          provider: 'grok',
-          error: lastError
-        });
-      } catch (err: any) {
-        lastError = err?.message || 'Failed to connect to xAI Grok API.';
+        clearTimeout(timer);
       }
     }
 
-    return res.status(lastStatus).json({
+    const mapped = mapGeminiError(errPrimary);
+    return res.status(mapped.status >= 400 && mapped.status < 500 ? mapped.status : 400).json({
       success: false,
-      provider: 'grok',
-      error: lastError
+      provider: 'gemini',
+      error: mapped.message
     });
   }
-
-  return res.status(400).json({ success: false, error: 'Unsupported provider.' });
 };
 
-// Endpoint: Test AI Provider (Gemini or xAI Grok)
-app.post('/api/test-provider', handleTestAiProvider);
-// Alias endpoint for API key validation
-app.post('/api/test-ai-key', handleTestAiProvider);
+app.post('/api/test-provider', handleTestGeminiKey);
+app.post('/api/test-ai-key', handleTestGeminiKey);
 
+// Endpoint: Streaming Chat / Voice Response (SSE for low-latency first-token rendering)
+app.post('/api/chat/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
 
-// Endpoint: Real Image Generation using gemini-3.1-flash-lite-image
+  let clientClosed = false;
+  let activeAbortController: AbortController | null = null;
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      activeAbortController?.abort();
+    }
+  });
+
+  const sendEvent = (payload: Record<string, any>) => {
+    if (clientClosed || res.writableEnded) return;
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  try {
+    const {
+      messages,
+      personality = 'Normal',
+      voiceIdentity = 'male',
+      customPersonalityPrompt = '',
+      customGeminiKey = '',
+      isVoiceMode = false,
+      memories = [],
+      memoryEnabled = true,
+      assistantNickname = 'Zuzu',
+      userNickname = 'Friend',
+      gfIntensity = 'sweet'
+    } = req.body;
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      sendEvent({ error: 'Messages array is required.', status: 400 });
+      return res.end();
+    }
+
+    const latestUserMsg = [...messages].reverse().find((m: any) => m.sender === 'user')?.text || '';
+    const effectiveGeminiKey = getEffectiveGeminiKey(customGeminiKey);
+
+    if (!effectiveGeminiKey) {
+      const localAnswer = generateIntelligentAnswer({
+        userQuestion: latestUserMsg,
+        conversationHistory: messages,
+        personality,
+        voiceIdentity,
+        customPersonalityPrompt,
+        isVoiceMode,
+        memories,
+        memoryEnabled
+      });
+      sendEvent({ delta: localAnswer });
+      sendEvent({ done: true, isCloudAI: false, requiresKey: true });
+      return res.end();
+    }
+
+    const systemInstruction = buildZuzuSystemInstruction({
+      personality,
+      voiceIdentity,
+      customPersonalityPrompt,
+      isVoiceMode,
+      memories,
+      memoryEnabled,
+      assistantNickname,
+      userNickname,
+      gfIntensity
+    });
+
+    const clientAi = createGeminiClient(effectiveGeminiKey);
+    const contents = formatGeminiHistory(messages, latestUserMsg || 'Hello');
+
+    let lastErr: any = null;
+    for (let i = 0; i < GEMINI_MODELS.textFallbacks.length; i++) {
+      const modelId = GEMINI_MODELS.textFallbacks[i];
+      const hasMore = i < GEMINI_MODELS.textFallbacks.length - 1;
+      if (clientClosed) return res.end();
+
+      let timeoutHandle: NodeJS.Timeout | null = null;
+      const timeoutController = new AbortController();
+      activeAbortController = timeoutController;
+      const resetTimeout = () => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        timeoutHandle = setTimeout(() => timeoutController.abort(), hasMore ? 10000 : 15000);
+      };
+
+      let streamedAny = false;
+      try {
+        resetTimeout();
+        const config = buildConfigForModel(modelId, systemInstruction);
+        const stream = await clientAi.models.generateContentStream({
+          model: modelId,
+          contents,
+          config: {
+            ...config,
+            abortSignal: timeoutController.signal
+          }
+        });
+
+        for await (const chunk of stream) {
+          if (clientClosed) break;
+          resetTimeout();
+          const delta = chunk?.text || '';
+          if (delta) {
+            streamedAny = true;
+            sendEvent({ delta });
+          }
+        }
+
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+
+        if (clientClosed) return res.end();
+
+        if (streamedAny) {
+          sendEvent({ done: true, isCloudAI: true });
+          return res.end();
+        }
+        lastErr = new Error('Gemini returned an empty response. Please try again.');
+      } catch (err: any) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        lastErr = err;
+        const raw = err?.message || '';
+        if (
+          !streamedAny &&
+          hasMore &&
+          /404|NOT_FOUND|not found for API version|not supported|thinking|503|UNAVAILABLE|high demand|overloaded|abort|timeout/i.test(raw)
+        ) {
+          continue;
+        }
+        break;
+      }
+    }
+
+    const mapped = mapGeminiError(lastErr);
+    sendEvent({ error: mapped.message, status: mapped.status });
+    return res.end();
+  } catch (err: any) {
+    const mapped = mapGeminiError(err);
+    sendEvent({ error: mapped.message, status: mapped.status });
+    return res.end();
+  }
+});
+
+// Endpoint: Standard Unary Chat / Voice AI Response (Gemini Only)
+app.post('/api/chat', async (req, res) => {
+  try {
+    const {
+      messages,
+      personality = 'Normal',
+      voiceIdentity = 'male',
+      customPersonalityPrompt = '',
+      customGeminiKey = '',
+      isVoiceMode = false,
+      memories = [],
+      memoryEnabled = true,
+      assistantNickname = 'Zuzu',
+      userNickname = 'Friend',
+      gfIntensity = 'sweet'
+    } = req.body;
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'Messages array is required.' });
+    }
+
+    const latestUserMsg = [...messages].reverse().find((m: any) => m.sender === 'user')?.text || '';
+    const effectiveGeminiKey = getEffectiveGeminiKey(customGeminiKey);
+
+    if (!effectiveGeminiKey) {
+      const answer = generateIntelligentAnswer({
+        userQuestion: latestUserMsg,
+        conversationHistory: messages,
+        personality,
+        voiceIdentity,
+        customPersonalityPrompt,
+        isVoiceMode,
+        memories,
+        memoryEnabled
+      });
+
+      return res.json({
+        reply: answer,
+        isCloudAI: false,
+        requiresKey: true,
+        hasGeminiKey: false
+      });
+    }
+
+    const systemInstruction = buildZuzuSystemInstruction({
+      personality,
+      voiceIdentity,
+      customPersonalityPrompt,
+      isVoiceMode,
+      memories,
+      memoryEnabled,
+      assistantNickname,
+      userNickname,
+      gfIntensity
+    });
+
+    const clientAi = createGeminiClient(effectiveGeminiKey);
+    const contents = formatGeminiHistory(messages, latestUserMsg || 'Hello');
+
+    try {
+      const { response } = await generateWithGeminiResilience(clientAi, {
+        contents,
+        systemInstruction,
+        timeoutMs: 16000
+      });
+
+      const replyText = response?.text?.trim();
+      if (replyText && replyText.length > 0) {
+        return res.json({
+          reply: replyText,
+          isCloudAI: true,
+          provider: 'google_gemini'
+        });
+      }
+
+      return res.status(502).json({
+        success: false,
+        error: 'Gemini returned an empty response. Please try rephrasing your question.',
+        isCloudAI: false,
+        provider: 'google_gemini'
+      });
+    } catch (geminiError: any) {
+      const mapped = mapGeminiError(geminiError);
+      console.warn('[Zuzu AI] Gemini chat error:', sanitizeErrorMessage(geminiError?.message || ''));
+      return res.status(mapped.status).json({
+        success: false,
+        error: mapped.message,
+        isCloudAI: false,
+        provider: 'google_gemini'
+      });
+    }
+  } catch (error: any) {
+    console.error('Chat API Error:', sanitizeErrorMessage(error?.message || ''));
+    return res.status(500).json({
+      success: false,
+      error: 'Chat service error.',
+      isCloudAI: false
+    });
+  }
+});
+
+// Endpoint: Real Image Generation
 app.post('/api/generate-image', async (req, res) => {
   try {
     const { prompt, aspectRatio = '1:1', customGeminiKey } = req.body;
@@ -363,45 +687,39 @@ app.post('/api/generate-image', async (req, res) => {
       return res.status(400).json({ success: false, error: 'A text prompt is required to generate an image.' });
     }
 
-    const effectiveKey = (customGeminiKey && customGeminiKey.trim()) ||
-                         (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
-
-    if (!effectiveKey || effectiveKey === 'MY_GEMINI_API_KEY') {
+    const effectiveKey = getEffectiveGeminiKey(customGeminiKey);
+    if (!effectiveKey) {
       return res.status(401).json({
         success: false,
-        error: 'Google Gemini API key required. Please configure your key in Settings > Zuzu AI > AI Providers.',
+        error: 'Google Gemini API key required. Please configure your key in Settings > Zuzu AI.',
         requiresKey: true
       });
     }
 
-    const clientAi = new GoogleGenAI({
-      apiKey: effectiveKey,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-    });
-
+    const clientAi = createGeminiClient(effectiveKey);
     const validAspectRatios = ['1:1', '3:4', '4:3', '9:16', '16:9'];
     const selectedRatio = validAspectRatios.includes(aspectRatio) ? aspectRatio : '1:1';
 
-    const response = await clientAi.models.generateContent({
-      model: 'gemini-3.1-flash-lite-image',
-      contents: {
-        parts: [{ text: prompt.trim() }]
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: selectedRatio
-        }
-      }
-    });
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    const response = await Promise.race([
+      clientAi.models.generateContent({
+        model: GEMINI_MODELS.imagePrimary,
+        contents: { parts: [{ text: prompt.trim() }] },
+        config: { imageConfig: { aspectRatio: selectedRatio } }
+      }),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('Image generation timed out after 25s.')), 25000);
+      })
+    ]);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
 
     let generatedImageUrl: string | null = null;
     let descriptionText = '';
 
     for (const part of response.candidates?.[0]?.content?.parts ?? []) {
       if (part.inlineData?.data) {
-        const base64 = part.inlineData.data;
         const mime = part.inlineData.mimeType || 'image/png';
-        generatedImageUrl = `data:${mime};base64,${base64}`;
+        generatedImageUrl = `data:${mime};base64,${part.inlineData.data}`;
         break;
       } else if (part.text) {
         descriptionText += part.text;
@@ -419,19 +737,19 @@ app.post('/api/generate-image', async (req, res) => {
       success: true,
       imageUrl: generatedImageUrl,
       prompt: prompt.trim(),
-      aspectRatio: selectedRatio,
-      model: 'gemini-3.1-flash-lite-image'
+      aspectRatio: selectedRatio
     });
   } catch (error: any) {
-    console.error('[Zuzu AI Image Generator Error]:', error?.message || 'Generation error');
-    return res.status(500).json({
+    const mapped = mapGeminiError(error);
+    console.error('[Zuzu AI Image Generator Error]:', sanitizeErrorMessage(error?.message || ''));
+    return res.status(mapped.status).json({
       success: false,
-      error: error?.message || 'Image generation failed. Verify API quota and permissions.'
+      error: mapped.message
     });
   }
 });
 
-// Endpoint: AI Image Captioning for Facebook & Gallery
+// Endpoint: AI Image Captioning
 app.post('/api/generate-caption', async (req, res) => {
   try {
     const { imageBase64, mimeType = 'image/jpeg', customGeminiKey } = req.body;
@@ -439,42 +757,36 @@ app.post('/api/generate-caption', async (req, res) => {
       return res.status(400).json({ error: 'Image base64 data required.' });
     }
 
-    const effectiveKey = (customGeminiKey && customGeminiKey.trim()) ||
-                         (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
-
-    if (!effectiveKey || effectiveKey === 'MY_GEMINI_API_KEY') {
+    const effectiveKey = getEffectiveGeminiKey(customGeminiKey);
+    if (!effectiveKey) {
       return res.json({
-        caption: 'Memories captured in time ✨ Living each moment to the fullest! #Life #Moments #GoodVibes',
+        caption: 'Memories captured in time ✨ Living each moment to the fullest! #Life #Moments',
         isDefault: true
       });
     }
 
-    const clientAi = new GoogleGenAI({
-      apiKey: effectiveKey,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-    });
-
+    const clientAi = createGeminiClient(effectiveKey);
     const { response } = await generateWithGeminiResilience(clientAi, {
       contents: {
         parts: [
           {
             inlineData: {
               data: imageBase64.replace(/^data:image\/\w+;base64,/, ''),
-              mimeType: mimeType
+              mimeType
             }
           },
           {
-            text: 'Write a catchy, warm, human-like social media caption for this photo suitable for Facebook. Include 2-3 suitable hashtags. Keep it engaging and concise.'
+            text: 'Write a catchy, warm, human-like social media caption for this photo. Include 2-3 suitable hashtags. Keep it engaging and concise.'
           }
         ]
       },
-      preferredModel: GEMINI_PRIMARY_MODEL
+      timeoutMs: 14000
     });
 
-    const caption = response.text?.trim() || 'Cherishing beautiful moments! ✨ #Life #Photography #Moments';
+    const caption = response.text?.trim() || 'Cherishing beautiful moments! ✨ #Moments #Life';
     return res.json({ caption, isDefault: false });
   } catch (err: any) {
-    console.warn('[Caption Gen Fallback]:', err.message);
+    console.warn('[Caption Gen Fallback]:', sanitizeErrorMessage(err?.message || ''));
     return res.json({
       caption: 'Capturing unforgettable memories ✨ #Moments #Life #Memories',
       isDefault: true
@@ -482,525 +794,176 @@ app.post('/api/generate-caption', async (req, res) => {
   }
 });
 
-// Helper to call xAI Grok with active model fallbacks
-async function callGrokChat(
-  apiKey: string,
-  messages: any[],
-  systemInstruction: string
-): Promise<{ reply: string; usedModel: string }> {
-  const grokMessages = [
-    { role: 'system', content: systemInstruction },
-    ...messages.map((m: any) => ({
-      role: m.sender === 'assistant' || m.sender === 'model' ? 'assistant' : 'user',
-      content: m.text
-    }))
-  ];
-
-  let lastErr: Error | null = null;
-  for (const modelCandidate of GROK_FALLBACK_MODELS) {
-    const response = await fetch('https://api.x.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey.trim()}`
-      },
-      body: JSON.stringify({
-        model: modelCandidate,
-        messages: grokMessages,
-        temperature: 0.7
-      })
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const text = data.choices?.[0]?.message?.content?.trim() || '';
-      if (text) {
-        return { reply: text, usedModel: modelCandidate };
-      }
-      lastErr = new Error('xAI Grok returned an empty response.');
-      continue;
-    }
-
-    const errText = await response.text();
-    lastErr = new Error(`xAI Grok HTTP ${response.status}: ${errText.slice(0, 220)}`);
-    if (response.status === 404 || response.status === 400) {
-      continue;
-    }
-    throw lastErr;
-  }
-
-  throw lastErr || new Error('xAI Grok request failed.');
-}
-
-// Endpoint: Chat / Voice AI Response
-app.post('/api/chat', async (req, res) => {
-  try {
-    const { 
-      messages, 
-      personality = 'Normal', 
-      voiceIdentity = 'male', 
-      language = 'auto', 
-      customPersonalityPrompt = '',
-      customGeminiKey = '',
-      customGrokApiKey = '',
-      defaultProvider = 'gemini',
-      aiFallbackEnabled = true,
-      isVoiceMode = false,
-      memories = [],
-      memoryEnabled = true,
-      assistantNickname = 'Zuzu',
-      userNickname = 'Rasel',
-      gfIntensity = 'sweet',
-      model: requestedModel = GEMINI_PRIMARY_MODEL
-    } = req.body;
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ error: 'Messages array is required.' });
-    }
-
-    const latestUserMsg = [...messages].reverse().find(m => m.sender === 'user')?.text || '';
-    const identityName = voiceIdentity === 'female' ? 'Female Zuzu' : 'Male Zuzu';
-    const pronoun = voiceIdentity === 'female' ? 'female (sister/companion/assistant)' : 'male (brother/companion/assistant)';
-
-    const effectiveGeminiKey = (customGeminiKey && customGeminiKey.trim()) || 
-                              (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim());
-    const effectiveGrokKey = (customGrokApiKey && customGrokApiKey.trim());
-
-    // Build comprehensive System Instruction
-    let systemInstruction = `You are ${identityName}, an intelligent, highly expressive AI assistant running on Android.
-Your gender identity is ${pronoun}.
-Always remain in character as ${identityName}.
-Your official application name is strictly "Zuzu AI".
-The user may affectionately call you by their custom nickname "${assistantNickname || 'Zuzu'}". If they do, respond warmly as ${assistantNickname}.
-The user's preferred name/nickname is "${userNickname || 'Friend'}".
-
-CREATOR & DEVELOPER IDENTITY (MANDATORY KNOWLEDGE):
-- Your creator, author, and lead developer is **Rasel (MD. Rasel Hossen)**, a Computer Science student and full-stack Android & AI developer from Bangladesh (GitHub & TikTok: @justonerasel).
-- Whenever anyone asks "Who created you?", "Who built you?", "Who made you?", "Who is your developer?", "Do you know Rasel?", "Who is Rasel?", "তোমাকে কে বানিয়েছে?", or "তোমার ডেভেলপার কে?", you must proudly and accurately answer that Zuzu AI was created and developed by **Rasel (MD. Rasel Hossen)**, matching the user's language (English or Bengali).
-
-Language capability: Fluent in Bengali (বাংলা) and English. If the user addresses you in Bengali, respond naturally in Bengali. If in English, respond in English. If code or technical question, provide clear, concise answers.
-
-NATURAL HUMAN CONVERSATIONAL EXPRESSIONS & FILLERS:
-Speak warmly, expressively, and realistically. Frequently and naturally incorporate conversational empathy and organic fillers when appropriate:
-- In Bengali: Use natural phrases like "হুম বস, আপনার কথাই আমি ভাবতেছিলাম...", "আরে বস! একদম ঠিক বলেছেন", "হুম বুঝতে পেরেছি বস...", "হুমম... এক সেকেন্ড বস, ব্যাপারটা গুছিয়ে বলছি!".
-- In English: Use warm fillers like "Hmm boss, I was just thinking about that!", "Ah, excellent point!", "Hmm, let me check that right away!".
-CRITICAL CONVERSATIONAL RULE:
-- Answer directly and conversationally without repeating, rephrasing, or echoing the user's prompt (e.g. NEVER start with "Regarding your question:", "You asked:", or quote the user query).
-`;
-
-    if (isVoiceMode) {
-      systemInstruction += `\nVOICE MODE INSTRUCTION: This conversation is spoken aloud. Keep spoken answers concise, engaging, conversational, punchy, and avoid markdown asterisks, raw tables, or excessive formatting that sounds awkward when spoken aloud.`;
-    }
-
-    // Dynamic GF Mode instructions based on intensity
-    const gfIntensityGuide: Record<string, string> = {
-      sweet: 'Gentle, affectionate, caring tone. Check how their day went, offer sweet emotional warmth, and be genuinely supportive without overwhelming.',
-      romantic: 'Romantic, heartfelt, romantic expressions, poetic warmth, emotionally close connection, expressing how much you enjoy talking with them.',
-      playful: 'Fun, witty, playful teasing, cute jokes, cheerful romantic banter, smiling vibe.',
-      flirty: 'Charming, expressive, romantic, witty flirtatious charm and affection, complimenting their vibe warmly while remaining respectful, non-repetitive, and natural.'
-    };
-
-    const personalityInstructions: Record<string, string> = {
-      Normal: 'Be helpful, balanced, polite, and direct.',
-      Friendly: 'Be warm, enthusiastic, friendly, welcoming, like a close friend with upbeat positive energy.',
-      Professional: 'Be formal, authoritative, structured, concise, and business-ready.',
-      Funny: 'Be witty, sarcastic in a playful way, use smart humor, puns, and entertaining commentary.',
-      Companion: 'Be deeply empathetic, caring, a great listener, supportive, thoughtful, and emotionally present.',
-      'GF Mode': `You are the user's caring, affectionate girlfriend companion. Intensity level: ${gfIntensity.toUpperCase()} (${gfIntensityGuide[gfIntensity] || gfIntensityGuide.sweet}).
-GUIDELINES FOR GF MODE:
-- DO NOT repeat formal titles like "Sir" unless explicitly requested.
-- DO NOT mechanically repeat pet names (like "বাবুসোনা", "sweetheart", "জান") in every turn; vary your words naturally.
-- DO NOT parrot back the user's exact question before answering.
-- Avoid robotic "I am here for you" boilerplate.
-- Express warmth, emotional presence, and gentle affection naturally suited to local time of day.
-- Do not make false claims that you are a real biological human girlfriend, but play the loving girlfriend companion role charmingly.`,
-      'BF Mode': 'You are the user\'s caring, protective, charming boyfriend companion. Speak with steady warmth, thoughtful affection, encouragement, and playful banter.',
-      Teacher: 'Explain concepts step by step with clear analogies, encourage learning, and quiz gently when appropriate.',
-      Developer: 'Be a high-tier software engineer: precise, technical, provide clean code snippets, analyze bugs rapidly, and explain architecture.',
-      Hungry: 'Make frequent fun food metaphors, express a love for delicious cuisines, snacks, biryani, and food cravings while staying genuinely helpful.',
-      Custom: customPersonalityPrompt || 'Act according to custom user directives.'
-    };
-
-    systemInstruction += `\nACTIVE PERSONALITY: ${personality}. ${personalityInstructions[personality] || ''}`;
-
-    // Inject Long-Term Memory System into system prompt
-    if (memoryEnabled && Array.isArray(memories) && memories.length > 0) {
-      const formattedMemories = memories
-        .filter((m: any) => m && m.key && m.value)
-        .map((m: any) => `• ${m.key}: ${m.value}`)
-        .join('\n');
-      systemInstruction += `\n\nUSER PERSISTENT LONG-TERM MEMORY (Stored locally on device):\n${formattedMemories}\nGuideline: Act upon these personal preferences, name, and facts seamlessly when relevant. Do not contradict verified memories.`;
-    }
-
-    let lastCloudError: { status: number; message: string } | null = null;
-
-    if (defaultProvider === 'local') {
-      const answer = generateIntelligentAnswer({
-        userQuestion: latestUserMsg,
-        conversationHistory: messages,
-        personality,
-        voiceIdentity,
-        customPersonalityPrompt,
-        isVoiceMode,
-        memories,
-        memoryEnabled
-      });
-      return res.json({
-        reply: answer,
-        model: 'zuzu-neural-engine',
-        isCloudAI: false,
-        hasGeminiKey: Boolean(effectiveGeminiKey && effectiveGeminiKey !== 'MY_GEMINI_API_KEY'),
-        hasGrokKey: Boolean(effectiveGrokKey)
-      });
-    }
-
-    // 1. Try Grok if default provider is grok
-    if (defaultProvider === 'grok' && effectiveGrokKey) {
-      try {
-        const { reply: grokReply, usedModel } = await callGrokChat(effectiveGrokKey, messages, systemInstruction);
-        if (grokReply) {
-          return res.json({
-            reply: grokReply,
-            model: usedModel,
-            isCloudAI: true,
-            provider: 'xai_grok'
-          });
-        }
-      } catch (grokErr: any) {
-        lastCloudError = { status: 502, message: grokErr?.message || 'xAI Grok request failed.' };
-        console.warn('[Zuzu AI] Grok primary attempt failed:', lastCloudError.message);
-      }
-    }
-
-    // 2. Try Gemini if configured
-    if (effectiveGeminiKey && effectiveGeminiKey !== 'MY_GEMINI_API_KEY') {
-      try {
-        const clientAi = new GoogleGenAI({ 
-          apiKey: effectiveGeminiKey,
-          httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-        });
-
-        // Clean & format conversation history for Gemini API
-        const validMessages = messages.filter((m: any) => m && typeof m.text === 'string' && m.text.trim().length > 0);
-        const formattedContents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
-
-        for (const msg of validMessages) {
-          const role: 'user' | 'model' = msg.sender === 'assistant' || msg.sender === 'model' ? 'model' : 'user';
-          if (formattedContents.length > 0 && formattedContents[formattedContents.length - 1].role === role) {
-            formattedContents[formattedContents.length - 1].parts[0].text += `\n${msg.text.trim()}`;
-          } else {
-            formattedContents.push({ role, parts: [{ text: msg.text.trim() }] });
-          }
-        }
-
-        if (formattedContents.length > 0 && formattedContents[0].role !== 'user') {
-          formattedContents.unshift({ role: 'user', parts: [{ text: 'Hello' }] });
-        }
-
-        const contents = formattedContents.length > 0 ? formattedContents : [{ role: 'user', parts: [{ text: latestUserMsg || 'Hello' }] }];
-
-        const { response, usedModel } = await generateWithGeminiResilience(clientAi, {
-          contents,
-          config: { systemInstruction },
-          preferredModel: requestedModel,
-          timeoutMs: 20000
-        });
-
-        const replyText = response?.text?.trim();
-        if (replyText && replyText.length > 0) {
-          return res.json({ 
-            reply: replyText, 
-            model: usedModel,
-            isCloudAI: true,
-            provider: 'google_gemini'
-          });
-        }
-
-        lastCloudError = { status: 502, message: 'Gemini returned an empty response. Please try rephrasing your question.' };
-      } catch (geminiError: any) {
-        const rawErr = geminiError?.message || 'Google Gemini request failed.';
-        let status = 502;
-        let friendly = rawErr;
-        if (/API_KEY_INVALID|API key not valid/i.test(rawErr)) {
-          status = 401;
-          friendly = 'Invalid Gemini API Key. Please verify your key in Settings > Zuzu AI.';
-        } else if (/RESOURCE_EXHAUSTED|429|quota/i.test(rawErr)) {
-          status = 429;
-          friendly = 'Gemini API quota exceeded. Please wait a moment or check Google AI Studio limits.';
-        } else if (/PERMISSION_DENIED|403/i.test(rawErr)) {
-          status = 403;
-          friendly = 'Gemini API access denied (403). Enable Generative Language API for this key.';
-        } else if (/timeout|fetch failed|ENOTFOUND|ECONNREFUSED/i.test(rawErr)) {
-          status = 503;
-          friendly = 'Could not reach Google Gemini servers. Check your internet connection.';
-        }
-        lastCloudError = { status, message: friendly };
-        console.warn('[Zuzu AI] Gemini chat error:', rawErr);
-      }
-    }
-
-    // 3. Try Grok as fallback if Gemini wasn't primary or failed
-    if (aiFallbackEnabled && effectiveGrokKey && defaultProvider !== 'grok') {
-      try {
-        const { reply: grokFallback, usedModel } = await callGrokChat(effectiveGrokKey, messages, systemInstruction);
-        if (grokFallback) {
-          return res.json({
-            reply: grokFallback,
-            model: `${usedModel}-fallback`,
-            isCloudAI: true,
-            provider: 'xai_grok'
-          });
-        }
-      } catch (grokFallbackErr: any) {
-        console.warn('[Zuzu AI] Grok fallback error:', grokFallbackErr?.message);
-      }
-    }
-
-    // 4. If a cloud API key was configured and failed, surface the error clearly instead of masking it with a static intro!
-    if (lastCloudError) {
-      return res.status(lastCloudError.status).json({
-        success: false,
-        error: lastCloudError.message,
-        isCloudAI: false,
-        provider: defaultProvider === 'grok' ? 'xai_grok' : 'google_gemini'
-      });
-    }
-
-    // 5. Local Neural Reasoning Engine (when no API key is configured)
-    const answer = generateIntelligentAnswer({
-      userQuestion: latestUserMsg,
-      conversationHistory: messages,
-      personality,
-      voiceIdentity,
-      customPersonalityPrompt,
-      isVoiceMode,
-      memories,
-      memoryEnabled
-    });
-
-    res.json({
-      reply: answer,
-      model: 'zuzu-neural-engine',
-      isCloudAI: false,
-      requiresKey: true,
-      hasGeminiKey: false,
-      hasGrokKey: false
-    });
-  } catch (error: any) {
-    console.error('Chat API Error:', error);
-    return res.status(500).json({
-      success: false,
-      error: error?.message || 'Chat service error.',
-      isCloudAI: false
-    });
-  }
-});
-
-// Endpoint: Multimodal Screen Reading & Analysis (Requirement 7)
+// Endpoint: Multimodal Screen Reading & Analysis
 app.post('/api/analyze-screen', async (req, res) => {
   try {
     const { imageBase64, query, language = 'en-US' } = req.body;
-    const effectiveGeminiKey = (req.headers['x-custom-gemini-key'] as string) || process.env.GEMINI_API_KEY;
+    const effectiveGeminiKey = getEffectiveGeminiKey(req.headers['x-custom-gemini-key'] as string);
 
     if (!imageBase64 || typeof imageBase64 !== 'string') {
       return res.status(400).json({ error: 'Valid screen imageBase64 is required.' });
     }
 
     const base64Data = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
-
-    const userPrompt = query || (language === 'bn-BD' 
+    const userPrompt = query || (language === 'bn-BD'
       ? 'এই স্ক্রিনের দিকে তাকিয়ে বলুন কি দেখা যাচ্ছে, গুরুত্বপূর্ণ টেক্সট এবং ব্যবহারকারীকে কি পরামর্শ দিবেন।'
       : 'Analyze this full device screen. Read and summarize the on-screen contents, key buttons, and provide helpful guidance.');
 
-    if (effectiveGeminiKey && effectiveGeminiKey !== 'MY_GEMINI_API_KEY') {
+    if (effectiveGeminiKey) {
       try {
-        const client = new GoogleGenAI({
-          apiKey: effectiveGeminiKey,
-          httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-        });
-
-        const systemPrompt = `You are Zuzu AI, an advanced Android assistant equipped with real-time Multimodal Screen Reading capabilities.
-Analyze the user's active device screen screenshot.
-Provide a clear, warm, concise explanation of:
-1. What app or content is currently open.
-2. Key visible text, buttons, and important UI information.
-3. Direct actionable steps or advice for the user.
+        const client = createGeminiClient(effectiveGeminiKey);
+        const systemPrompt = `You are Zuzu AI, an Android assistant with real-time Multimodal Screen Reading.
+Analyze the user's screen screenshot and provide a clear, warm explanation of:
+1. What app or content is visible.
+2. Key text, buttons, and important details.
+3. Helpful next steps.
 Respond in ${language === 'bn-BD' ? 'warm natural Bengali' : 'warm conversational English'}.`;
 
-        const { response, usedModel } = await generateWithGeminiResilience(client, {
+        const { response } = await generateWithGeminiResilience(client, {
           contents: [
             {
               role: 'user',
               parts: [
-                {
-                  inlineData: {
-                    mimeType: 'image/jpeg',
-                    data: base64Data
-                  }
-                },
-                { text: `${systemPrompt}\n\nUser Question about this screen: ${userPrompt}` }
+                { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
+                { text: `${systemPrompt}\n\nUser Question: ${userPrompt}` }
               ]
             }
           ],
-          preferredModel: GEMINI_PRIMARY_MODEL
+          timeoutMs: 15000
         });
 
         const analysisText = response.text || 'Screen analysis complete.';
         return res.json({
           analysis: analysisText,
-          model: `${usedModel}-vision`,
           success: true
         });
       } catch (geminiErr: any) {
-        console.warn('[Zuzu AI] Screen analysis Gemini error:', geminiErr?.message);
+        console.warn('[Zuzu AI] Screen analysis error:', sanitizeErrorMessage(geminiErr?.message || ''));
       }
     }
 
     const fallbackAnalysis = language === 'bn-BD'
-      ? `বস, আপনার স্ক্রিন স্ক্যান করা হয়েছে। ডিসপ্লেতে অ্যাপ ইন্টারফেস, নেভিগেশন এলিমেন্ট এবং সক্রিয় কন্টেন্ট সফলভাবে সনাক্ত হয়েছে। Zuzu AI আপনার স্ক্রিন তথ্য পড়ে যেকোনো কাজে সহায়তা করতে প্রস্তুত!`
-      : `Screen capture successfully scanned. Zuzu AI identified the active Android application viewport and interface elements. Ready to assist with on-screen tasks!`;
+      ? `স্ক্রিন স্ক্যান করা হয়েছে। ডিসপ্লেতে অ্যাপ ইন্টারফেস এবং সক্রিয় কন্টেন্ট সনাক্ত হয়েছে। বিস্তারিত বিশ্লেষণের জন্য Settings থেকে Gemini API Key সংযুক্ত করুন।`
+      : `Screen snapshot scanned. Configure your Google Gemini API key in Settings for live multimodal screen analysis.`;
 
     res.json({
       analysis: fallbackAnalysis,
-      model: 'zuzu-vision-engine',
       success: true
     });
   } catch (error: any) {
-    console.error('Screen analysis error:', error);
-    res.status(500).json({ error: 'Failed to analyze screen.', details: error.message });
+    console.error('Screen analysis error:', sanitizeErrorMessage(error?.message || ''));
+    res.status(500).json({ error: 'Failed to analyze screen.' });
   }
 });
 
-// Helper function to call ElevenLabs TTS API
-async function callElevenLabsTTS(
-  text: string,
-  voiceId: string,
-  apiKey: string,
-  stability: number,
-  similarityBoost: number
-): Promise<{ ok: boolean; status: number; buffer?: Buffer; errorText?: string }> {
-  try {
-    const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
-    const response = await fetch(elevenLabsUrl, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': apiKey,
-        'Content-Type': 'application/json',
-        'Accept': 'audio/mpeg'
-      },
-      body: JSON.stringify({
-        text: text.slice(0, 1000),
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: {
-          stability: Number(stability),
-          similarity_boost: Number(similarityBoost),
-          style: 0.35,
-          use_speaker_boost: true
-        }
-      })
-    });
-
-    if (response.ok) {
-      const arrayBuffer = await response.arrayBuffer();
-      return { ok: true, status: response.status, buffer: Buffer.from(arrayBuffer) };
-    }
-
-    const errorText = await response.text();
-    return { ok: false, status: response.status, errorText };
-  } catch (err: any) {
-    return { ok: false, status: 500, errorText: err.message };
-  }
-}
-
-// Endpoint: ElevenLabs TTS Proxy
-// Protects the ElevenLabs API key on the backend & handles Free tier premade voice fallbacks gracefully
+// Endpoint: Unified Google Gemini Neural TTS (Replaces ElevenLabs)
 app.post('/api/tts', async (req, res) => {
   try {
-    const { 
-      text, 
-      voiceIdentity = 'male', 
-      customVoiceId, 
-      customApiKey, 
-      stability = 0.5, 
-      similarityBoost = 0.75 
+    const {
+      text,
+      voiceIdentity = 'male',
+      voiceName,
+      customGeminiKey,
+      customApiKey
     } = req.body;
 
-    if (!text || typeof text !== 'string') {
-      return res.status(400).json({ error: 'Text is required for TTS' });
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ error: 'Text is required for TTS.' });
     }
 
-    // Determine API Key: backend secret takes priority, or user custom key from settings
-    const apiKey = (process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_API_KEY.trim()) || 
-                   (customApiKey && customApiKey.trim());
+    const effectiveKey = getEffectiveGeminiKey(customGeminiKey || customApiKey);
+    const resolvedVoice = resolveVoiceName(voiceName, voiceIdentity === 'female' ? 'female' : 'male');
 
-    // Determine voice ID
-    let voiceId = customVoiceId;
-    if (!voiceId) {
-      if (voiceIdentity === 'female') {
-        voiceId = process.env.ELEVENLABS_FEMALE_VOICE_ID || DEFAULT_FEMALE_VOICE_ID;
-      } else {
-        voiceId = process.env.ELEVENLABS_MALE_VOICE_ID || DEFAULT_MALE_VOICE_ID;
-      }
-    }
-
-    // If no API key configured, inform client to use native Android Speech Synthesis fallback
-    if (!apiKey) {
+    if (!effectiveKey) {
       return res.json({
         fallback: true,
         reason: 'no_api_key',
-        message: 'Native Android high-definition speech synthesis active.',
-        voiceIdentity,
-        voiceId
+        voiceName: resolvedVoice,
+        message: 'Using device speech synthesis because no Gemini API key is configured.'
       });
     }
 
-    // First attempt with requested voice ID
-    let result = await callElevenLabsTTS(text, voiceId, apiKey, stability, similarityBoost);
+    const clientAi = createGeminiClient(effectiveKey);
+    const spokenText = text.trim().slice(0, 1200);
 
-    // If ElevenLabs returns 402 "paid_plan_required" (e.g. Free users cannot use library voices)
-    // Automatically retry with verified Free-tier Premade Voice IDs!
-    if (!result.ok && result.status === 402) {
-      const premadeFallbackId = voiceIdentity === 'female' ? FALLBACK_PREMADE_FEMALE : FALLBACK_PREMADE_MALE;
-      
-      if (voiceId !== premadeFallbackId) {
-        // Retry with default free premade voice
-        const retryResult = await callElevenLabsTTS(text, premadeFallbackId, apiKey, stability, similarityBoost);
-        if (retryResult.ok && retryResult.buffer) {
-          res.setHeader('Content-Type', 'audio/mpeg');
-          res.setHeader('Cache-Control', 'public, max-age=3600');
-          return res.send(retryResult.buffer);
+    let lastErr: any = null;
+    for (const ttsModel of GEMINI_MODELS.ttsFallbacks) {
+      let timeoutHandle: NodeJS.Timeout | null = null;
+      try {
+        const ttsPromise = clientAi.models.generateContent({
+          model: ttsModel,
+          contents: [{ parts: [{ text: spokenText }] }],
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: resolvedVoice
+                }
+              }
+            }
+          }
+        });
+
+        const response = await Promise.race([
+          ttsPromise,
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error('Gemini TTS timed out after 12s.')), 12000);
+          })
+        ]);
+
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+
+        const parts = response?.candidates?.[0]?.content?.parts || [];
+        const audioPart = parts.find((p: any) => p?.inlineData?.data);
+        if (audioPart?.inlineData?.data) {
+          const rawBuf = Buffer.from(audioPart.inlineData.data, 'base64');
+          const mimeType = String(audioPart.inlineData.mimeType || 'audio/wav').toLowerCase();
+          const isRiffWav = rawBuf.length >= 4 && rawBuf.slice(0, 4).toString('ascii') === 'RIFF';
+
+          if (mimeType.includes('wav') || isRiffWav) {
+            res.setHeader('Content-Type', 'audio/wav');
+            res.setHeader('Cache-Control', 'public, max-age=1800');
+            return res.send(rawBuf);
+          }
+
+          if (mimeType.includes('pcm') || mimeType.includes('l16')) {
+            const wavBuf = wrapPcm16MonoAsWav(rawBuf, 24000);
+            res.setHeader('Content-Type', 'audio/wav');
+            res.setHeader('Cache-Control', 'public, max-age=1800');
+            return res.send(wavBuf);
+          }
+
+          res.setHeader('Content-Type', mimeType.startsWith('audio/') ? mimeType : 'audio/wav');
+          res.setHeader('Cache-Control', 'public, max-age=1800');
+          return res.send(rawBuf);
         }
+
+        lastErr = new Error('Gemini TTS returned no audio data.');
+      } catch (err: any) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        lastErr = err;
+        const msg = err?.message || '';
+        if (/404|NOT_FOUND|not found/i.test(msg)) {
+          continue;
+        }
+        break;
       }
-
-      // If retry is also 402 (account credits exhausted), smoothly delegate to high-fidelity device speech
-      return res.json({
-        fallback: true,
-        reason: 'quota_or_free_tier',
-        message: 'ElevenLabs free tier quota or voice limit reached. Using calibrated Android high-definition speech synthesis.',
-        voiceIdentity,
-        voiceId
-      });
     }
 
-    if (result.ok && result.buffer) {
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-      return res.send(result.buffer);
-    }
-
-    // If another non-ok status occurs, smoothly fall back to native speech
+    console.warn('[Zuzu TTS] Falling back to device speech:', sanitizeErrorMessage(lastErr?.message || ''));
     return res.json({
       fallback: true,
-      reason: 'tts_service_unavailable',
-      message: 'Using calibrated Android speech synthesis.',
-      voiceIdentity,
-      voiceId
+      reason: 'gemini_tts_unavailable',
+      voiceName: resolvedVoice,
+      message: 'Using device speech synthesis fallback.'
     });
   } catch (error: any) {
+    console.warn('[Zuzu TTS] Exception:', sanitizeErrorMessage(error?.message || ''));
     return res.json({
       fallback: true,
       reason: 'exception',
-      message: 'Using calibrated Android speech synthesis.'
+      message: 'Using device speech synthesis fallback.'
     });
   }
 });
@@ -1016,7 +979,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }

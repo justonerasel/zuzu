@@ -21,11 +21,11 @@ import { ImageCreatorView } from './components/ImageCreatorView';
 import { FirstLaunchPermissionModal } from './components/FirstLaunchPermissionModal';
 import { ApiKeyModal } from './components/ApiKeyModal';
 import { ForceUpdateOverlay, ForceUpdatePayload } from './components/ForceUpdateOverlay';
-import { stopSpeaking, speakText, playHapticSound } from './utils/audio';
+import { stopSpeaking, playHapticSound } from './utils/audio';
 import { apiFetch, APP_VERSION, APP_VERSION_CODE } from './utils/apiConfig';
-import { syncBackgroundServicesWithSettings, setMicBusyForActiveSession } from './utils/backgroundService';
-import { buildSmartWakeGreeting, getCachedWeatherSummary, refreshWeatherCacheSilently } from './utils/greetingHelper';
+import { syncBackgroundServicesWithSettings } from './utils/backgroundService';
 import { checkMicrophonePermission, getNativeZuzuPlugin } from './utils/permission';
+import { getDefaultGeminiVoiceForIdentity, getGeminiVoiceByName } from './constants/personalities';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { syncZuCloudNow } from './utils/zuAccount';
@@ -109,9 +109,9 @@ export default function App() {
     settings.recognitionLanguage
   ]);
 
-  // Listen for Always-On Wake Word, Mouth Whistle (শিস) & Finger Snap triggers
+  // Listen for Always-On Wake Word, Mouth Whistle (শিস) & Finger Snap triggers — immediately open listening without greeting speech
   useEffect(() => {
-    const onWakeTriggered = async (e: Event) => {
+    const onWakeTriggered = (e: Event) => {
       const detail = (e as CustomEvent)?.detail || {};
       const remaining = typeof detail.remainingCommand === 'string' ? detail.remainingCommand.trim() : '';
 
@@ -119,65 +119,16 @@ export default function App() {
       setIsVoiceMinimized(false);
       setActiveTab('voice');
 
-      if (remaining) {
-        setTimeout(() => {
-          window.dispatchEvent(new CustomEvent('zuzu-auto-start-voice', {
-            detail: { remainingCommand: remaining, greetingSpoken: true }
-          }));
-        }, 250);
-        return;
-      }
-
-      // Pause background mic cleanly BEFORE Zuzu speaks greeting
-      setMicBusyForActiveSession(true);
-
-      const weather = await refreshWeatherCacheSilently(settings).catch(() => getCachedWeatherSummary());
-      const reply = buildSmartWakeGreeting(settings, { weather });
-
-      // Ensure VoiceView is mounted before dispatching display event
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      window.dispatchEvent(new CustomEvent('zuzu-wake-greeting', {
-        detail: { greetingText: reply, triggerLabel: detail.triggerLabel || '' }
-      }));
-
-      speakText({
-        text: reply,
-        voiceIdentity: settings.activeIdentity,
-        customVoiceId: settings.activeIdentity === 'female' ? settings.elevenLabsFemaleVoiceId : settings.elevenLabsMaleVoiceId,
-        customApiKey: settings.customElevenLabsApiKey,
-        stability: settings.stability,
-        similarityBoost: settings.similarityBoost,
-        speechRate: settings.speechRate,
-        volume: settings.volume,
-        voiceStyleId: settings.selectedVoiceStyleId,
-        onEnd: () => {
-          window.dispatchEvent(new CustomEvent('zuzu-auto-start-voice', {
-            detail: { remainingCommand: '', greetingSpoken: true, greetingText: reply }
-          }));
-        },
-        onError: () => {
-          window.dispatchEvent(new CustomEvent('zuzu-auto-start-voice', {
-            detail: { remainingCommand: '', greetingSpoken: true, greetingText: reply }
-          }));
-        }
-      });
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('zuzu-auto-start-voice', {
+          detail: { remainingCommand: remaining }
+        }));
+      }, 90);
     };
 
     window.addEventListener('zuzu-wake-word-triggered', onWakeTriggered);
     return () => window.removeEventListener('zuzu-wake-word-triggered', onWakeTriggered);
-  }, [
-    settings.activeIdentity,
-    settings.userNickname,
-    settings.recognitionLanguage,
-    settings.elevenLabsFemaleVoiceId,
-    settings.elevenLabsMaleVoiceId,
-    settings.customElevenLabsApiKey,
-    settings.stability,
-    settings.similarityBoost,
-    settings.speechRate,
-    settings.volume,
-    settings.selectedVoiceStyleId
-  ]);
+  }, []);
 
   // Auto-sync ZU-ID Account Firebase cloud backup in background when local data changes
   useEffect(() => {
@@ -271,7 +222,12 @@ export default function App() {
   };
 
   const handleSelectIdentity = (identity: VoiceIdentity) => {
-    handleUpdateSettings({ activeIdentity: identity });
+    const currentVoice = getGeminiVoiceByName(settings.geminiVoiceName);
+    const nextVoice =
+      currentVoice && currentVoice.gender === identity
+        ? currentVoice.id
+        : getDefaultGeminiVoiceForIdentity(identity).id;
+    handleUpdateSettings({ activeIdentity: identity, geminiVoiceName: nextVoice });
   };
 
   const handleSelectTab = (tab: ActiveTab) => {
@@ -406,6 +362,9 @@ export default function App() {
             window.dispatchEvent(new CustomEvent('zuzu-voice-orb-toggle'));
           } else {
             handleSelectTab('voice');
+            setTimeout(() => {
+              window.dispatchEvent(new CustomEvent('zuzu-auto-start-voice', { detail: { remainingCommand: '' } }));
+            }, 80);
           }
         }}
         onMicHoldCancel={() => {

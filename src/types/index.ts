@@ -102,25 +102,12 @@ export interface AppSettings {
   customPersonalityPrompt: string;
   continuousListening: boolean;
   memoryEnabled: boolean; // Long-Term Memory toggle
-  elevenLabsMaleVoiceId: string;
-  elevenLabsFemaleVoiceId: string;
-  customElevenLabsApiKey: string;
-  
-  // AI Providers (Gemini & Grok)
+  // Unified Google Gemini AI Configuration (powers both Text & Voice)
   geminiEnabled: boolean;
   customGeminiApiKey: string;
-  grokEnabled: boolean;
-  customGrokApiKey: string;
-  defaultAiProvider: 'gemini' | 'grok' | 'hybrid' | 'local';
-  aiFallbackEnabled: boolean;
+  geminiVoiceName: string;
 
-  // Voice Options & Live Models
-  selectedVoiceOptionId: string;
-  selectedVoiceStyleId: string;
-  selectedVoiceModelId: string;
-  aiModel: string;
-  stability: number;
-  similarityBoost: number;
+  // Voice Calibration & Speech Preferences
   speechRate: number;
   soundEffects: boolean;
   recognitionLanguage: 'auto' | 'en-US' | 'bn-BD';

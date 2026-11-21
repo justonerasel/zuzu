@@ -17,6 +17,7 @@ import {
 import { AppSettings } from '../types';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
 import { apiFetch, APP_VERSION, directGeminiVisionAnalyze } from '../utils/apiConfig';
+import { resolveGeminiVoiceForSettings } from '../constants/personalities';
 
 interface ScreenAssistantModalProps {
   isOpen: boolean;
@@ -150,13 +151,14 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
         : 'Analyze this full device screen. Read and summarize the on-screen contents, key buttons, and provide helpful guidance.');
 
     const speakAnalysis = (text: string) => {
+      const voice = resolveGeminiVoiceForSettings(settings.geminiVoiceName, settings.activeIdentity);
       speakText({
         text,
         voiceIdentity: settings.activeIdentity,
-        voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId || 'kore_firm',
+        voiceName: voice.id,
         volume: settings.volume ?? 1.0,
         speechRate: settings.speechRate || 1.0,
-        customApiKey: settings.customElevenLabsApiKey,
+        customGeminiKey: settings.customGeminiApiKey,
         onStart: () => setIsSpeakingResult(true),
         onEnd: () => setIsSpeakingResult(false),
         onError: () => setIsSpeakingResult(false)
@@ -200,7 +202,7 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
             'image/jpeg'
           );
           setAnalysisResult(direct.text);
-          setAnalysisModel(`${direct.usedModel}-vision`);
+          setAnalysisModel('Gemini Vision');
           playHapticSound('listen_stop');
           speakAnalysis(direct.text);
           return;
@@ -251,7 +253,7 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
                 Active Android Cast
               </span>
               <span className="text-[10px] font-mono text-slate-500">
-                Gemini 4 Vision
+                Gemini Vision
               </span>
             </div>
             <p className="text-xs text-slate-700 leading-relaxed">
@@ -359,10 +361,10 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
                         speakText({
                           text: analysisResult,
                           voiceIdentity: settings.activeIdentity,
-                          voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId || 'kore_firm',
+                          voiceName: resolveGeminiVoiceForSettings(settings.geminiVoiceName, settings.activeIdentity).id,
                           volume: settings.volume ?? 1.0,
                           speechRate: settings.speechRate || 1.0,
-                          customApiKey: settings.customElevenLabsApiKey,
+                          customGeminiKey: settings.customGeminiApiKey,
                           onStart: () => setIsSpeakingResult(true),
                           onEnd: () => setIsSpeakingResult(false)
                         });

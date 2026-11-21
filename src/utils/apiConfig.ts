@@ -3,42 +3,32 @@ import { generateIntelligentAnswer } from './aiEngine';
 import { getAppSettings } from './storage';
 
 /**
- * Centralized API configuration and network resilience helper for Zuzu AI.
- * Handles seamless routing between Web preview (relative path) and Android APK (remote Cloud Run endpoint),
- * with direct multi-turn Google Gemini API support and clear error surfacing.
+ * Centralized Google Gemini API client, streaming SSE pipeline, timeout safety,
+ * and Android APK routing for Zuzu AI.
  */
 
 // Current Application Build Version (Keep synchronized across Gradle, Server, UI & CI)
 export const APP_VERSION = '3.7.0';
 export const APP_VERSION_CODE = 370;
-export const GEMINI_PRIMARY_MODEL = 'gemini-4-hydrogen';
-export const GEMINI_IMAGE_MODEL = 'gemini-3.1-flash-lite-image';
-const GEMINI_MODEL_CANDIDATES = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
-const GROK_MODEL_CANDIDATES = ['grok-3-mini', 'grok-3', 'grok-2-latest'];
+
+// Centralized Gemini Model Configuration (never hardcoded in UI components)
+const GEMINI_TEXT_CANDIDATES = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'] as const;
+const GEMINI_TTS_CANDIDATES = ['gemini-3.8-flash-lite-tts', 'gemini-2.5-flash-preview-tts'] as const;
+const GEMINI_IMAGE_CANDIDATES = ['gemini-3.1-flash-lite-image', 'gemini-nano-banana-2.1'] as const;
 
 // Deployed Cloud Run Production Backend URL for Android APK
 export const DEFAULT_REMOTE_BACKEND_URL = 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app';
-
-export function resolveSupportedGeminiModel(modelId?: string): string {
-  const clean = (modelId || '').replace(/^models\//, '').trim();
-  if (!clean || clean === 'gemini-3.8-flash' || clean === 'gemini-3.8-live' || clean === 'gemini-2.0-flash') {
-    return GEMINI_PRIMARY_MODEL;
-  }
-  return clean;
-}
 
 export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') {
     return '';
   }
 
-  // 1. User-customized backend server URL (configured via Settings)
   const customUrl = localStorage.getItem('zuzu_custom_server_url')?.trim();
   if (customUrl && customUrl.startsWith('http')) {
     return customUrl.replace(/\/+$/, '');
   }
 
-  // 2. Running inside native Android / Capacitor container
   const cap = (window as any).Capacitor;
   const isCapacitor =
     Boolean(cap?.isNativePlatform?.()) ||
@@ -50,73 +40,109 @@ export function getApiBaseUrl(): string {
     return DEFAULT_REMOTE_BACKEND_URL;
   }
 
-  // 3. Web preview / standard browser development (use relative path)
   return '';
 }
 
-export async function apiFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
+function sanitizeErrorText(raw: string): string {
+  return String(raw || '')
+    .replace(/AIza[0-9A-Za-z-_]{20,}/g, '[REDACTED_KEY]')
+    .replace(/key=[^&\s]+/gi, 'key=[REDACTED]');
+}
+
+/**
+ * Fetch wrapper enforcing strict AbortController timeouts and optional caller cancellation.
+ */
+export async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 15000,
+  externalSignal?: AbortSignal
+): Promise<Response> {
+  if (externalSignal?.aborted) {
+    throw new DOMException('Request cancelled', 'AbortError');
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const onExternalAbort = () => controller.abort();
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      if (timedOut) {
+        throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s. Please check your internet connection.`);
+      }
+      throw err;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+export async function apiFetch(
+  endpoint: string,
+  options: RequestInit = {},
+  timeoutMs = 15000,
+  externalSignal?: AbortSignal
+): Promise<Response> {
   const baseUrl = getApiBaseUrl();
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const fullUrl = baseUrl ? `${baseUrl}${cleanEndpoint}` : cleanEndpoint;
-
-  const timeoutMs = 20000;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   const headers = new Headers(options.headers || {});
   if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
 
-  try {
-    const res = await fetch(fullUrl, {
+  return fetchWithTimeout(
+    fullUrl,
+    {
       ...options,
-      headers,
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    return res;
-  } catch (err: any) {
-    clearTimeout(timeoutId);
-    if (err.name === 'AbortError') {
-      throw new Error(`Request timed out after ${timeoutMs / 1000}s. Please check your internet connection.`);
-    }
-    throw err;
-  }
+      headers
+    },
+    timeoutMs,
+    externalSignal
+  );
 }
 
 export function formatGeminiFriendlyError(rawMessage: string, status?: number): string {
-  const msg = rawMessage || '';
-  if (/API_KEY_INVALID|API key not valid/i.test(msg)) {
+  let msg = sanitizeErrorText(rawMessage || '');
+  if (msg.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(msg);
+      const inner = parsed?.error?.message || parsed?.message;
+      if (typeof inner === 'string') msg = sanitizeErrorText(inner);
+    } catch {}
+  }
+  if (/API_KEY_INVALID|API key not valid/i.test(msg) || status === 401) {
     return 'Invalid Gemini API Key. Please double-check your key in Settings > Zuzu AI.';
   }
   if (/RESOURCE_EXHAUSTED|quota/i.test(msg) || status === 429) {
-    return 'Gemini API quota exceeded (429). Please wait a moment or check Google AI Studio billing/limits.';
+    return 'Gemini API quota exceeded (429). Please wait a moment or check Google AI Studio limits.';
   }
   if (/PERMISSION_DENIED/i.test(msg) || status === 403) {
-    return 'Gemini API access denied (403). Please ensure Generative Language API is enabled for this key.';
+    return 'Gemini API access denied (403). Enable the Generative Language API for this key.';
   }
-  if (/Failed to fetch|NetworkError|timeout|ENOTFOUND/i.test(msg)) {
-    return 'Network error: Unable to reach Google Gemini servers. Check your internet connection.';
+  if (/503|UNAVAILABLE|high demand|overloaded|Service Unavailable/i.test(msg) || status === 503) {
+    return 'Google Gemini is experiencing temporary high demand. Please try again in a moment.';
+  }
+  if (/Failed to fetch|NetworkError|timed out|timeout|ENOTFOUND/i.test(msg)) {
+    return 'Network timeout or offline: Unable to reach Google Gemini servers.';
   }
   return msg || `Google Gemini API error${status ? ` (${status})` : ''}.`;
-}
-
-export function formatGrokFriendlyError(rawMessage: string, status?: number): string {
-  const msg = rawMessage || '';
-  if (status === 401 || /invalid.*key|incorrect api key|unauthorized/i.test(msg)) {
-    return 'Invalid xAI Grok API Key. Please check your key in Settings > Zuzu AI.';
-  }
-  if (status === 403 || /permission|credits|billing/i.test(msg)) {
-    return 'xAI Grok access denied or credits depleted (403). Please check your xAI Console account.';
-  }
-  if (status === 429 || /rate limit|quota/i.test(msg)) {
-    return 'xAI Grok rate limit reached (429). Please wait a moment and try again.';
-  }
-  if (/Failed to fetch|NetworkError|timeout|ENOTFOUND/i.test(msg)) {
-    return 'Network error: Unable to reach xAI Grok servers. Check your internet connection.';
-  }
-  return msg || `xAI Grok API error${status ? ` (${status})` : ''}.`;
 }
 
 export async function validateGeminiKeyDirectly(apiKey: string): Promise<{
@@ -131,25 +157,65 @@ export async function validateGeminiKeyDirectly(apiKey: string): Promise<{
 
   const startTime = Date.now();
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmed)}`;
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' }
-    });
+    // Perform real lightweight generation check first, falling back to /models list only if model ID is temporarily unavailable
+    const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TEXT_CANDIDATES[0]}:generateContent?key=${encodeURIComponent(trimmed)}`;
+    const genRes = await fetchWithTimeout(
+      genUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: 'OK' }] }],
+          generationConfig: { thinkingConfig: { thinkingLevel: 'LOW' } }
+        })
+      },
+      10000
+    );
 
     const latencyMs = Date.now() - startTime;
-
-    if (res.ok) {
+    if (genRes.ok) {
       return {
         success: true,
         latencyMs,
-        message: `Valid ✓ Verified with Google AI (${latencyMs}ms)`
+        message: `Connected (${latencyMs}ms)`
       };
     }
 
-    const errData = await res.json().catch(() => ({}));
-    const rawMsg = errData?.error?.message || `Google API error ${res.status}`;
-    return { success: false, message: formatGeminiFriendlyError(rawMsg, res.status) };
+    const genErr = await genRes.json().catch(() => ({}));
+    const rawMsg = genErr?.error?.message || '';
+
+    // Auth/Quota failures must fail immediately — never mask invalid keys
+    if (
+      genRes.status === 400 ||
+      genRes.status === 401 ||
+      genRes.status === 403 ||
+      genRes.status === 429 ||
+      /API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(rawMsg)
+    ) {
+      // Only retry /models if 400 wasn't API_KEY_INVALID
+      if (!/API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(rawMsg) && genRes.status !== 401 && genRes.status !== 403 && genRes.status !== 429) {
+        const modelsUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmed)}`;
+        const modelsRes = await fetchWithTimeout(modelsUrl, { method: 'GET' }, 8000);
+        if (modelsRes.ok) {
+          const totalMs = Date.now() - startTime;
+          return { success: true, latencyMs: totalMs, message: `Connected (${totalMs}ms)` };
+        }
+      }
+      return { success: false, message: formatGeminiFriendlyError(rawMsg || `HTTP ${genRes.status}`, genRes.status) };
+    }
+
+    // Fallback models list verification for non-auth 404/transient
+    const modelsUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmed)}`;
+    const modelsRes = await fetchWithTimeout(modelsUrl, { method: 'GET' }, 8000);
+    if (modelsRes.ok) {
+      const totalMs = Date.now() - startTime;
+      return { success: true, latencyMs: totalMs, message: `Connected (${totalMs}ms)` };
+    }
+
+    return {
+      success: false,
+      message: formatGeminiFriendlyError(rawMsg || `Google API error ${modelsRes.status}`, modelsRes.status)
+    };
   } catch (netErr: any) {
     return {
       success: false,
@@ -158,27 +224,27 @@ export async function validateGeminiKeyDirectly(apiKey: string): Promise<{
   }
 }
 
-export async function validateAiKey(
-  provider: 'gemini' | 'grok',
-  apiKey: string
-): Promise<{
+export async function validateGeminiApiKey(apiKey: string): Promise<{
   success: boolean;
-  model?: string;
   latencyMs?: number;
   message: string;
   error?: string;
 }> {
   const trimmed = apiKey.trim();
   if (!trimmed) {
-    return { success: false, message: 'API key is required.' };
+    return { success: false, message: 'Gemini API key is required.' };
   }
 
-  // 1. Try server endpoint first
+  // Try backend test endpoint first (keeps proxy parity on Cloud Run)
   try {
-    const res = await apiFetch('/api/test-provider', {
-      method: 'POST',
-      body: JSON.stringify({ provider, apiKey: trimmed, customGeminiKey: trimmed })
-    });
+    const res = await apiFetch(
+      '/api/test-provider',
+      {
+        method: 'POST',
+        body: JSON.stringify({ apiKey: trimmed, customGeminiKey: trimmed })
+      },
+      10000
+    );
 
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) {
@@ -186,84 +252,22 @@ export async function validateAiKey(
       if (res.ok && data.success) {
         return {
           success: true,
-          model: data.model || (provider === 'gemini' ? GEMINI_PRIMARY_MODEL : 'grok-3-mini'),
           latencyMs: data.latencyMs,
-          message:
-            data.message ||
-            `Valid ✓ Connected to ${provider === 'gemini' ? 'Google Gemini 4 Hydrogen' : 'xAI Grok'}`
+          message: data.message || `Connected (${data.latencyMs || 120}ms)`
         };
       }
-      if (data?.error && provider === 'grok' && res.status !== 404) {
-        return { success: false, message: formatGrokFriendlyError(String(data.error), res.status) };
+      if (data?.error && res.status >= 400 && res.status < 500) {
+        return {
+          success: false,
+          message: formatGeminiFriendlyError(String(data.error), res.status)
+        };
       }
     }
   } catch {
-    // Fallback cleanly to direct provider check (standard on standalone APK or local offline dev)
+    // Backend unreachable; fall through to direct Google Gemini validation
   }
 
-  // 2. Direct fallback for Gemini (essential inside standalone Android APK)
-  if (provider === 'gemini') {
-    const directResult = await validateGeminiKeyDirectly(trimmed);
-    return {
-      success: directResult.success,
-      model: directResult.success ? GEMINI_PRIMARY_MODEL : undefined,
-      latencyMs: directResult.latencyMs,
-      message: directResult.message
-    };
-  }
-
-  // 3. Direct fallback for Grok
-  if (provider === 'grok') {
-    const startTime = Date.now();
-    let lastStatus = 0;
-    let lastMsg = '';
-    for (const modelName of GROK_MODEL_CANDIDATES) {
-      try {
-        const grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${trimmed}`
-          },
-          body: JSON.stringify({
-            model: modelName,
-            messages: [{ role: 'user', content: 'Ping' }],
-            max_tokens: 5
-          })
-        });
-        const latencyMs = Date.now() - startTime;
-        if (grokRes.ok) {
-          return {
-            success: true,
-            model: modelName,
-            latencyMs,
-            message: `Valid ✓ Connected to xAI Grok (${modelName}, ${latencyMs}ms)`
-          };
-        }
-        lastStatus = grokRes.status;
-        const errJson = await grokRes.json().catch(() => null);
-        lastMsg = errJson?.error?.message || errJson?.error || `HTTP ${grokRes.status}`;
-        if (grokRes.status === 404 || /model.*not found|does not exist/i.test(String(lastMsg))) {
-          continue;
-        }
-        return {
-          success: false,
-          message: formatGrokFriendlyError(String(lastMsg), grokRes.status)
-        };
-      } catch (gErr: any) {
-        return {
-          success: false,
-          message: formatGrokFriendlyError(gErr?.message || 'Network unreachable')
-        };
-      }
-    }
-    return {
-      success: false,
-      message: formatGrokFriendlyError(lastMsg || `xAI Grok authentication failed`, lastStatus || undefined)
-    };
-  }
-
-  return { success: false, message: 'Unsupported provider' };
+  return validateGeminiKeyDirectly(trimmed);
 }
 
 function buildSystemInstruction(
@@ -272,7 +276,7 @@ function buildSystemInstruction(
   isVoiceMode: boolean
 ): string {
   const identityName = settings.activeIdentity === 'female' ? 'Female Zuzu' : 'Male Zuzu';
-  const pronoun = settings.activeIdentity === 'female' ? 'female companion/assistant' : 'male companion/assistant';
+  const pronoun = settings.activeIdentity === 'female' ? 'female companion & assistant' : 'male companion & assistant';
   const assistantNick = settings.assistantNickname || 'Zuzu';
   const userNick = settings.userNickname || 'Friend';
 
@@ -287,30 +291,22 @@ function buildSystemInstruction(
     hour12: true
   });
 
-  let weatherNote = '';
-  try {
-    const rawWeather = typeof localStorage !== 'undefined' ? localStorage.getItem('zuzu_cached_weather_v1') : null;
-    if (rawWeather) {
-      const w = JSON.parse(rawWeather);
-      if (typeof w?.temperature === 'number' && w?.condition) {
-        weatherNote = `\nCurrent Local Weather${w.city ? ` (${w.city})` : ''}: ${w.temperature}°C, ${w.condition}.`;
-      }
-    }
-  } catch {}
+  let sys = `You are ${identityName} (${assistantNick}), a natural, intelligent, emotionally perceptive AI companion running on Android.
+Voice persona: ${pronoun}. User's name: ${userNick}. Current Local Date & Time: ${liveClock}.
 
-  let sys = `You are ${identityName} (${assistantNick}), an intelligent, warm, helpful AI assistant running on Android.
-Gender identity: ${pronoun}. User's name: ${userNick}.
-Current Local Date & Time: ${liveClock}.${weatherNote}
+CREATOR KNOWLEDGE:
+- Your creator and lead developer is Rasel (MD. Rasel Hossen), a Computer Science student and full-stack Android & AI developer from Bangladesh (GitHub & TikTok: @justonerasel).
+- Mention this warmly and proudly only when asked who built/created/developed you or who Rasel is.
 
-CREATOR & DEVELOPER IDENTITY (MANDATORY KNOWLEDGE):
-- Your creator, author, and lead developer is **Rasel (MD. Rasel Hossen)**, a Computer Science student and full-stack Android & AI developer from Bangladesh (GitHub & TikTok: @justonerasel).
-- If anyone asks "Who created you?", "Who made you?", "Who is your developer?", "Do you know Rasel?", "Who is Rasel?", "তোমাকে কে বানিয়েছে?", or "তোমার ডেভেলপার কে?", always answer proudly and accurately that you (Zuzu AI) were created and developed by **Rasel (MD. Rasel Hossen)** in natural English or Bengali matching the user's language.
-
-You are fluent in both Bengali (বাংলা) and English. Always answer in the language the user spoke or typed, directly answering their actual question without repeating static introductions.
-Active Personality: ${settings.activePersonality}. ${settings.customPersonalityPrompt || ''}`;
+CONVERSATION PRINCIPLES:
+- Speak naturally, warmly, and empathetically like an attentive human partner.
+- Answer directly without parroting or repeating back the user's question.
+- Never repeat repetitive stock fillers or canned catchphrases across turns.
+- Fluent in both Bengali (বাংলা) and English — reply naturally in whichever language the user uses.
+- Active Personality: ${settings.activePersonality}. ${settings.customPersonalityPrompt || ''}`;
 
   if (isVoiceMode) {
-    sys += `\nThis conversation is spoken aloud. Keep replies concise, natural, conversational, and free of markdown asterisks or code blocks.`;
+    sys += `\nVoice Mode: Keep spoken responses concise, conversational, engaging, and free of markdown asterisks, raw tables, or code fences.`;
   }
 
   if (settings.memoryEnabled && memories.length > 0) {
@@ -323,142 +319,135 @@ Active Personality: ${settings.activePersonality}. ${settings.customPersonalityP
   return sys;
 }
 
+function formatMessagesForGeminiRest(
+  messages: Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>
+): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  for (const msg of messages) {
+    const text = (msg?.text || '').trim();
+    if (!text) continue;
+    const role: 'user' | 'model' = msg.sender === 'assistant' || msg.sender === 'model' ? 'model' : 'user';
+    if (contents.length > 0 && contents[contents.length - 1].role === role) {
+      contents[contents.length - 1].parts[0].text += `\n${text}`;
+    } else {
+      contents.push({ role, parts: [{ text }] });
+    }
+  }
+  if (contents.length > 0 && contents[0].role !== 'user') {
+    contents.unshift({ role: 'user', parts: [{ text: 'Hello' }] });
+  }
+  return contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: 'Hello' }] }];
+}
+
 /**
- * Direct Multi-Turn Gemini REST API Generate Content call (used when backend proxy is unreachable in Android APK).
+ * Direct Multi-Turn Gemini REST SSE Streaming call (critical for standalone Android APK & fast progressive UI)
  */
-export async function directGeminiGenerateContent(
-  apiKey: string,
-  promptOrMessages: string | Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>,
-  systemInstruction?: string,
-  preferredModel: string = GEMINI_PRIMARY_MODEL
-): Promise<{ text: string; usedModel: string }> {
-  const cleanKey = apiKey.trim();
+async function directGeminiStreamContent(params: {
+  apiKey: string;
+  messages: Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>;
+  systemInstruction: string;
+  signal?: AbortSignal;
+  onDelta?: (accumulatedText: string, delta: string) => void;
+}): Promise<{ text: string; isCloudAI: boolean }> {
+  const cleanKey = params.apiKey.trim();
+  const contents = formatMessagesForGeminiRest(params.messages);
+  let lastErrorMsg = 'Google Gemini request failed.';
 
-  let contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
-
-  if (typeof promptOrMessages === 'string') {
-    contents = [{ role: 'user', parts: [{ text: promptOrMessages }] }];
-  } else {
-    for (const msg of promptOrMessages) {
-      const text = (msg?.text || '').trim();
-      if (!text) continue;
-      const role: 'user' | 'model' = msg.sender === 'assistant' || msg.sender === 'model' ? 'model' : 'user';
-      if (contents.length > 0 && contents[contents.length - 1].role === role) {
-        contents[contents.length - 1].parts[0].text += `\n${text}`;
-      } else {
-        contents.push({ role, parts: [{ text }] });
-      }
-    }
-    if (contents.length > 0 && contents[0].role !== 'user') {
-      contents.unshift({ role: 'user', parts: [{ text: 'Hello' }] });
-    }
-  }
-
-  const body: any = { contents };
-  if (systemInstruction) {
-    body.systemInstruction = {
-      parts: [{ text: systemInstruction }]
+  for (const modelId of GEMINI_TEXT_CANDIDATES) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(cleanKey)}`;
+    const body: any = {
+      contents,
+      systemInstruction: { parts: [{ text: params.systemInstruction }] }
     };
-  }
+    if (modelId.startsWith('gemini-4')) {
+      body.generationConfig = {
+        thinkingConfig: { thinkingLevel: 'LOW' }
+      };
+    }
 
-  const resolvedPreferred = resolveSupportedGeminiModel(preferredModel);
-  const modelsToTry = Array.from(new Set([resolvedPreferred, ...GEMINI_MODEL_CANDIDATES])).filter(Boolean);
-  let lastErrorMsg = 'Google Gemini API error.';
-
-  for (const modelId of modelsToTry) {
-    const cleanModel = modelId.replace(/^models\//, '');
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      },
+      16000,
+      params.signal
+    );
 
     if (!res.ok) {
       const errJson = await res.json().catch(() => ({}));
       const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
       lastErrorMsg = formatGeminiFriendlyError(rawMsg, res.status);
-      if (res.status === 404 || /NOT_FOUND|not found for API version|not supported/i.test(rawMsg)) {
+      if (
+        res.status === 404 ||
+        res.status === 503 ||
+        /NOT_FOUND|not found for API version|not supported|thinking|UNAVAILABLE|high demand|overloaded/i.test(rawMsg)
+      ) {
         continue;
       }
       throw new Error(lastErrorMsg);
     }
 
-    const data = await res.json();
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    const text = parts.map((p: any) => p?.text || '').join('').trim();
-    if (!text) {
-      throw new Error('Gemini returned an empty response. Please try again.');
+    const reader = res.body?.getReader();
+    if (!reader) {
+      // Fallback if ReadableStream unavailable in older WebView
+      const jsonText = await res.text();
+      let assembled = '';
+      for (const line of jsonText.split('\n')) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine.startsWith('data:')) continue;
+        const jsonPart = trimmedLine.slice(5).trim();
+        if (!jsonPart || jsonPart === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(jsonPart);
+          const chunkText = (parsed?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('');
+          if (chunkText) {
+            assembled += chunkText;
+            params.onDelta?.(assembled, chunkText);
+          }
+        } catch {}
+      }
+      if (!assembled.trim()) throw new Error('Gemini returned an empty response. Please try again.');
+      return { text: assembled.trim(), isCloudAI: true };
     }
-    return { text, usedModel: cleanModel };
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulated = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine.startsWith('data:')) continue;
+        const payload = trimmedLine.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(payload);
+          const chunkText = (parsed?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('');
+          if (chunkText) {
+            accumulated += chunkText;
+            params.onDelta?.(accumulated, chunkText);
+          }
+        } catch {}
+      }
+    }
+
+    if (accumulated.trim()) {
+      return { text: accumulated.trim(), isCloudAI: true };
+    }
+    throw new Error('Gemini returned an empty response. Please try again.');
   }
 
   throw new Error(lastErrorMsg);
-}
-
-/**
- * Direct Multi-Turn xAI Grok REST API call (used when backend proxy is unreachable or in APK).
- */
-export async function directGrokGenerateContent(
-  apiKey: string,
-  promptOrMessages: string | Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>,
-  systemInstruction?: string
-): Promise<{ text: string; usedModel: string }> {
-  const cleanKey = apiKey.trim();
-  const grokMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-
-  if (systemInstruction) {
-    grokMessages.push({ role: 'system', content: systemInstruction });
-  }
-
-  if (typeof promptOrMessages === 'string') {
-    grokMessages.push({ role: 'user', content: promptOrMessages });
-  } else {
-    for (const m of promptOrMessages) {
-      const txt = (m?.text || '').trim();
-      if (!txt) continue;
-      grokMessages.push({
-        role: m.sender === 'assistant' || m.sender === 'model' ? 'assistant' : 'user',
-        content: txt
-      });
-    }
-  }
-
-  let lastErrMsg = 'xAI Grok request failed.';
-  for (const modelName of GROK_MODEL_CANDIDATES) {
-    const res = await fetch('https://api.x.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${cleanKey}`
-      },
-      body: JSON.stringify({
-        model: modelName,
-        messages: grokMessages,
-        temperature: 0.7
-      })
-    });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null);
-      const rawMsg = errData?.error?.message || errData?.error || `HTTP ${res.status}`;
-      lastErrMsg = formatGrokFriendlyError(String(rawMsg), res.status);
-      if (res.status === 404 || /model.*not found|does not exist/i.test(String(rawMsg))) {
-        continue;
-      }
-      throw new Error(lastErrMsg);
-    }
-
-    const data = await res.json();
-    const content = data?.choices?.[0]?.message?.content?.trim();
-    if (!content) {
-      throw new Error('xAI Grok returned an empty response.');
-    }
-    return { text: content, usedModel: modelName };
-  }
-
-  throw new Error(lastErrMsg);
 }
 
 /**
@@ -469,34 +458,47 @@ export async function directGeminiVisionAnalyze(
   imageBase64: string,
   prompt: string,
   mimeType = 'image/jpeg'
-): Promise<{ text: string; usedModel: string }> {
+): Promise<{ text: string }> {
   const cleanKey = apiKey.trim();
   const base64Data = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
 
   let lastErr = 'Gemini vision analysis failed.';
-  for (const modelId of GEMINI_MODEL_CANDIDATES) {
+  for (const modelId of GEMINI_TEXT_CANDIDATES) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { inlineData: { mimeType, data: base64Data } },
-              { text: prompt }
-            ]
-          }
-        ]
-      })
-    });
+    const body: any = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType, data: base64Data } },
+            { text: prompt }
+          ]
+        }
+      ]
+    };
+    if (modelId.startsWith('gemini-4')) {
+      body.generationConfig = { thinkingConfig: { thinkingLevel: 'LOW' } };
+    }
+
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      },
+      15000
+    );
 
     if (!res.ok) {
       const errJson = await res.json().catch(() => ({}));
       const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
       lastErr = formatGeminiFriendlyError(rawMsg, res.status);
-      if (res.status === 404 || /NOT_FOUND|not found/i.test(rawMsg)) {
+      if (
+        res.status === 404 ||
+        res.status === 503 ||
+        /NOT_FOUND|not found|thinking|UNAVAILABLE|high demand|overloaded/i.test(rawMsg)
+      ) {
         continue;
       }
       throw new Error(lastErr);
@@ -505,7 +507,7 @@ export async function directGeminiVisionAnalyze(
     const data = await res.json();
     const text = (data?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('').trim();
     if (text) {
-      return { text, usedModel: modelId };
+      return { text };
     }
   }
   throw new Error(lastErr);
@@ -518,27 +520,28 @@ export async function directGeminiGenerateImage(
   apiKey: string,
   prompt: string,
   aspectRatio = '1:1'
-): Promise<{ imageUrl: string; model: string }> {
+): Promise<{ imageUrl: string }> {
   const cleanKey = apiKey.trim();
   const validRatios = ['1:1', '3:4', '4:3', '9:16', '16:9'];
   const selectedRatio = validRatios.includes(aspectRatio) ? aspectRatio : '1:1';
-  const modelCandidates = [GEMINI_IMAGE_MODEL, 'gemini-nano-banana-2.1'];
   let lastError = 'Image generation failed.';
 
-  for (const modelId of modelCandidates) {
+  for (const modelId of GEMINI_IMAGE_CANDIDATES) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt.trim() }] }],
-        generationConfig: {
-          imageConfig: {
-            aspectRatio: selectedRatio
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt.trim() }] }],
+          generationConfig: {
+            imageConfig: { aspectRatio: selectedRatio }
           }
-        }
-      })
-    });
+        })
+      },
+      25000
+    );
 
     if (!res.ok) {
       const errJson = await res.json().catch(() => ({}));
@@ -554,10 +557,7 @@ export async function directGeminiGenerateImage(
     for (const part of data?.candidates?.[0]?.content?.parts || []) {
       if (part?.inlineData?.data) {
         const mime = part.inlineData.mimeType || 'image/png';
-        return {
-          imageUrl: `data:${mime};base64,${part.inlineData.data}`,
-          model: modelId
-        };
+        return { imageUrl: `data:${mime};base64,${part.inlineData.data}` };
       }
     }
     lastError = 'Model completed request without image data. Try refining your prompt.';
@@ -566,142 +566,264 @@ export async function directGeminiGenerateImage(
   throw new Error(lastError);
 }
 
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function wrapPcm16MonoAsWavBytes(pcmBytes: Uint8Array, sampleRate = 24000): Uint8Array {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  const writeStr = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + pcmBytes.length, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, pcmBytes.length, true);
+
+  const out = new Uint8Array(44 + pcmBytes.length);
+  out.set(new Uint8Array(header), 0);
+  out.set(pcmBytes, 44);
+  return out;
+}
+
+/**
+ * Direct Gemini TTS REST call (used in standalone Android APK when backend proxy isn't available)
+ */
+export async function directGeminiSpeechGenerate(params: {
+  apiKey: string;
+  text: string;
+  voiceName: string;
+  signal?: AbortSignal;
+}): Promise<Blob | null> {
+  const cleanKey = params.apiKey.trim();
+  if (!cleanKey || !params.text.trim()) return null;
+
+  for (const ttsModel of GEMINI_TTS_CANDIDATES) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ttsModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: params.text.trim().slice(0, 1200) }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: params.voiceName
+                }
+              }
+            }
+          }
+        })
+      },
+      12000,
+      params.signal
+    );
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      const rawMsg = errJson?.error?.message || '';
+      if (res.status === 404 || /NOT_FOUND|not found/i.test(rawMsg)) {
+        continue;
+      }
+      return null;
+    }
+
+    const data = await res.json();
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const audioPart = parts.find((p: any) => p?.inlineData?.data);
+    if (!audioPart?.inlineData?.data) continue;
+
+    const bytes = base64ToUint8Array(audioPart.inlineData.data);
+    const mimeType = String(audioPart.inlineData.mimeType || 'audio/wav').toLowerCase();
+    const isRiffWav =
+      bytes.length >= 4 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46;
+
+    if (mimeType.includes('wav') || isRiffWav) {
+      return new Blob([bytes.buffer as ArrayBuffer], { type: 'audio/wav' });
+    }
+    if (mimeType.includes('pcm') || mimeType.includes('l16')) {
+      const wavBytes = wrapPcm16MonoAsWavBytes(bytes, 24000);
+      return new Blob([wavBytes.buffer as ArrayBuffer], { type: 'audio/wav' });
+    }
+    return new Blob([bytes.buffer as ArrayBuffer], { type: mimeType.startsWith('audio/') ? mimeType : 'audio/wav' });
+  }
+
+  return null;
+}
+
 export interface UnifiedChatResult {
   reply: string;
-  model: string;
   isCloudAI: boolean;
   isError?: boolean;
   requiresKey?: boolean;
 }
 
 /**
- * Unified AI Chat pipeline for Text Chat, Voice Studio, and Dashboard Orb.
- * 1. Reads latest saved API keys & provider preferences from localStorage merged with React state.
- * 2. Routes via backend /api/chat first; falls back cleanly to direct Gemini or Grok REST (essential on APK!).
- * 3. Honors selectedVoiceModelId in voice mode and defaultAiProvider ('gemini' | 'grok' | 'hybrid' | 'local').
+ * Low-latency Streaming Unified Gemini AI Pipeline for Text Chat & Voice Conversations.
+ * Uses a single Google Gemini credential (`customGeminiApiKey`) and cancels cleanly via AbortSignal.
  */
-export async function sendUnifiedAiChat(params: {
+export async function streamUnifiedAiChat(params: {
   messages: Array<{ sender: 'user' | 'assistant'; text: string }>;
   settings: AppSettings;
   memories: UserMemory[];
   isVoiceMode: boolean;
+  signal?: AbortSignal;
+  onDelta?: (accumulatedText: string, delta: string) => void;
 }): Promise<UnifiedChatResult> {
   const latestStored = getAppSettings();
   const settings: AppSettings = {
     ...latestStored,
     ...params.settings,
-    customGeminiApiKey: (params.settings.customGeminiApiKey || latestStored.customGeminiApiKey || '').trim(),
-    customGrokApiKey: (params.settings.customGrokApiKey || latestStored.customGrokApiKey || '').trim()
+    customGeminiApiKey: (params.settings.customGeminiApiKey || latestStored.customGeminiApiKey || '').trim()
   };
 
   const latestUserMsg = [...params.messages].reverse().find(m => m.sender === 'user')?.text || '';
   const hasUserGeminiKey = settings.customGeminiApiKey.length > 0 && settings.geminiEnabled !== false;
-  const hasUserGrokKey =
-    settings.customGrokApiKey.length > 0 &&
-    (settings.grokEnabled || settings.defaultAiProvider === 'grok');
-  const hasAnyCloudKey = hasUserGeminiKey || hasUserGrokKey;
 
-  const preferredModel = resolveSupportedGeminiModel(
-    params.isVoiceMode
-      ? settings.selectedVoiceModelId || settings.aiModel
-      : settings.aiModel
-  );
-
-  // 1. Try Backend /api/chat first
+  // 1. Try Backend SSE Stream first (/api/chat/stream)
   let backendExplicitError: string | null = null;
   try {
-    const res = await apiFetch('/api/chat', {
-      method: 'POST',
-      body: JSON.stringify({
-        messages: params.messages,
-        personality: settings.activePersonality,
-        voiceIdentity: settings.activeIdentity,
-        customPersonalityPrompt: settings.customPersonalityPrompt,
-        customGeminiKey: hasUserGeminiKey ? settings.customGeminiApiKey : '',
-        customGrokApiKey: hasUserGrokKey ? settings.customGrokApiKey : '',
-        defaultProvider: settings.defaultAiProvider || 'gemini',
-        aiFallbackEnabled: settings.aiFallbackEnabled !== false,
-        isVoiceMode: params.isVoiceMode,
-        memories: params.memories,
-        memoryEnabled: settings.memoryEnabled,
-        assistantNickname: settings.assistantNickname || 'Zuzu',
-        userNickname: settings.userNickname || 'Friend',
-        gfIntensity: settings.gfIntensity || 'sweet',
-        model: preferredModel
-      })
-    });
+    const res = await apiFetch(
+      '/api/chat/stream',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          messages: params.messages,
+          personality: settings.activePersonality,
+          voiceIdentity: settings.activeIdentity,
+          customPersonalityPrompt: settings.customPersonalityPrompt,
+          customGeminiKey: hasUserGeminiKey ? settings.customGeminiApiKey : '',
+          isVoiceMode: params.isVoiceMode,
+          memories: params.memories,
+          memoryEnabled: settings.memoryEnabled,
+          assistantNickname: settings.assistantNickname || 'Zuzu',
+          userNickname: settings.userNickname || 'Friend',
+          gfIntensity: settings.gfIntensity || 'sweet'
+        })
+      },
+      16000,
+      params.signal
+    );
 
     const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await res.json();
-      if (res.ok && data?.reply && typeof data.reply === 'string' && data.reply.trim().length > 0) {
-        if (!hasAnyCloudKey || data.isCloudAI || settings.defaultAiProvider === 'local') {
+    if (res.ok && contentType.includes('text/event-stream') && res.body) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulated = '';
+      let doneMeta: { isCloudAI?: boolean; requiresKey?: boolean } = {};
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          try {
+            const payload = JSON.parse(trimmed.slice(5).trim());
+            if (payload.error) {
+              backendExplicitError = String(payload.error);
+              break;
+            }
+            if (typeof payload.delta === 'string' && payload.delta.length > 0) {
+              accumulated += payload.delta;
+              params.onDelta?.(accumulated, payload.delta);
+            }
+            if (payload.done) {
+              doneMeta = payload;
+            }
+          } catch {}
+        }
+
+        if (backendExplicitError) break;
+      }
+
+      if (!backendExplicitError && accumulated.trim().length > 0) {
+        if (!hasUserGeminiKey || doneMeta.isCloudAI) {
           return {
-            reply: data.reply.trim(),
-            model: data.model || preferredModel,
-            isCloudAI: Boolean(data.isCloudAI),
-            requiresKey: Boolean(data.requiresKey)
+            reply: accumulated.trim(),
+            isCloudAI: Boolean(doneMeta.isCloudAI),
+            requiresKey: Boolean(doneMeta.requiresKey)
           };
         }
       }
-      if (!res.ok && data?.error) {
-        backendExplicitError = String(data.error);
+    } else if (!res.ok) {
+      const errData = await res.json().catch(() => null);
+      if (errData?.error) {
+        backendExplicitError = String(errData.error);
       }
     }
-  } catch {
-    // Backend unreachable; fall through to direct provider REST calls
+  } catch (err: any) {
+    if (err?.name === 'AbortError' && params.signal?.aborted) {
+      throw err;
+    }
+    // Backend unreachable; fall through to direct Gemini REST stream (essential on standalone APK)
   }
 
-  // 2. Direct Client Provider Pipeline (Critical for Android APK / Offline Proxy)
-  if (hasAnyCloudKey && settings.defaultAiProvider !== 'local') {
+  // 2. Direct Gemini REST SSE Stream fallback (1 controlled transient retry)
+  if (hasUserGeminiKey) {
     const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
-    const providerOrder: Array<'gemini' | 'grok'> =
-      settings.defaultAiProvider === 'grok'
-        ? [
-            ...(hasUserGrokKey ? (['grok'] as const) : []),
-            ...(settings.aiFallbackEnabled !== false && hasUserGeminiKey ? (['gemini'] as const) : [])
-          ]
-        : [
-            ...(hasUserGeminiKey ? (['gemini'] as const) : []),
-            ...(settings.aiFallbackEnabled !== false && hasUserGrokKey ? (['grok'] as const) : [])
-          ];
+    let attempt = 0;
+    let lastErrorMsg = backendExplicitError || '';
 
-    let lastProviderError = backendExplicitError || '';
-    for (const provider of providerOrder) {
+    while (attempt < 2) {
+      attempt += 1;
       try {
-        if (provider === 'grok') {
-          const grokRes = await directGrokGenerateContent(
-            settings.customGrokApiKey,
-            params.messages,
-            sysPrompt
-          );
-          return {
-            reply: grokRes.text,
-            model: grokRes.usedModel,
-            isCloudAI: true
-          };
-        } else {
-          const geminiRes = await directGeminiGenerateContent(
-            settings.customGeminiApiKey,
-            params.messages,
-            sysPrompt,
-            preferredModel
-          );
-          return {
-            reply: geminiRes.text,
-            model: geminiRes.usedModel,
-            isCloudAI: true
-          };
-        }
+        const directRes = await directGeminiStreamContent({
+          apiKey: settings.customGeminiApiKey,
+          messages: params.messages,
+          systemInstruction: sysPrompt,
+          signal: params.signal,
+          onDelta: params.onDelta
+        });
+        return {
+          reply: directRes.text,
+          isCloudAI: true
+        };
       } catch (directErr: any) {
-        lastProviderError = directErr?.message || lastProviderError || `${provider} API failed.`;
+        if (directErr?.name === 'AbortError' && params.signal?.aborted) {
+          throw directErr;
+        }
+        lastErrorMsg = directErr?.message || lastErrorMsg || 'Google Gemini request failed.';
+        const isTransient = /timeout|timed out|Network|Failed to fetch|503|504/i.test(lastErrorMsg);
+        if (!isTransient || attempt >= 2) {
+          break;
+        }
       }
     }
 
-    if (lastProviderError) {
+    if (lastErrorMsg) {
       return {
-        reply: lastProviderError,
-        model: settings.defaultAiProvider === 'grok' ? 'grok-error' : 'gemini-error',
+        reply: lastErrorMsg,
         isCloudAI: false,
         isError: true
       };
@@ -711,13 +833,12 @@ export async function sendUnifiedAiChat(params: {
   if (backendExplicitError) {
     return {
       reply: backendExplicitError,
-      model: 'api-error',
       isCloudAI: false,
       isError: true
     };
   }
 
-  // 3. Offline / Unconfigured fallback when no user API key exists
+  // 3. Offline / Unconfigured fallback when no API key exists
   const localReply = generateIntelligentAnswer({
     userQuestion: latestUserMsg,
     conversationHistory: params.messages,
@@ -728,11 +849,24 @@ export async function sendUnifiedAiChat(params: {
     memories: params.memories,
     memoryEnabled: settings.memoryEnabled
   });
+  params.onDelta?.(localReply, localReply);
 
   return {
     reply: localReply,
-    model: 'zuzu-neural-engine',
     isCloudAI: false,
-    requiresKey: !hasUserGeminiKey && !hasUserGrokKey
+    requiresKey: !hasUserGeminiKey
   };
+}
+
+/**
+ * Convenience non-streaming wrapper backed by the same unified Gemini stream pipeline.
+ */
+export async function sendUnifiedAiChat(params: {
+  messages: Array<{ sender: 'user' | 'assistant'; text: string }>;
+  settings: AppSettings;
+  memories: UserMemory[];
+  isVoiceMode: boolean;
+  signal?: AbortSignal;
+}): Promise<UnifiedChatResult> {
+  return streamUnifiedAiChat(params);
 }

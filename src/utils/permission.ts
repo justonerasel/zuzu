@@ -110,7 +110,7 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
     androidManifestName: 'android.permission.INTERNET',
     category: 'system',
     permissionType: 'manifest',
-    whyNeeded: 'Connects to Google Gemini 4 Hydrogen, xAI Grok, ElevenLabs, and Firebase ZU-ID Cloud Sync.',
+    whyNeeded: 'Connects to Google Gemini voice & text services and Firebase ZU-ID Cloud Sync.',
     androidSecurityNote: 'Standard Android network access.',
     isSpecialSystemSetting: false
   },
@@ -355,7 +355,7 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
     category: 'device',
     permissionType: 'runtime',
     nativeAlias: 'camera',
-    whyNeeded: 'Optional visual capture for multimodal Gemini 4 Hydrogen vision analysis and captioning.',
+    whyNeeded: 'Optional visual capture for multimodal Google Gemini vision analysis and captioning.',
     androidSecurityNote: 'Android runtime dangerous permission (used only when opened).',
     isSpecialSystemSetting: false
   }

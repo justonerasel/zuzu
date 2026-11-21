@@ -46,7 +46,9 @@ import {
   Eye,
   EyeOff,
   VolumeX,
-  Moon
+  Moon,
+  ClipboardPaste,
+  Square
 } from 'lucide-react';
 import { 
   AppSettings, 
@@ -63,7 +65,14 @@ import {
   GfIntensity,
   ActiveTab
 } from '../types';
-import { PERSONALITIES, VOICE_IDENTITIES, VOICE_STYLE_OPTIONS, VOICE_MODELS } from '../constants/personalities';
+import {
+  PERSONALITIES,
+  VOICE_IDENTITIES,
+  GEMINI_VOICE_OPTIONS,
+  GeminiVoiceOption,
+  getDefaultGeminiVoiceForIdentity,
+  resolveGeminiVoiceForSettings
+} from '../constants/personalities';
 
 import { 
   DEFAULT_SETTINGS, 
@@ -79,8 +88,7 @@ import {
 } from '../utils/storage';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
 import { 
-  apiFetch, 
-  validateAiKey, 
+  validateGeminiApiKey, 
   APP_VERSION 
 } from '../utils/apiConfig';
 import { 
@@ -164,10 +172,10 @@ const CATEGORIES: CategoryCardInfo[] = [
   },
   {
     id: 'zuzu_ai',
-    title: 'Zuzu AI',
-    subtitle: 'Google Gemini, xAI Grok & persistent memory',
-    icon: Brain,
-    badge: 'Core AI',
+    title: 'Gemini API & Connection',
+    subtitle: 'One Google Gemini API key for both text & voice',
+    icon: Key,
+    badge: 'Gemini AI',
     colorTheme: {
       bg: 'bg-blue-50/70 hover:bg-blue-50',
       border: 'border-blue-200/80',
@@ -179,10 +187,10 @@ const CATEGORIES: CategoryCardInfo[] = [
   },
   {
     id: 'voice_speech',
-    title: 'Voice Identity & Expression',
-    subtitle: 'Personalize how Zuzu sounds and speaks.',
+    title: 'Voice Identity & Speech',
+    subtitle: 'Curated Gemini neural voices, preview & playback speed',
     icon: Volume2,
-    badge: 'Audio & Live',
+    badge: 'Gemini Voices',
     colorTheme: {
       bg: 'bg-emerald-50/70 hover:bg-emerald-50',
       border: 'border-emerald-200/80',
@@ -284,17 +292,6 @@ const CATEGORIES: CategoryCardInfo[] = [
   }
 ];
 
-const PREMADE_MALE_PRESETS = [
-  { id: 'nPczCjzI2devNBz1zQrb', name: 'Brian (Deep & Crisp)', badge: 'Free Premade' },
-  { id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George (Baritone)', badge: 'Free Premade' },
-  { id: 'CwhRBWXzGAHq8TQ4Fs17', name: 'Roger (Laid-back)', badge: 'Free Premade' },
-];
-
-const PREMADE_FEMALE_PRESETS = [
-  { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah (Soft & Warm)', badge: 'Free Premade' },
-  { id: '9BWtsMINqrJLrRacOk9x', name: 'Aria (Expressive)', badge: 'Free Premade' },
-  { id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura (Narrator)', badge: 'Free Premade' },
-];
 
 const ORB_STYLES: Array<{
   id: OrbStyleId;
@@ -345,34 +342,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [greetingStyle, setGreetingStyle] = useState<'friendly' | 'formal' | 'cheerful'>('friendly');
   const [timeBasedGreetings, setTimeBasedGreetings] = useState(true);
 
-  // AI Providers state (Google Gemini & xAI Grok)
+  // Unified Google Gemini API & Connection State
   const [geminiKeyInput, setGeminiKeyInput] = useState(settings.customGeminiApiKey || '');
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [testingGemini, setTestingGemini] = useState(false);
   const [geminiTestStatus, setGeminiTestStatus] = useState<string | null>(null);
+  const [geminiLatencyMs, setGeminiLatencyMs] = useState<number | null>(null);
   const [geminiValidation, setGeminiValidation] = useState<'idle' | 'validating' | 'valid' | 'failed'>('idle');
-
-  const [grokKeyInput, setGrokKeyInput] = useState(settings.customGrokApiKey || '');
-  const [showGrokKey, setShowGrokKey] = useState(false);
-  const [testingGrok, setTestingGrok] = useState(false);
 
   useEffect(() => {
     setGeminiKeyInput(settings.customGeminiApiKey || '');
   }, [settings.customGeminiApiKey]);
 
-  useEffect(() => {
-    setGrokKeyInput(settings.customGrokApiKey || '');
-  }, [settings.customGrokApiKey]);
-  const [grokTestStatus, setGrokTestStatus] = useState<string | null>(null);
-  const [grokValidation, setGrokValidation] = useState<'idle' | 'validating' | 'valid' | 'failed'>('idle');
-
-  // Voice Preview State for Selected Style
-  const [previewingStyleId, setPreviewingStyleId] = useState<string | null>(null);
+  // Voice Preview & Filter State
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
+  const [voiceGenderFilter, setVoiceGenderFilter] = useState<'all' | 'female' | 'male'>('all');
 
   // Orb Live Preview State
   const [previewOrbState, setPreviewOrbState] = useState<OrbState>('idle');
 
-  // Reset Confirmation Modal State (Requirement 5)
+  // Reset Confirmation Modal State
   const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
   const [resetApiKeysToggle, setResetApiKeysToggle] = useState(false);
 
@@ -383,9 +372,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   // Profile image error fallback state
   const [profileImgError, setProfileImgError] = useState(false);
 
-
   // Audio & Mic state
-  const [testingVoice, setTestingVoice] = useState<VoiceIdentity | null>(null);
   const [micState, setMicState] = useState<MicrophonePermissionState>('prompt');
   const [isTestingMic, setIsTestingMic] = useState(false);
 
@@ -396,17 +383,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [permCategoryFilter, setPermCategoryFilter] = useState<PermissionCategoryId>('all');
   const [permActionLoadingId, setPermActionLoadingId] = useState<string | null>(null);
   const [permNotice, setPermNotice] = useState<string | null>(null);
-
-  // Backend state
-  const [backendConfig, setBackendConfig] = useState<{
-    hasElevenLabsKey: boolean;
-    hasGeminiKey: boolean;
-    maleVoiceId: string;
-    femaleVoiceId: string;
-    version: string;
-  } | null>(null);
-  const [isTestingAi, setIsTestingAi] = useState(false);
-  const [aiTestResult, setAiTestResult] = useState<string | null>(null);
 
   // History & Storage state
   const [confirmClearType, setConfirmClearType] = useState<'text' | 'voice' | null>(null);
@@ -537,11 +513,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   };
 
   useEffect(() => {
-    apiFetch('/api/config')
-      .then(res => res.json())
-      .then(data => setBackendConfig(data))
-      .catch(err => console.warn('Could not fetch backend config:', err));
-
     refreshAllPermissions();
     updateCounts();
   }, []);
@@ -549,41 +520,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const updateCounts = () => {
     setChatCount(getChatMessages().length);
     setVoiceCount(getVoiceSessions().length);
-  };
-
-  const handleTestVoice = (identity: VoiceIdentity) => {
-    if (testingVoice === identity) {
-      stopSpeaking();
-      setTestingVoice(null);
-      return;
-    }
-
-    stopSpeaking();
-    setTestingVoice(identity);
-    playHapticSound('switch');
-
-    const testText =
-      identity === 'female'
-        ? "Hello! I am Female Zuzu. My voice is warm, expressive, and ready to assist you on Android."
-        : "Hello! I am Male Zuzu. My voice is deep, articulate, and ready to assist you on Android.";
-
-    const voiceId =
-      identity === 'female'
-        ? settings.elevenLabsFemaleVoiceId
-        : settings.elevenLabsMaleVoiceId;
-
-    speakText({
-      text: testText,
-      voiceIdentity: identity,
-      customVoiceId: voiceId,
-      customApiKey: settings.customElevenLabsApiKey,
-      stability: settings.stability,
-      similarityBoost: settings.similarityBoost,
-      speechRate: settings.speechRate,
-      onStart: () => setTestingVoice(identity),
-      onEnd: () => setTestingVoice(null),
-      onError: () => setTestingVoice(null)
-    });
   };
 
   const handleRequestMicPermission = async () => {
@@ -602,68 +538,73 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     }
   };
 
-  const handleTestAiConnection = async () => {
-    setIsTestingAi(true);
-    setAiTestResult(null);
-    playHapticSound('message_sent');
-
-    const startTime = Date.now();
+  const handlePasteGeminiKey = async () => {
     try {
-      const res = await apiFetch('/api/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          messages: [{ sender: 'user', text: 'Ping Zuzu AI' }],
-          personality: settings.activePersonality,
-          voiceIdentity: settings.activeIdentity,
-          customGeminiKey: settings.customGeminiApiKey,
-          customGrokKey: settings.customGrokApiKey,
-          aiModel: settings.aiModel,
-          geminiEnabled: settings.geminiEnabled,
-          grokEnabled: settings.grokEnabled
-        })
-      });
-
-      const data = await res.json();
-      const latency = Date.now() - startTime;
-      const model = data.model || 'gemini-4-hydrogen';
-      setAiTestResult(`Success (${latency}ms) • Engine: ${model}`);
-      playHapticSound('listen_start');
-    } catch (err: any) {
-      setAiTestResult(`Connection offline • Local reasoning engine active`);
-    } finally {
-      setIsTestingAi(false);
+      const clip = await navigator.clipboard.readText();
+      if (clip && clip.trim()) {
+        setGeminiKeyInput(clip.trim());
+        setGeminiValidation('idle');
+        setGeminiLatencyMs(null);
+        setGeminiTestStatus('Pasted key from clipboard. Tap Save & Apply or Test Connection.');
+        playHapticSound('message_sent');
+      } else {
+        setGeminiTestStatus('Clipboard is empty.');
+        playHapticSound('listen_stop');
+      }
+    } catch {
+      setGeminiTestStatus('Clipboard access denied. Paste directly into the input field.');
+      playHapticSound('listen_stop');
     }
   };
 
-  const handleSaveAndValidateGemini = async () => {
-    const keyToTest = geminiKeyInput.trim();
+  const handleClearGeminiKey = () => {
+    setGeminiKeyInput('');
     onUpdateSettings({
-      customGeminiApiKey: keyToTest,
-      ...(keyToTest ? { geminiEnabled: true } : {})
+      customGeminiApiKey: '',
+      geminiEnabled: true
+    });
+    setGeminiValidation('idle');
+    setGeminiLatencyMs(null);
+    setGeminiTestStatus('Gemini API key cleared.');
+    playHapticSound('listen_stop');
+  };
+
+  const handleSaveAndApplyGemini = async () => {
+    const keyToSave = geminiKeyInput.trim();
+    onUpdateSettings({
+      customGeminiApiKey: keyToSave,
+      geminiEnabled: true
     });
     playHapticSound('message_sent');
-    if (!keyToTest) {
-      setGeminiTestStatus('Gemini API key cleared.');
+
+    if (!keyToSave) {
       setGeminiValidation('idle');
+      setGeminiLatencyMs(null);
+      setGeminiTestStatus('Gemini API key cleared.');
       return;
     }
+
     setTestingGemini(true);
     setGeminiValidation('validating');
-    setGeminiTestStatus('Validating with Google Gemini...');
+    setGeminiLatencyMs(null);
+    setGeminiTestStatus('Applying configuration & verifying connection...');
     try {
-      const result = await validateAiKey('gemini', keyToTest);
+      const result = await validateGeminiApiKey(keyToSave);
       if (result.success) {
         setGeminiValidation('valid');
-        setGeminiTestStatus(result.message || `Valid ✓ Connected (${result.latencyMs || 120}ms)`);
+        setGeminiLatencyMs(result.latencyMs || null);
+        setGeminiTestStatus('Saved & connected for both Text & Voice conversations.');
         playHapticSound('listen_start');
       } else {
         setGeminiValidation('failed');
-        setGeminiTestStatus(`Failed ✕ ${result.message || 'Invalid API Key'}`);
+        setGeminiLatencyMs(null);
+        setGeminiTestStatus(result.message || 'Saved, but connection check failed.');
         playHapticSound('listen_stop');
       }
     } catch (err: any) {
       setGeminiValidation('failed');
-      setGeminiTestStatus(`Failed ✕ Network error: ${err.message}`);
+      setGeminiLatencyMs(null);
+      setGeminiTestStatus(err?.message || 'Saved, but network unreachable.');
       playHapticSound('listen_stop');
     } finally {
       setTestingGemini(false);
@@ -673,154 +614,66 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const handleTestGemini = async () => {
     const keyToTest = geminiKeyInput.trim() || settings.customGeminiApiKey.trim();
     if (!keyToTest) {
-      setGeminiTestStatus('Please enter an API Key first.');
       setGeminiValidation('idle');
+      setGeminiLatencyMs(null);
+      setGeminiTestStatus('Please enter a Gemini API key first.');
+      playHapticSound('listen_stop');
       return;
     }
+
     setTestingGemini(true);
     setGeminiValidation('validating');
-    setGeminiTestStatus('Validating connection...');
+    setGeminiLatencyMs(null);
+    setGeminiTestStatus('Testing Google Gemini connection...');
     playHapticSound('message_sent');
     try {
-      const result = await validateAiKey('gemini', keyToTest);
+      const result = await validateGeminiApiKey(keyToTest);
       if (result.success) {
         setGeminiValidation('valid');
-        setGeminiTestStatus(result.message || `Valid ✓ Connected (${result.latencyMs || 120}ms)`);
+        setGeminiLatencyMs(result.latencyMs || null);
+        setGeminiTestStatus(result.message || 'Connected to Google Gemini.');
         playHapticSound('listen_start');
       } else {
         setGeminiValidation('failed');
-        setGeminiTestStatus(`Failed ✕ ${result.message || 'Invalid API Key'}`);
+        setGeminiLatencyMs(null);
+        setGeminiTestStatus(result.message || 'Connection failed: Invalid API key.');
         playHapticSound('listen_stop');
       }
     } catch (err: any) {
       setGeminiValidation('failed');
-      setGeminiTestStatus(`Failed ✕ ${err.message}`);
+      setGeminiLatencyMs(null);
+      setGeminiTestStatus(err?.message || 'Network error verifying Gemini API.');
       playHapticSound('listen_stop');
     } finally {
       setTestingGemini(false);
     }
   };
 
-  const handleSaveAndValidateGrok = async () => {
-    const keyToTest = grokKeyInput.trim();
-    onUpdateSettings({
-      customGrokApiKey: keyToTest,
-      ...(keyToTest ? { grokEnabled: true } : {})
-    });
-    playHapticSound('message_sent');
-    if (!keyToTest) {
-      setGrokTestStatus('Grok API key cleared.');
-      setGrokValidation('idle');
-      return;
-    }
-    setTestingGrok(true);
-    setGrokValidation('validating');
-    setGrokTestStatus('Validating with xAI Grok...');
-    try {
-      const result = await validateAiKey('grok', keyToTest);
-      if (result.success) {
-        setGrokValidation('valid');
-        setGrokTestStatus(result.message || `Valid ✓ Connected (${result.latencyMs || 120}ms)`);
-        playHapticSound('listen_start');
-      } else {
-        setGrokValidation('failed');
-        setGrokTestStatus(`Failed ✕ ${result.message || 'Invalid API Key'}`);
-        playHapticSound('listen_stop');
-      }
-    } catch (err: any) {
-      setGrokValidation('failed');
-      setGrokTestStatus(`Failed ✕ Network error: ${err.message}`);
-      playHapticSound('listen_stop');
-    } finally {
-      setTestingGrok(false);
-    }
-  };
-
-  const handleTestGrok = async () => {
-    const keyToTest = grokKeyInput.trim() || settings.customGrokApiKey.trim();
-    if (!keyToTest) {
-      setGrokTestStatus('Please enter an API Key first.');
-      setGrokValidation('idle');
-      return;
-    }
-    setTestingGrok(true);
-    setGrokValidation('validating');
-    setGrokTestStatus('Validating connection...');
-    playHapticSound('message_sent');
-    try {
-      const result = await validateAiKey('grok', keyToTest);
-      if (result.success) {
-        setGrokValidation('valid');
-        setGrokTestStatus(result.message || `Valid ✓ Connected (${result.latencyMs || 120}ms)`);
-        playHapticSound('listen_start');
-      } else {
-        setGrokValidation('failed');
-        setGrokTestStatus(`Failed ✕ ${result.message || 'Invalid API Key'}`);
-        playHapticSound('listen_stop');
-      }
-    } catch (err: any) {
-      setGrokValidation('failed');
-      setGrokTestStatus(`Failed ✕ ${err.message}`);
-      playHapticSound('listen_stop');
-    } finally {
-      setTestingGrok(false);
-    }
-  };
-
-  const [testingFillerPhrase, setTestingFillerPhrase] = useState<string | null>(null);
-
-  const handlePreviewVoiceStyle = (style: typeof VOICE_STYLE_OPTIONS[0]) => {
-    if (previewingStyleId === style.id) {
+  const handlePreviewGeminiVoice = (voice: GeminiVoiceOption) => {
+    if (previewingVoiceId === voice.id) {
       stopSpeaking();
-      setPreviewingStyleId(null);
+      setPreviewingVoiceId(null);
       return;
     }
 
     stopSpeaking();
-    setPreviewingStyleId(style.id);
+    setPreviewingVoiceId(voice.id);
     playHapticSound('switch');
 
     speakText({
-      text: style.previewSample,
-      voiceIdentity: style.genderLabel === 'female' ? 'female' : 'male',
-      voiceStyleId: style.id,
+      text: voice.previewSample,
+      voiceIdentity: voice.gender,
+      voiceName: voice.id,
       volume: settings.volume ?? 1.0,
-      customApiKey: settings.customElevenLabsApiKey,
-      stability: settings.stability,
-      similarityBoost: settings.similarityBoost,
-      speechRate: settings.speechRate || style.recommendedRate,
-      onStart: () => setPreviewingStyleId(style.id),
-      onEnd: () => setPreviewingStyleId(null),
-      onError: () => setPreviewingStyleId(null)
-    });
-  };
-
-  const handleTestFillerPhrase = (phrase: string) => {
-    if (testingFillerPhrase === phrase) {
-      stopSpeaking();
-      setTestingFillerPhrase(null);
-      return;
-    }
-    stopSpeaking();
-    setTestingFillerPhrase(phrase);
-    playHapticSound('switch');
-
-    speakText({
-      text: phrase,
-      voiceIdentity: settings.activeIdentity,
-      voiceStyleId: settings.selectedVoiceStyleId || settings.selectedVoiceOptionId || 'kore_firm',
-      volume: settings.volume ?? 1.0,
+      customGeminiKey: settings.customGeminiApiKey,
       speechRate: settings.speechRate || 1.0,
-      customApiKey: settings.customElevenLabsApiKey,
-      stability: settings.stability,
-      similarityBoost: settings.similarityBoost,
-      onEnd: () => setTestingFillerPhrase(null),
-      onError: () => setTestingFillerPhrase(null)
+      onStart: () => setPreviewingVoiceId(voice.id),
+      onEnd: () => setPreviewingVoiceId(null),
+      onError: () => setPreviewingVoiceId(null)
     });
   };
 
   const handleAddMemory = (e: React.FormEvent) => {
-
     e.preventDefault();
     setMemError(null);
     const result = saveMemory({
@@ -862,12 +715,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   };
 
   const handleConfirmReset = () => {
-    // Reset general configuration while strictly preserving API keys, ZU-ID session, memories & chat history
+    // Reset general configuration while preserving Gemini API key (unless opted out), ZU-ID session, memories & chat history
     const newSettings: AppSettings = {
       ...DEFAULT_SETTINGS,
       customGeminiApiKey: resetApiKeysToggle ? '' : (settings.customGeminiApiKey || ''),
-      customGrokApiKey: resetApiKeysToggle ? '' : (settings.customGrokApiKey || ''),
-      customElevenLabsApiKey: resetApiKeysToggle ? '' : (settings.customElevenLabsApiKey || ''),
       userNickname: settings.userNickname,
       assistantNickname: settings.assistantNickname,
       zuAccountId: settings.zuAccountId,
@@ -1561,346 +1412,184 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             )}
 
             {/* ----------------------------------------------------------- */}
-            {/* 2. ZUZU AI SUB-PAGE — AI PROVIDERS (Requirement 6)         */}
+            {/* 2. UNIFIED GEMINI API & CONNECTION SUB-PAGE                 */}
             {/* ----------------------------------------------------------- */}
             {activeCategory === 'zuzu_ai' && (
               <div className="space-y-3.5 animate-fade-in text-slate-800">
-
-                {/* Google Gemini Card */}
-                <div className="p-4 bg-white/95 border border-blue-200 rounded-2xl shadow-xs space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-bold">
-                        <Sparkles className="w-4 h-4 text-blue-600" />
+                <div className="p-4 bg-white/95 border border-blue-200 rounded-2xl shadow-xs space-y-3.5">
+                  {/* Header & Connection Status */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center flex-shrink-0">
+                        <Key className="w-4 h-4 text-blue-600" />
                       </div>
                       <div>
-                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <span>Google Gemini</span>
-                          <span className="text-[9px] font-mono font-bold bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded">Primary</span>
+                        <div className="text-xs font-extrabold text-slate-800">
+                          Gemini API &amp; Connection
                         </div>
-                        <div className="text-[10px] text-slate-500">Gemini 4 Hydrogen (models/gemini-4-hydrogen) &amp; Image Generation</div>
+                        <div className="text-[10px] text-slate-500">
+                          Powers both Text &amp; Voice conversations
+                        </div>
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => {
-                        const next = settings.geminiEnabled === false ? true : false;
-                        onUpdateSettings({ geminiEnabled: next });
-                        playHapticSound('switch');
-                      }}
-                      className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
-                        settings.geminiEnabled !== false
-                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                          : 'bg-slate-100 text-slate-500 border-slate-200'
-                      }`}
-                    >
-                      {settings.geminiEnabled !== false ? 'Enabled' : 'Disabled'}
-                    </button>
+                    <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                      <span
+                        className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1 ${
+                          geminiValidation === 'valid'
+                            ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                            : geminiValidation === 'failed'
+                            ? 'bg-rose-100 text-rose-800 border-rose-300'
+                            : 'bg-slate-100 text-slate-600 border-slate-200'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            geminiValidation === 'valid'
+                              ? 'bg-emerald-500'
+                              : geminiValidation === 'failed'
+                              ? 'bg-rose-500'
+                              : geminiValidation === 'validating'
+                              ? 'bg-blue-500 animate-pulse'
+                              : 'bg-slate-400'
+                          }`}
+                        />
+                        <span>
+                          {geminiValidation === 'valid'
+                            ? 'Connected'
+                            : geminiValidation === 'failed'
+                            ? 'Error'
+                            : geminiValidation === 'validating'
+                            ? 'Checking...'
+                            : 'Disconnected'}
+                        </span>
+                      </span>
+                      {geminiValidation === 'valid' && geminiLatencyMs !== null && (
+                        <span className="text-[9px] font-mono text-emerald-700 font-semibold">
+                          Latency: {geminiLatencyMs}ms
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  <p className="text-[11px] text-slate-600 leading-relaxed">
-                    Google Gemini powers high-speed bilingual reasoning, Bengali comprehension, and multimodal image creation.
-                  </p>
-
-                  {/* API Key Input */}
-                  <div className="space-y-1.5 pt-1">
-                    <label className="text-[10px] font-bold text-slate-600 flex items-center justify-between">
-                      <span>Gemini API Key:</span>
+                  {/* Single Key Input + Show/Hide */}
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between text-[10px] font-bold text-slate-600">
+                      <span>Google Gemini API Key</span>
                       <a
                         href="https://aistudio.google.com/app/apikey"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-blue-600 hover:text-blue-700 flex items-center gap-0.5 font-normal"
+                        className="text-blue-600 hover:text-blue-700 flex items-center gap-0.5 font-semibold"
                       >
-                        <span>Get key from Google AI Studio</span>
+                        <span>Get free key</span>
                         <ExternalLink className="w-2.5 h-2.5" />
                       </a>
-                    </label>
-
-                    <div className="flex gap-1.5">
-                      <div className="relative flex-1">
-                        <input
-                          type={showGeminiKey ? 'text' : 'password'}
-                          value={geminiKeyInput}
-                          onChange={(e) => setGeminiKeyInput(e.target.value)}
-                          onBlur={() => {
-                            const trimmed = geminiKeyInput.trim();
-                            if (trimmed !== (settings.customGeminiApiKey || '').trim()) {
-                              onUpdateSettings({
-                                customGeminiApiKey: trimmed,
-                                ...(trimmed ? { geminiEnabled: true } : {})
-                              });
-                            }
-                          }}
-                          placeholder="AIzaSy..."
-                          className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2 pr-8 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-400"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowGeminiKey(!showGeminiKey)}
-                          className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600"
-                        >
-                          {showGeminiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                        </button>
-                      </div>
-
-                      <button
-                        onClick={handleSaveAndValidateGemini}
-                        disabled={testingGemini}
-                        className="px-3 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition-colors shadow-xs flex items-center gap-1"
-                      >
-                        <span>{testingGemini ? 'Validating...' : 'Save & Validate'}</span>
-                      </button>
-
-                      {settings.customGeminiApiKey && (
-                        <button
-                          onClick={() => {
-                            setGeminiKeyInput('');
-                            onUpdateSettings({ customGeminiApiKey: '' });
-                            playHapticSound('listen_stop');
-                            setGeminiTestStatus('Gemini key removed.');
-                            setGeminiValidation('idle');
-                          }}
-                          className="p-2 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 transition-colors"
-                          title="Remove Key"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
                     </div>
 
-                    <div className="flex items-center justify-between pt-1">
+                    <div className="relative">
+                      <input
+                        type={showGeminiKey ? 'text' : 'password'}
+                        value={geminiKeyInput}
+                        onChange={(e) => {
+                          setGeminiKeyInput(e.target.value);
+                          setGeminiValidation('idle');
+                          setGeminiLatencyMs(null);
+                          setGeminiTestStatus(null);
+                        }}
+                        placeholder="AIzaSy..."
+                        className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2.5 pr-9 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                      />
                       <button
+                        type="button"
+                        onClick={() => setShowGeminiKey(!showGeminiKey)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700"
+                        title={showGeminiKey ? 'Hide API Key' : 'Show API Key'}
+                      >
+                        {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+
+                    {/* Paste Clipboard & Clear */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={handlePasteGeminiKey}
+                        className="py-1.5 px-3 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                      >
+                        <ClipboardPaste className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Paste Clipboard</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearGeminiKey}
+                        disabled={!geminiKeyInput && !settings.customGeminiApiKey}
+                        className="py-1.5 px-3 rounded-xl bg-slate-50 hover:bg-rose-50 hover:text-rose-700 border border-slate-200 hover:border-rose-200 text-slate-600 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Clear</span>
+                      </button>
+                    </div>
+
+                    {/* Test Connection & Save & Apply Configuration */}
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <button
+                        type="button"
                         onClick={handleTestGemini}
                         disabled={testingGemini}
-                        className="py-1 px-2.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 text-[10px] font-bold flex items-center gap-1 border border-blue-200 transition-colors"
+                        className="py-2.5 px-3 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                       >
-                        <Sparkles className="w-3 h-3" />
+                        <RefreshCw className={`w-3.5 h-3.5 ${testingGemini ? 'animate-spin' : ''}`} />
                         <span>{testingGemini ? 'Testing...' : 'Test Connection'}</span>
                       </button>
-                      <div className="flex items-center gap-1.5 overflow-hidden">
-                        {geminiValidation === 'valid' && (
-                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-0.5 flex-shrink-0">
-                            <Check className="w-2.5 h-2.5" />
-                            <span>Valid</span>
-                          </span>
-                        )}
-                        {geminiValidation === 'failed' && (
-                          <span className="text-[10px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-full border border-rose-300 flex-shrink-0">
-                            Failed ✕
-                          </span>
-                        )}
-                        {geminiTestStatus && (
-                          <span className="text-[10px] text-blue-800 font-mono truncate max-w-[190px]">
-                            {geminiTestStatus}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* xAI Grok Card */}
-                <div className="p-4 bg-white/95 border border-slate-200 rounded-2xl shadow-xs space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-xs">
-                        X
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <span>xAI Grok</span>
-                          <span className="text-[9px] font-mono font-bold bg-slate-100 text-slate-700 px-1.5 py-0.2 rounded">Alternative</span>
-                        </div>
-                        <div className="text-[10px] text-slate-500">Grok 3 / Grok 3 Mini Reasoning</div>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        const next = !settings.grokEnabled;
-                        onUpdateSettings({ grokEnabled: next });
-                        playHapticSound('switch');
-                      }}
-                      className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
-                        settings.grokEnabled
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                          : 'bg-slate-100 text-slate-500 border-slate-200'
-                      }`}
-                    >
-                      {settings.grokEnabled ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </div>
-
-                  <p className="text-[11px] text-slate-600 leading-relaxed">
-                    Direct real-time reasoning with witty humor, conversational depth, and technical precision from xAI.
-                  </p>
-
-                  {/* API Key Input */}
-                  <div className="space-y-1.5 pt-1">
-                    <label className="text-[10px] font-bold text-slate-600 flex items-center justify-between">
-                      <span>xAI Grok API Key:</span>
-                      <a
-                        href="https://console.x.ai/"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-slate-700 hover:text-black flex items-center gap-0.5 font-normal"
-                      >
-                        <span>Get key from xAI Console</span>
-                        <ExternalLink className="w-2.5 h-2.5" />
-                      </a>
-                    </label>
-
-                    <div className="flex gap-1.5">
-                      <div className="relative flex-1">
-                        <input
-                          type={showGrokKey ? 'text' : 'password'}
-                          value={grokKeyInput}
-                          onChange={(e) => setGrokKeyInput(e.target.value)}
-                          onBlur={() => {
-                            const trimmed = grokKeyInput.trim();
-                            if (trimmed !== (settings.customGrokApiKey || '').trim()) {
-                              onUpdateSettings({
-                                customGrokApiKey: trimmed,
-                                ...(trimmed ? { grokEnabled: true } : {})
-                              });
-                            }
-                          }}
-                          placeholder="xai-..."
-                          className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2 pr-8 rounded-xl border border-slate-200 focus:outline-none focus:border-slate-400"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowGrokKey(!showGrokKey)}
-                          className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600"
-                        >
-                          {showGrokKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                        </button>
-                      </div>
 
                       <button
-                        onClick={handleSaveAndValidateGrok}
-                        disabled={testingGrok}
-                        className="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-black transition-colors shadow-xs flex items-center gap-1"
+                        type="button"
+                        onClick={handleSaveAndApplyGemini}
+                        disabled={testingGemini}
+                        className="py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
                       >
-                        <span>{testingGrok ? 'Validating...' : 'Save & Validate'}</span>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Save &amp; Apply</span>
                       </button>
+                    </div>
+                  </div>
 
-                      {settings.customGrokApiKey && (
-                        <button
-                          onClick={() => {
-                            setGrokKeyInput('');
-                            onUpdateSettings({ customGrokApiKey: '' });
-                            playHapticSound('listen_stop');
-                            setGrokTestStatus('Grok key removed.');
-                            setGrokValidation('idle');
-                          }}
-                          className="p-2 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 transition-colors"
-                          title="Remove Key"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                  {/* Status / Diagnostic Message */}
+                  {geminiTestStatus && (
+                    <div
+                      className={`p-2.5 rounded-xl border text-[11px] font-medium flex items-start gap-2 ${
+                        geminiValidation === 'valid'
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                          : geminiValidation === 'failed'
+                          ? 'bg-rose-50 border-rose-200 text-rose-800'
+                          : 'bg-blue-50 border-blue-200 text-blue-900'
+                      }`}
+                    >
+                      {geminiValidation === 'valid' ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                      ) : geminiValidation === 'failed' ? (
+                        <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                      ) : (
+                        <Sparkles className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
                       )}
+                      <span>{geminiTestStatus}</span>
                     </div>
-
-                    <div className="flex items-center justify-between pt-1">
-                      <button
-                        onClick={handleTestGrok}
-                        disabled={testingGrok}
-                        className="py-1 px-2.5 rounded-lg bg-slate-100 text-slate-800 hover:bg-slate-200 text-[10px] font-bold flex items-center gap-1 border border-slate-300 transition-colors"
-                      >
-                        <Zap className="w-3 h-3" />
-                        <span>{testingGrok ? 'Testing...' : 'Test Connection'}</span>
-                      </button>
-                      <div className="flex items-center gap-1.5 overflow-hidden">
-                        {grokValidation === 'valid' && (
-                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-0.5 flex-shrink-0">
-                            <Check className="w-2.5 h-2.5" />
-                            <span>Valid</span>
-                          </span>
-                        )}
-                        {grokValidation === 'failed' && (
-                          <span className="text-[10px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-full border border-rose-300 flex-shrink-0">
-                            Failed ✕
-                          </span>
-                        )}
-                        {grokTestStatus && (
-                          <span className="text-[10px] text-slate-700 font-mono truncate max-w-[190px]">
-                            {grokTestStatus}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Provider Behavior & Routing */}
-                <div className="p-4 bg-white/95 border border-purple-100 rounded-2xl shadow-xs space-y-3">
-                  <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                    <Sliders className="w-3.5 h-3.5 text-purple-600" />
-                    <span>Provider Behavior &amp; Routing</span>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-500">Default AI Provider:</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'gemini', label: 'Gemini (Default)' },
-                        { id: 'grok', label: 'xAI Grok' },
-                        { id: 'hybrid', label: 'Auto (Smart Router)' }
-                      ].map(p => (
-                        <button
-                          key={p.id}
-                          onClick={() => {
-                            onUpdateSettings({ defaultAiProvider: p.id as any });
-                            playHapticSound('switch');
-                          }}
-                          className={`py-2 px-1 text-[10px] font-bold rounded-xl border text-center transition-all ${
-                            (settings.defaultAiProvider || 'gemini') === p.id
-                              ? 'bg-purple-100 border-purple-300 text-purple-900 shadow-xs'
-                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-semibold text-slate-700">Automatic Fallback</div>
-                      <div className="text-[10px] text-slate-500">Fallback to alternative provider if primary experiences latency</div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        const next = settings.aiFallbackEnabled !== false ? false : true;
-                        onUpdateSettings({ aiFallbackEnabled: next });
-                        playHapticSound('switch');
-                      }}
-                      className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
-                        settings.aiFallbackEnabled !== false
-                          ? 'bg-purple-100 text-purple-800 border-purple-300'
-                          : 'bg-slate-100 text-slate-500 border-slate-200'
-                      }`}
-                    >
-                      {settings.aiFallbackEnabled !== false ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </div>
+                  )}
                 </div>
 
                 {/* API Key Security Notice */}
                 <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-start gap-2.5 text-slate-600">
                   <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
                   <div className="text-[10px] leading-relaxed">
-                    <strong className="text-slate-800">API Key Privacy Notice:</strong> Your custom Gemini and Grok keys are stored strictly in private, sandboxed local storage on this device. They are sent directly through secure proxy headers and are never exposed in public repositories, telemetry, or client bundle code.
+                    <strong className="text-slate-800">Local Key Storage:</strong> Your Google Gemini API key is saved privately on this device and used for both text chat and voice conversations.
                   </div>
                 </div>
               </div>
             )}
 
             {/* ----------------------------------------------------------- */}
-            {/* 3. VOICE & SPEECH SUB-PAGE (Requirement 7)                 */}
+            {/* 3. VOICE & SPEECH SUB-PAGE — CURATED GEMINI VOICES          */}
             {/* ----------------------------------------------------------- */}
             {activeCategory === 'voice_speech' && (
               <div className="space-y-3.5 animate-fade-in text-slate-800">
@@ -1912,13 +1601,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       <span>Primary Voice Identity</span>
                     </div>
                     <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-bold">
-                      Dual Engine
+                      {resolveGeminiVoiceForSettings(settings.geminiVoiceName, settings.activeIdentity).name}
                     </span>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2.5">
                     <button
-                      onClick={() => onUpdateSettings({ activeIdentity: 'male' })}
+                      onClick={() => {
+                        const curr = resolveGeminiVoiceForSettings(settings.geminiVoiceName, 'male');
+                        const nextVoice = curr.gender === 'male' ? curr.id : getDefaultGeminiVoiceForIdentity('male').id;
+                        onUpdateSettings({ activeIdentity: 'male', geminiVoiceName: nextVoice });
+                        playHapticSound('switch');
+                      }}
                       className={`p-3 rounded-xl border text-left transition-all ${
                         settings.activeIdentity === 'male'
                           ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-xs'
@@ -1929,11 +1623,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         <span className="font-bold text-xs">♂ Male Zuzu</span>
                         {settings.activeIdentity === 'male' && <Check className="w-3.5 h-3.5 text-blue-600 stroke-[3]" />}
                       </div>
-                      <p className="text-[10px] text-slate-500">Authoritative, deep resonance</p>
+                      <p className="text-[10px] text-slate-500">Articulate, warm &amp; grounded</p>
                     </button>
 
                     <button
-                      onClick={() => onUpdateSettings({ activeIdentity: 'female' })}
+                      onClick={() => {
+                        const curr = resolveGeminiVoiceForSettings(settings.geminiVoiceName, 'female');
+                        const nextVoice = curr.gender === 'female' ? curr.id : getDefaultGeminiVoiceForIdentity('female').id;
+                        onUpdateSettings({ activeIdentity: 'female', geminiVoiceName: nextVoice });
+                        playHapticSound('switch');
+                      }}
                       className={`p-3 rounded-xl border text-left transition-all ${
                         settings.activeIdentity === 'female'
                           ? 'bg-purple-50 border-purple-400 text-purple-900 shadow-xs'
@@ -1944,35 +1643,53 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         <span className="font-bold text-xs">♀ Female Zuzu</span>
                         {settings.activeIdentity === 'female' && <Check className="w-3.5 h-3.5 text-purple-600 stroke-[3]" />}
                       </div>
-                      <p className="text-[10px] text-slate-500">Warm, melodic cadence</p>
+                      <p className="text-[10px] text-slate-500">Warm, natural &amp; melodic</p>
                     </button>
                   </div>
                 </div>
 
-                {/* Selectable Voice Styles (3 Female & 2 Male) */}
+                {/* Gemini Prebuilt Voices Selector */}
                 <div className="p-4 bg-white/95 border border-emerald-100 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                       <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Selectable Voice Styles (3 Female &amp; 2 Male)</span>
+                      <span>Gemini Neural Voices</span>
                     </div>
                     <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-bold">
-                      Featuring Kore
+                      {GEMINI_VOICE_OPTIONS.length} Voices
                     </span>
                   </div>
 
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Choose from 3 expressive female voices (including <strong>Kore</strong> - Firm &amp; Melodic) and 2 male vocal timbres with calibrated speed and pitch.
-                  </p>
+                  {/* Gender Filter Tabs */}
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[
+                      { id: 'all', label: `All (${GEMINI_VOICE_OPTIONS.length})` },
+                      { id: 'female', label: `♀ Female (${GEMINI_VOICE_OPTIONS.filter(v => v.gender === 'female').length})` },
+                      { id: 'male', label: `♂ Male (${GEMINI_VOICE_OPTIONS.filter(v => v.gender === 'male').length})` }
+                    ].map(tab => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setVoiceGenderFilter(tab.id as any)}
+                        className={`py-1.5 px-2 rounded-xl text-[10px] font-bold border transition-all ${
+                          voiceGenderFilter === tab.id
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
 
-                  <div className="space-y-2">
-                    {VOICE_STYLE_OPTIONS.map((style) => {
-                      const isSelected = (settings.selectedVoiceStyleId || settings.selectedVoiceOptionId || 'kore_firm') === style.id;
-                      const isPreviewing = previewingStyleId === style.id;
-                      const isKore = style.id === 'kore_firm';
+                  <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+                    {GEMINI_VOICE_OPTIONS.filter(v => voiceGenderFilter === 'all' || v.gender === voiceGenderFilter).map((voice) => {
+                      const activeVoice = resolveGeminiVoiceForSettings(settings.geminiVoiceName, settings.activeIdentity);
+                      const isSelected = activeVoice.id === voice.id;
+                      const isPreviewing = previewingVoiceId === voice.id;
                       return (
                         <div
-                          key={style.id}
+                          key={voice.id}
                           className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-2 ${
                             isSelected
                               ? 'bg-emerald-50/90 border-emerald-400 shadow-xs ring-1 ring-emerald-300/40'
@@ -1980,36 +1697,49 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                           }`}
                         >
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-bold text-slate-800">{style.name}</span>
-                              {isKore && (
-                                <span className="text-[9px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded border border-amber-200">
-                                  ⭐ Featured Melodic
-                                </span>
-                              )}
-                              <span className="text-[9px] font-mono uppercase bg-white px-1.5 py-0.2 rounded border border-slate-200 text-slate-600">
-                                {style.toneTag}
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-xs font-bold text-slate-800">{voice.name}</span>
+                              <span
+                                className={`text-[9px] font-bold px-1.5 py-0.2 rounded border ${
+                                  voice.gender === 'female'
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                    : 'bg-blue-50 text-blue-700 border-blue-200'
+                                }`}
+                              >
+                                {voice.gender === 'female' ? '♀ Female' : '♂ Male'}
+                              </span>
+                              <span className="text-[9px] font-mono bg-white px-1.5 py-0.2 rounded border border-slate-200 text-slate-600">
+                                {voice.toneTag}
                               </span>
                             </div>
-                            <div className="text-[10px] text-slate-500 truncate mt-0.5">{style.styleDescription}</div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">{voice.description}</div>
                           </div>
 
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
                             <button
-                              onClick={() => handlePreviewVoiceStyle(style)}
-                              className="px-2.5 py-1.5 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-[10px] font-bold flex items-center gap-1 transition-colors"
+                              type="button"
+                              onClick={() => handlePreviewGeminiVoice(voice)}
+                              className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors ${
+                                isPreviewing
+                                  ? 'bg-rose-100 text-rose-800 hover:bg-rose-200'
+                                  : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-800'
+                              }`}
                               title="Preview this voice"
                             >
-                              <Play className="w-2.5 h-2.5 fill-current" />
+                              {isPreviewing ? (
+                                <Square className="w-2.5 h-2.5 fill-current" />
+                              ) : (
+                                <Play className="w-2.5 h-2.5 fill-current" />
+                              )}
                               <span>{isPreviewing ? 'Stop' : 'Preview'}</span>
                             </button>
 
                             <button
+                              type="button"
                               onClick={() => {
                                 onUpdateSettings({
-                                  selectedVoiceOptionId: style.id,
-                                  selectedVoiceStyleId: style.id,
-                                  activeIdentity: style.genderLabel === 'female' ? 'female' : 'male'
+                                  geminiVoiceName: voice.id,
+                                  activeIdentity: voice.gender
                                 });
                                 playHapticSound('switch');
                               }}
@@ -2126,115 +1856,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         </button>
                       ))}
                     </div>
-                  </div>
-                </div>
-
-                {/* Natural Conversational Fillers & Empathy */}
-                <div className="p-4 bg-white/95 border border-emerald-100 rounded-2xl shadow-xs space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                      <Smile className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Natural Conversational Fillers &amp; Empathy</span>
-                    </div>
-                    <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-bold">
-                      Bengali &amp; English
-                    </span>
-                  </div>
-
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Zuzu AI uses natural human conversational fillers (e.g. <em>"হুম বস, আপনার কথাই আমি ভাবতেছিলাম..."</em> or <em>"Hmm boss, I was just thinking about that!"</em>) to sound warm, empathetic, and lifelike instead of mechanical.
-                  </p>
-
-                  <div className="space-y-2">
-                    {[
-                      {
-                        lang: 'Bengali',
-                        phrase: 'হুম বস, আপনার কথাই আমি ভাবতেছিলাম! বলুন কি সাহায্য করতে পারি?'
-                      },
-                      {
-                        lang: 'Bengali',
-                        phrase: 'আরে বস! দারুণ প্রশ্ন করেছেন। এক্ষুনি সুন্দর করে বুঝিয়ে দিচ্ছি।'
-                      },
-                      {
-                        lang: 'English',
-                        phrase: 'Hmm boss, I was just thinking about that! Let me break it down for you.'
-                      },
-                      {
-                        lang: 'English',
-                        phrase: 'Oh hey boss! That is such a great idea. Right on it!'
-                      }
-                    ].map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="p-2.5 rounded-xl bg-slate-50/80 border border-slate-200/80 flex items-center justify-between gap-2"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5 mb-0.5">
-                            <span className="text-[9px] font-mono font-bold uppercase bg-white px-1.5 py-0.2 rounded border border-slate-200 text-emerald-700">
-                              {item.lang}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-700 font-medium italic truncate">
-                            "{item.phrase}"
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => handleTestFillerPhrase(item.phrase)}
-                          className="px-2.5 py-1.5 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-[10px] font-bold flex items-center gap-1 flex-shrink-0 transition-colors"
-                        >
-                          <Play className="w-2.5 h-2.5 fill-current" />
-                          <span>{testingFillerPhrase === item.phrase ? 'Playing...' : 'Test'}</span>
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Voice Model Selector (Requirement 7) */}
-                <div className="p-4 bg-white/95 border border-emerald-100 rounded-2xl shadow-xs space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                      <Radio className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Live Voice Assistant Models</span>
-                    </div>
-                    <span className="text-[10px] font-mono text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                      Live Audio
-                    </span>
-                  </div>
-
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Select the underlying multimodal audio reasoning model for real-time live conversations.
-                  </p>
-
-                  <div className="space-y-2">
-                    {VOICE_MODELS.map((model) => {
-                      const isSelected = (settings.selectedVoiceModelId || 'gemini-4-hydrogen') === model.id;
-                      return (
-                        <button
-                          key={model.id}
-                          onClick={() => {
-                            onUpdateSettings({ selectedVoiceModelId: model.id });
-                            playHapticSound('switch');
-                          }}
-                          className={`w-full p-3 rounded-xl border text-left transition-all flex items-center justify-between ${
-                            isSelected
-                              ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold shadow-xs'
-                              : 'bg-slate-50/70 border-slate-200 text-slate-700 hover:bg-slate-100'
-                          }`}
-                        >
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-mono font-bold">{model.name}</span>
-                              <span className="text-[9px] bg-white px-1.5 py-0.2 rounded border border-slate-200 text-slate-600 font-normal">
-                                {model.availability}
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-slate-500 mt-0.5 font-normal">{model.description}</div>
-                          </div>
-                          {isSelected && <Check className="w-4 h-4 text-emerald-600 stroke-[3] flex-shrink-0" />}
-                        </button>
-                      );
-                    })}
                   </div>
                 </div>
               </div>

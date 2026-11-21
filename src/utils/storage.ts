@@ -1,4 +1,5 @@
 import { AppSettings, ChatMessage, VoiceSession, VoiceMessage, VoiceIdentity, PersonalityId, UserMemory } from '../types';
+import { getGeminiVoiceByName, getDefaultGeminiVoiceForIdentity } from '../constants/personalities';
 
 const STORAGE_KEYS = {
   CHAT_HISTORY: 'zuzu_chat_history_v2',
@@ -20,25 +21,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customPersonalityPrompt: '',
   continuousListening: true,
   memoryEnabled: true, // Long-term memory active by default
-  elevenLabsMaleVoiceId: 'nPczCjzI2devNBz1zQrb', // Brian (Free Premade Voice)
-  elevenLabsFemaleVoiceId: 'EXAVITQu4vr4xnSDxMaL', // Sarah (Free Premade Voice)
-  customElevenLabsApiKey: '',
-  
-  // AI Providers Defaults
+
+  // Unified Google Gemini AI Configuration (powers both Text & Voice)
   geminiEnabled: true,
   customGeminiApiKey: '',
-  grokEnabled: false,
-  customGrokApiKey: '',
-  defaultAiProvider: 'gemini',
-  aiFallbackEnabled: true,
+  geminiVoiceName: 'Orus',
 
-  // Voice Options & Live Models Defaults
-  selectedVoiceOptionId: 'kore_firm',
-  selectedVoiceStyleId: 'kore_firm',
-  selectedVoiceModelId: 'gemini-4-hydrogen',
-  aiModel: 'gemini-4-hydrogen',
-  stability: 0.5,
-  similarityBoost: 0.75,
+  // Voice Calibration & Speech Preferences
   speechRate: 1.0,
   soundEffects: true,
   recognitionLanguage: 'auto',
@@ -321,25 +310,55 @@ export function getAppSettings(): AppSettings {
       return DEFAULT_SETTINGS;
     }
     const parsed = JSON.parse(raw);
-    const combined = { ...DEFAULT_SETTINGS, ...parsed };
+    const combined: AppSettings = { ...DEFAULT_SETTINGS, ...parsed };
 
-    // Auto-migrate legacy library voice IDs that trigger 402 paid_plan_required on ElevenLabs free tier
+    // Migrate legacy voice styles / ElevenLabs IDs cleanly to Gemini prebuilt voices
     let needsResave = false;
-    if (combined.elevenLabsMaleVoiceId === 'pNInz6obpgDQGcFmaJgB') {
-      combined.elevenLabsMaleVoiceId = 'nPczCjzI2devNBz1zQrb'; // Migrate to Brian (Free Premade)
+    const legacyStyleId = parsed.selectedVoiceStyleId || parsed.selectedVoiceOptionId;
+    if (!parsed.geminiVoiceName && legacyStyleId) {
+      const legacyMap: Record<string, string> = {
+        kore_firm: 'Kore',
+        sarah_soft: 'Aoede',
+        aria_expressive: 'Zephyr',
+        brian_deep: 'Orus',
+        george_warm: 'Charon'
+      };
+      combined.geminiVoiceName = legacyMap[legacyStyleId] || getDefaultGeminiVoiceForIdentity(combined.activeIdentity).id;
       needsResave = true;
     }
-    if (combined.elevenLabsFemaleVoiceId === '21m00Tcm4TlvDq8ikWAM') {
-      combined.elevenLabsFemaleVoiceId = 'EXAVITQu4vr4xnSDxMaL'; // Migrate to Sarah (Free Premade)
+
+    const matchedVoice = getGeminiVoiceByName(combined.geminiVoiceName);
+    if (!matchedVoice) {
+      combined.geminiVoiceName = getDefaultGeminiVoiceForIdentity(combined.activeIdentity).id;
+      needsResave = true;
+    } else if (!parsed.geminiVoiceName || parsed.activeIdentity !== matchedVoice.gender) {
+      // Keep activeIdentity aligned with the active Gemini voice gender
+      combined.geminiVoiceName = matchedVoice.id;
+      combined.activeIdentity = matchedVoice.gender;
       needsResave = true;
     }
-    if (!combined.aiModel || combined.aiModel === 'gemini-3.8-flash' || combined.aiModel === 'gemini-2.5-flash' || combined.aiModel === 'gemini-2.0-flash') {
-      combined.aiModel = 'gemini-4-hydrogen';
-      needsResave = true;
-    }
-    if (!combined.selectedVoiceModelId || combined.selectedVoiceModelId === 'gemini-3.8-flash' || combined.selectedVoiceModelId === 'gemini-2.5-flash-native-audio' || combined.selectedVoiceModelId === 'gemini-2.5-flash') {
-      combined.selectedVoiceModelId = 'gemini-4-hydrogen';
-      needsResave = true;
+
+    // Strip retired multi-provider, Grok, ElevenLabs, and hardcoded model fields
+    const retiredKeys = [
+      'elevenLabsMaleVoiceId',
+      'elevenLabsFemaleVoiceId',
+      'customElevenLabsApiKey',
+      'grokEnabled',
+      'customGrokApiKey',
+      'defaultAiProvider',
+      'aiFallbackEnabled',
+      'selectedVoiceOptionId',
+      'selectedVoiceStyleId',
+      'selectedVoiceModelId',
+      'aiModel',
+      'stability',
+      'similarityBoost'
+    ];
+    for (const k of retiredKeys) {
+      if (k in (combined as any)) {
+        delete (combined as any)[k];
+        needsResave = true;
+      }
     }
 
     if (parsed.suAccountId && !combined.zuAccountId) {
