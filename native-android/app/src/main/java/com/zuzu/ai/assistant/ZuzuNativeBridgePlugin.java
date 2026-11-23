@@ -34,6 +34,18 @@ import android.util.Base64;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
+import androidx.credentials.Credential;
+import androidx.credentials.CredentialManager;
+import androidx.credentials.CredentialManagerCallback;
+import androidx.credentials.CustomCredential;
+import androidx.credentials.GetCredentialRequest;
+import androidx.credentials.GetCredentialResponse;
+import androidx.credentials.exceptions.GetCredentialCancellationException;
+import androidx.credentials.exceptions.GetCredentialException;
+import androidx.credentials.exceptions.NoCredentialException;
+
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption;
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -44,16 +56,22 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -95,6 +113,14 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     }
 
     private SpeechRecognizer speechRecognizer;
+    private final Queue<String> pendingSpeechLocales = new ArrayDeque<>();
+    private final AtomicBoolean isSpeechSessionActive = new AtomicBoolean(false);
+
+    private final AtomicBoolean isNativeAudioCaptureActive = new AtomicBoolean(false);
+    private Thread nativeAudioCaptureThread;
+    private ByteArrayOutputStream nativePcmBuffer;
+    private final Object pcmBufferLock = new Object();
+
     private TextToSpeech textToSpeech;
     private boolean ttsInitialized = false;
     private boolean ttsInitInProgress = false;
@@ -177,6 +203,15 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         Context context = getContext();
         String wakeWord = call.getString("wakeWord", "Wake up Zuzu");
 
+        if (!hasPerm(context, Manifest.permission.RECORD_AUDIO)) {
+            JSObject denied = new JSObject();
+            denied.put("started", false);
+            denied.put("running", false);
+            denied.put("reason", "Grant Microphone permission before starting background voice service.");
+            call.resolve(denied);
+            return;
+        }
+
         Intent serviceIntent = new Intent(context, ZuzuForegroundService.class);
         serviceIntent.putExtra(ZuzuForegroundService.KEY_WAKE_WORD, wakeWord);
 
@@ -190,6 +225,12 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             ret.put("started", true);
             ret.put("running", true);
             call.resolve(ret);
+        } catch (SecurityException | IllegalStateException e) {
+            JSObject restricted = new JSObject();
+            restricted.put("started", false);
+            restricted.put("running", false);
+            restricted.put("reason", "Android 14+ OS restricted background microphone service: " + e.getMessage());
+            call.resolve(restricted);
         } catch (Exception e) {
             call.reject("Failed to start foreground service: " + e.getMessage());
         }
@@ -613,6 +654,48 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         call.resolve(buildPermissionSnapshot());
     }
 
+    private List<String> buildLocaleCandidates(String langTag) {
+        Set<String> ordered = new LinkedHashSet<>();
+        String clean = langTag != null ? langTag.trim() : "en-US";
+        String sysTag = Locale.getDefault() != null ? Locale.getDefault().toLanguageTag() : "en-US";
+
+        if ("bn-BD".equalsIgnoreCase(clean) || "bn".equalsIgnoreCase(clean)) {
+            ordered.add("bn-BD");
+            ordered.add("bn_BD");
+            ordered.add("bn-IN");
+            ordered.add("bn");
+            if (sysTag != null && !sysTag.trim().isEmpty()) {
+                ordered.add(sysTag);
+            }
+        } else if ("auto".equalsIgnoreCase(clean) || clean.isEmpty()) {
+            ordered.add("en-US");
+            ordered.add("bn-BD");
+            if (sysTag != null && !sysTag.trim().isEmpty()) {
+                ordered.add(sysTag);
+            }
+        } else {
+            ordered.add(clean);
+            if (sysTag != null && !sysTag.trim().isEmpty()) {
+                ordered.add(sysTag);
+            }
+            ordered.add("en-US");
+            ordered.add("en-GB");
+        }
+        return new ArrayList<>(ordered);
+    }
+
+    private void destroySpeechRecognizerInternal() {
+        if (speechRecognizer != null) {
+            try {
+                speechRecognizer.cancel();
+            } catch (Exception ignored) {}
+            try {
+                speechRecognizer.destroy();
+            } catch (Exception ignored) {}
+            speechRecognizer = null;
+        }
+    }
+
     @PluginMethod
     public void startNativeSpeech(PluginCall call) {
         Context ctx = getContext();
@@ -624,110 +707,150 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         final String langTag = call.getString("language", "en-US");
 
         mainHandler.post(() -> {
-            try {
-                if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
-                    call.reject("Speech recognition service unavailable on this device.", "UNAVAILABLE");
-                    return;
+            if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
+                call.reject("Speech recognition service unavailable on this device.", "UNAVAILABLE");
+                return;
+            }
+
+            pendingSpeechLocales.clear();
+            pendingSpeechLocales.addAll(buildLocaleCandidates(langTag));
+            isSpeechSessionActive.set(true);
+
+            String firstLocale = pendingSpeechLocales.poll();
+            if (firstLocale == null || firstLocale.trim().isEmpty()) {
+                firstLocale = "en-US";
+            }
+            startSpeechWithLocale(ctx, firstLocale, call);
+        });
+    }
+
+    private void startSpeechWithLocale(Context ctx, String resolvedLang, PluginCall initialCall) {
+        try {
+            destroySpeechRecognizerInternal();
+            if (!isSpeechSessionActive.get()) {
+                if (initialCall != null) {
+                    initialCall.reject("Speech session cancelled.");
+                }
+                return;
+            }
+
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(ctx);
+            speechRecognizer.setRecognitionListener(new RecognitionListener() {
+                @Override
+                public void onReadyForSpeech(Bundle params) {
+                    mainHandler.post(() -> notifyListeners("nativeSpeechReady", new JSObject()));
                 }
 
-                if (speechRecognizer != null) {
-                    try {
-                        speechRecognizer.cancel();
-                    } catch (Exception ignored) {}
-                    try {
-                        speechRecognizer.destroy();
-                    } catch (Exception ignored) {}
-                    speechRecognizer = null;
+                @Override
+                public void onBeginningOfSpeech() {}
+
+                @Override
+                public void onRmsChanged(float rmsdB) {}
+
+                @Override
+                public void onBufferReceived(byte[] buffer) {}
+
+                @Override
+                public void onEndOfSpeech() {
+                    mainHandler.post(() -> notifyListeners("nativeSpeechEnd", new JSObject()));
                 }
 
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(ctx);
-                speechRecognizer.setRecognitionListener(new RecognitionListener() {
-                    @Override
-                    public void onReadyForSpeech(Bundle params) {
-                        mainHandler.post(() -> notifyListeners("nativeSpeechReady", new JSObject()));
-                    }
+                @Override
+                public void onError(int error) {
+                    destroySpeechRecognizerInternal();
 
-                    @Override
-                    public void onBeginningOfSpeech() {}
-
-                    @Override
-                    public void onRmsChanged(float rmsdB) {}
-
-                    @Override
-                    public void onBufferReceived(byte[] buffer) {}
-
-                    @Override
-                    public void onEndOfSpeech() {
-                        mainHandler.post(() -> notifyListeners("nativeSpeechEnd", new JSObject()));
-                    }
-
-                    @Override
-                    public void onError(int error) {
-                        if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && speechRecognizer != null) {
-                            try {
-                                speechRecognizer.cancel();
-                                speechRecognizer.destroy();
-                            } catch (Exception ignored) {}
-                            speechRecognizer = null;
+                    boolean isLangErr = (error == 12 || error == 13);
+                    if (isLangErr && isSpeechSessionActive.get() && !pendingSpeechLocales.isEmpty()) {
+                        String nextLocale = pendingSpeechLocales.poll();
+                        if (nextLocale != null && !nextLocale.trim().isEmpty()) {
+                            mainHandler.postDelayed(() -> startSpeechWithLocale(ctx, nextLocale, null), 60);
+                            return;
                         }
-                        JSObject err = new JSObject();
-                        err.put("code", error);
-                        err.put("message", mapSpeechError(error));
-                        mainHandler.post(() -> notifyListeners("nativeSpeechError", err));
                     }
 
-                    @Override
-                    public void onResults(Bundle results) {
-                        ArrayList<String> matches = results != null
-                                ? results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                                : null;
-                        String text = (matches != null && !matches.isEmpty()) ? matches.get(0) : "";
+                    isSpeechSessionActive.set(false);
+                    pendingSpeechLocales.clear();
+
+                    boolean fallbackSuggested = isLangErr
+                            || error == SpeechRecognizer.ERROR_NETWORK
+                            || error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT;
+
+                    JSObject err = new JSObject();
+                    err.put("code", error);
+                    err.put("message", mapSpeechError(error));
+                    err.put("fallbackSuggested", fallbackSuggested);
+                    mainHandler.post(() -> notifyListeners("nativeSpeechError", err));
+                }
+
+                @Override
+                public void onResults(Bundle results) {
+                    isSpeechSessionActive.set(false);
+                    pendingSpeechLocales.clear();
+                    destroySpeechRecognizerInternal();
+
+                    ArrayList<String> matches = results != null
+                            ? results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            : null;
+                    String text = (matches != null && !matches.isEmpty()) ? matches.get(0) : "";
+                    JSObject payload = new JSObject();
+                    payload.put("text", text != null ? text : "");
+                    mainHandler.post(() -> notifyListeners("nativeSpeechResult", payload));
+                }
+
+                @Override
+                public void onPartialResults(Bundle partialResults) {
+                    ArrayList<String> matches = partialResults != null
+                            ? partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            : null;
+                    String text = (matches != null && !matches.isEmpty()) ? matches.get(0) : "";
+                    if (text != null && !text.isEmpty()) {
                         JSObject payload = new JSObject();
-                        payload.put("text", text != null ? text : "");
-                        mainHandler.post(() -> notifyListeners("nativeSpeechResult", payload));
+                        payload.put("text", text);
+                        mainHandler.post(() -> notifyListeners("nativeSpeechPartial", payload));
                     }
+                }
 
-                    @Override
-                    public void onPartialResults(Bundle partialResults) {
-                        ArrayList<String> matches = partialResults != null
-                                ? partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                                : null;
-                        String text = (matches != null && !matches.isEmpty()) ? matches.get(0) : "";
-                        if (text != null && !text.isEmpty()) {
-                            JSObject payload = new JSObject();
-                            payload.put("text", text);
-                            mainHandler.post(() -> notifyListeners("nativeSpeechPartial", payload));
-                        }
-                    }
+                @Override
+                public void onEvent(int eventType, Bundle params) {}
+            });
 
-                    @Override
-                    public void onEvent(int eventType, Bundle params) {}
-                });
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, resolvedLang);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, resolvedLang);
+            intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+            intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+            intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.getPackageName());
 
-                Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-                String resolvedLang = ("bn-BD".equals(langTag)) ? "bn-BD" : "en-US";
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, resolvedLang);
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, resolvedLang);
-                intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-                intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
-                intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.getPackageName());
+            speechRecognizer.startListening(intent);
 
-                speechRecognizer.startListening(intent);
-
+            if (initialCall != null) {
                 JSObject ret = new JSObject();
                 ret.put("started", true);
                 ret.put("language", resolvedLang);
-                call.resolve(ret);
-            } catch (Exception e) {
-                call.reject("Could not start speech recognizer: " + e.getMessage());
+                initialCall.resolve(ret);
             }
-        });
+        } catch (Exception e) {
+            isSpeechSessionActive.set(false);
+            pendingSpeechLocales.clear();
+            destroySpeechRecognizerInternal();
+            if (initialCall != null) {
+                initialCall.reject("Could not start speech recognizer: " + e.getMessage());
+            } else {
+                JSObject err = new JSObject();
+                err.put("code", -1);
+                err.put("message", "Could not start speech recognizer: " + e.getMessage());
+                err.put("fallbackSuggested", true);
+                mainHandler.post(() -> notifyListeners("nativeSpeechError", err));
+            }
+        }
     }
 
     @PluginMethod
     public void stopNativeSpeech(PluginCall call) {
         mainHandler.post(() -> {
+            isSpeechSessionActive.set(false);
+            pendingSpeechLocales.clear();
             if (speechRecognizer != null) {
                 try {
                     speechRecognizer.stopListening();
@@ -742,17 +865,165 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     @PluginMethod
     public void cancelNativeSpeech(PluginCall call) {
         mainHandler.post(() -> {
-            if (speechRecognizer != null) {
-                try {
-                    speechRecognizer.cancel();
-                    speechRecognizer.destroy();
-                } catch (Exception ignored) {}
-                speechRecognizer = null;
-            }
+            isSpeechSessionActive.set(false);
+            pendingSpeechLocales.clear();
+            destroySpeechRecognizerInternal();
             JSObject ret = new JSObject();
             ret.put("cancelled", true);
             call.resolve(ret);
         });
+    }
+
+    @PluginMethod
+    public void startNativeAudioCapture(PluginCall call) {
+        Context ctx = getContext();
+        if (!hasPerm(ctx, Manifest.permission.RECORD_AUDIO)) {
+            call.reject("Microphone permission (RECORD_AUDIO) required.", "PERMISSION_DENIED");
+            return;
+        }
+
+        stopMonitorInternal();
+        mainHandler.post(() -> {
+            isSpeechSessionActive.set(false);
+            pendingSpeechLocales.clear();
+            destroySpeechRecognizerInternal();
+        });
+
+        stopNativeAudioCaptureThreadInternal();
+
+        synchronized (pcmBufferLock) {
+            nativePcmBuffer = new ByteArrayOutputStream();
+        }
+        isNativeAudioCaptureActive.set(true);
+
+        nativeAudioCaptureThread = new Thread(() -> {
+            final int sampleRate = 16000;
+            final int maxPcmBytes = sampleRate * 2 * 25; // up to 25 seconds mono 16-bit
+            int minBuf = AudioRecord.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+            );
+            int bufSize = Math.max(minBuf, 4096);
+            AudioRecord recorder = null;
+            try {
+                recorder = new AudioRecord(
+                        MediaRecorder.AudioSource.MIC,
+                        sampleRate,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        bufSize
+                );
+                if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                    isNativeAudioCaptureActive.set(false);
+                    return;
+                }
+                byte[] chunk = new byte[2048];
+                recorder.startRecording();
+                while (isNativeAudioCaptureActive.get() && !Thread.currentThread().isInterrupted()) {
+                    int read = recorder.read(chunk, 0, chunk.length);
+                    if (read > 0) {
+                        synchronized (pcmBufferLock) {
+                            if (nativePcmBuffer != null) {
+                                nativePcmBuffer.write(chunk, 0, read);
+                                if (nativePcmBuffer.size() >= maxPcmBytes) {
+                                    isNativeAudioCaptureActive.set(false);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (SecurityException | IllegalStateException ignored) {
+            } finally {
+                isNativeAudioCaptureActive.set(false);
+                if (recorder != null) {
+                    try { recorder.stop(); } catch (Exception ignored) {}
+                    try { recorder.release(); } catch (Exception ignored) {}
+                }
+            }
+        }, "ZuzuNativeWavCapture");
+        nativeAudioCaptureThread.start();
+
+        JSObject ret = new JSObject();
+        ret.put("started", true);
+        ret.put("sampleRate", 16000);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void stopNativeAudioCapture(PluginCall call) {
+        stopNativeAudioCaptureThreadInternal();
+        byte[] pcmBytes;
+        synchronized (pcmBufferLock) {
+            pcmBytes = nativePcmBuffer != null ? nativePcmBuffer.toByteArray() : new byte[0];
+            nativePcmBuffer = null;
+        }
+
+        if (pcmBytes.length < 3200) {
+            JSObject ret = new JSObject();
+            ret.put("audioBase64", "");
+            ret.put("mimeType", "audio/wav");
+            call.resolve(ret);
+            return;
+        }
+
+        try {
+            byte[] wavBytes = wrapPcmAsWav(pcmBytes, 16000, 1, 16);
+            String b64 = Base64.encodeToString(wavBytes, Base64.NO_WRAP);
+            JSObject ret = new JSObject();
+            ret.put("audioBase64", b64);
+            ret.put("mimeType", "audio/wav");
+            ret.put("durationMs", (pcmBytes.length * 1000L) / (16000L * 2L));
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Failed to encode WAV audio: " + e.getMessage());
+        }
+    }
+
+    private void stopNativeAudioCaptureThreadInternal() {
+        isNativeAudioCaptureActive.set(false);
+        if (nativeAudioCaptureThread != null) {
+            try {
+                nativeAudioCaptureThread.interrupt();
+                nativeAudioCaptureThread.join(600);
+            } catch (Exception ignored) {}
+            nativeAudioCaptureThread = null;
+        }
+    }
+
+    private byte[] wrapPcmAsWav(byte[] pcm, int sampleRate, int channels, int bitsPerSample) {
+        int byteRate = sampleRate * channels * bitsPerSample / 8;
+        int totalDataLen = pcm.length + 36;
+        byte[] wav = new byte[pcm.length + 44];
+
+        wav[0] = 'R'; wav[1] = 'I'; wav[2] = 'F'; wav[3] = 'F';
+        wav[4] = (byte) (totalDataLen & 0xff);
+        wav[5] = (byte) ((totalDataLen >> 8) & 0xff);
+        wav[6] = (byte) ((totalDataLen >> 16) & 0xff);
+        wav[7] = (byte) ((totalDataLen >> 24) & 0xff);
+        wav[8] = 'W'; wav[9] = 'A'; wav[10] = 'V'; wav[11] = 'E';
+        wav[12] = 'f'; wav[13] = 'm'; wav[14] = 't'; wav[15] = ' ';
+        wav[16] = 16; wav[17] = 0; wav[18] = 0; wav[19] = 0;
+        wav[20] = 1; wav[21] = 0;
+        wav[22] = (byte) channels; wav[23] = 0;
+        wav[24] = (byte) (sampleRate & 0xff);
+        wav[25] = (byte) ((sampleRate >> 8) & 0xff);
+        wav[26] = (byte) ((sampleRate >> 16) & 0xff);
+        wav[27] = (byte) ((sampleRate >> 24) & 0xff);
+        wav[28] = (byte) (byteRate & 0xff);
+        wav[29] = (byte) ((byteRate >> 8) & 0xff);
+        wav[30] = (byte) ((byteRate >> 16) & 0xff);
+        wav[31] = (byte) ((byteRate >> 24) & 0xff);
+        wav[32] = (byte) (channels * bitsPerSample / 8); wav[33] = 0;
+        wav[34] = (byte) bitsPerSample; wav[35] = 0;
+        wav[36] = 'd'; wav[37] = 'a'; wav[38] = 't'; wav[39] = 'a';
+        wav[40] = (byte) (pcm.length & 0xff);
+        wav[41] = (byte) ((pcm.length >> 8) & 0xff);
+        wav[42] = (byte) ((pcm.length >> 16) & 0xff);
+        wav[43] = (byte) ((pcm.length >> 24) & 0xff);
+        System.arraycopy(pcm, 0, wav, 44, pcm.length);
+        return wav;
     }
 
     @PluginMethod
@@ -1143,50 +1414,154 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void signInWithGoogleCredential(PluginCall call) {
+        String serverClientId = call.getString("serverClientId", "").trim();
+        if (serverClientId.isEmpty()) {
+            call.reject("Missing Google Web OAuth client ID.", "CONFIG_ERROR");
+            return;
+        }
+        if (getActivity() == null) {
+            call.reject("Android Activity unavailable for Google Sign-In.", "UNAVAILABLE");
+            return;
+        }
+
+        mainHandler.post(() -> {
+            try {
+                CredentialManager credentialManager = CredentialManager.create(getContext());
+                GetGoogleIdOption googleIdOption = new GetGoogleIdOption.Builder()
+                        .setFilterByAuthorizedAccounts(false)
+                        .setServerClientId(serverClientId)
+                        .setAutoSelectEnabled(false)
+                        .build();
+
+                GetCredentialRequest request = new GetCredentialRequest.Builder()
+                        .addCredentialOption(googleIdOption)
+                        .build();
+
+                credentialManager.getCredentialAsync(
+                        getActivity(),
+                        request,
+                        null,
+                        ContextCompat.getMainExecutor(getContext()),
+                        new CredentialManagerCallback<GetCredentialResponse, GetCredentialException>() {
+                            @Override
+                            public void onResult(GetCredentialResponse result) {
+                                try {
+                                    Credential credential = result.getCredential();
+                                    if (credential instanceof CustomCredential
+                                            && GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL.equals(credential.getType())) {
+                                        GoogleIdTokenCredential googleCred = GoogleIdTokenCredential.createFrom(credential.getData());
+                                        JSObject ret = new JSObject();
+                                        ret.put("idToken", googleCred.getIdToken());
+                                        ret.put("email", googleCred.getId());
+                                        ret.put("displayName", googleCred.getDisplayName() != null ? googleCred.getDisplayName() : "");
+                                        ret.put("photoUrl", googleCred.getProfilePictureUri() != null ? googleCred.getProfilePictureUri().toString() : "");
+                                        call.resolve(ret);
+                                    } else {
+                                        call.reject("Unexpected credential type returned from Google.", "UNEXPECTED_CREDENTIAL");
+                                    }
+                                } catch (Exception ex) {
+                                    call.reject("Failed to parse Google ID token: " + ex.getMessage(), "GOOGLE_CREDENTIAL_ERROR");
+                                }
+                            }
+
+                            @Override
+                            public void onError(GetCredentialException e) {
+                                if (e instanceof GetCredentialCancellationException) {
+                                    call.reject("Google sign-in was cancelled.", "CANCELED");
+                                } else if (e instanceof NoCredentialException) {
+                                    call.reject("No Google account credentials available or Android SHA-1 is not registered in Firebase Console.", "NO_CREDENTIAL");
+                                } else {
+                                    call.reject("Native Google Sign-In error: " + e.getMessage(), "GOOGLE_CREDENTIAL_ERROR");
+                                }
+                            }
+                        }
+                );
+            } catch (Exception e) {
+                call.reject("Could not launch native Google Credential Manager: " + e.getMessage(), "GOOGLE_CREDENTIAL_ERROR");
+            }
+        });
+    }
+
+    @PluginMethod
     public void scheduleReminderNotification(PluginCall call) {
         String id = call.getString("id", "rem-" + System.currentTimeMillis());
         String title = call.getString("title", "Zuzu AI Reminder");
         String body = call.getString("body", "You have a scheduled reminder.");
         long triggerAtMs = call.getLong("triggerAtMs", System.currentTimeMillis());
-        long delayMs = Math.max(0L, triggerAtMs - System.currentTimeMillis());
+        String recurrence = call.getString("recurrence", "none");
+        int recurrenceWeekday = call.getInt("recurrenceWeekday", -1);
 
         Context ctx = getContext();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (manager != null && manager.getNotificationChannel(REMINDER_CHANNEL_ID) == null) {
-                NotificationChannel ch = new NotificationChannel(
-                        REMINDER_CHANNEL_ID,
-                        "Zuzu AI Reminders",
-                        NotificationManager.IMPORTANCE_HIGH
-                );
-                ch.setDescription("Reminder alerts created via Zuzu AI");
-                manager.createNotificationChannel(ch);
-            }
-        }
-
-        mainHandler.postDelayed(() -> {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                        && !hasPerm(ctx, Manifest.permission.POST_NOTIFICATIONS)) {
-                    return;
-                }
-                int iconRes = ctx.getApplicationInfo().icon;
-                NotificationCompat.Builder builder = new NotificationCompat.Builder(ctx, REMINDER_CHANNEL_ID)
-                        .setSmallIcon(iconRes != 0 ? iconRes : android.R.drawable.ic_popup_reminder)
-                        .setContentTitle(title)
-                        .setContentText(body)
-                        .setPriority(NotificationCompat.PRIORITY_HIGH)
-                        .setAutoCancel(true);
-
-                NotificationManagerCompat.from(ctx).notify(id.hashCode(), builder.build());
-            } catch (SecurityException | IllegalStateException ignored) {}
-        }, delayMs);
+        ZuzuReminderReceiver.scheduleAlarm(ctx, id, title, body, triggerAtMs, recurrence, recurrenceWeekday);
 
         JSObject ret = new JSObject();
         ret.put("scheduled", true);
         ret.put("id", id);
         ret.put("triggerAtMs", triggerAtMs);
+        ret.put("exact", ZuzuReminderReceiver.canScheduleExact(ctx));
         call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void cancelReminderNotification(PluginCall call) {
+        String id = call.getString("id", "");
+        if (id != null && !id.trim().isEmpty()) {
+            ZuzuReminderReceiver.cancelAlarm(getContext(), id.trim());
+        }
+        JSObject ret = new JSObject();
+        ret.put("cancelled", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void syncNativeReminders(PluginCall call) {
+        JSArray list = call.getArray("reminders", new JSArray());
+        Context ctx = getContext();
+        ZuzuReminderReceiver.syncAllAlarms(ctx, list);
+        JSObject ret = new JSObject();
+        ret.put("synced", true);
+        ret.put("count", list != null ? list.length() : 0);
+        ret.put("exact", ZuzuReminderReceiver.canScheduleExact(ctx));
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void checkExactAlarmPermission(PluginCall call) {
+        boolean canExact = ZuzuReminderReceiver.canScheduleExact(getContext());
+        JSObject ret = new JSObject();
+        ret.put("canScheduleExactAlarms", canExact);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void openExactAlarmSettings(PluginCall call) {
+        Context ctx = getContext();
+        String pkgUri = "package:" + ctx.getPackageName();
+        try {
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse(pkgUri));
+            } else {
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse(pkgUri));
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(intent);
+            JSObject ret = new JSObject();
+            ret.put("opened", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            try {
+                Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse(pkgUri));
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                ctx.startActivity(fallback);
+                JSObject ret = new JSObject();
+                ret.put("opened", true);
+                call.resolve(ret);
+            } catch (Exception ex) {
+                call.reject("Could not open exact alarm settings: " + ex.getMessage());
+            }
+        }
     }
 
     @PluginMethod
@@ -1258,14 +1633,12 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         stopMonitorInternal();
+        stopNativeAudioCaptureThreadInternal();
         mainHandler.post(() -> {
             clearPendingTts();
-            if (speechRecognizer != null) {
-                try {
-                    speechRecognizer.destroy();
-                } catch (Exception ignored) {}
-                speechRecognizer = null;
-            }
+            isSpeechSessionActive.set(false);
+            pendingSpeechLocales.clear();
+            destroySpeechRecognizerInternal();
             if (textToSpeech != null) {
                 try {
                     textToSpeech.shutdown();
@@ -1291,6 +1664,10 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                 return "no-speech";
             case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
                 return "Recognizer busy, retrying.";
+            case 12:
+                return "Speech recognition error (12): Requested language pack unavailable on device.";
+            case 13:
+                return "Speech recognition error (13): Offline language engine unavailable.";
             default:
                 return "Speech recognition error (" + code + ")";
         }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   History, 
   Trash2, 
@@ -15,7 +15,9 @@ import {
   ShieldCheck,
   Calendar,
   Clock,
-  AlertCircle
+  AlertCircle,
+  Globe2,
+  ExternalLink
 } from 'lucide-react';
 import { VoiceSession, VoiceMessage, AppSettings } from '../types';
 import {
@@ -25,6 +27,8 @@ import {
 } from '../constants/personalities';
 import { getVoiceSessions, deleteVoiceSession, clearVoiceHistory } from '../utils/storage';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
+import { getNativeZuzuPlugin } from '../utils/permission';
+import { formatSourcePublicationTime } from '../utils/sourceFormat';
 
 interface HistoryViewProps {
   settings: AppSettings;
@@ -37,6 +41,16 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ settings }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterIdentity, setFilterIdentity] = useState<'all' | 'male' | 'female'>('all');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  useEffect(() => {
+    const onWorkspaceSwitch = () => {
+      const next = getVoiceSessions();
+      setSessions(next);
+      setExpandedSessionId(next[0]?.id || null);
+    };
+    window.addEventListener('zuzu-workspace-switched', onWorkspaceSwitch);
+    return () => window.removeEventListener('zuzu-workspace-switched', onWorkspaceSwitch);
+  }, []);
 
   const toggleExpand = (id: string) => {
     setExpandedSessionId(prev => (prev === id ? null : id));
@@ -350,6 +364,43 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ settings }) => {
                           <p className="text-slate-200 text-xs italic">
                             "{msg.text}"
                           </p>
+
+                          {!isUser && msg.sources && msg.sources.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-white/10 space-y-1">
+                              <div className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-cyan-300">
+                                <Globe2 className="w-2.5 h-2.5" />
+                                <span>Google Search Sources</span>
+                              </div>
+                              <div className="space-y-1">
+                                {msg.sources.slice(0, 5).map((src, sIdx) => (
+                                  <a
+                                    key={`${src.url}-${sIdx}`}
+                                    href={src.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => {
+                                      const nativePlugin = getNativeZuzuPlugin();
+                                      if (nativePlugin?.openExternalUrl) {
+                                        e.preventDefault();
+                                        nativePlugin.openExternalUrl({ url: src.url }).catch(() => {
+                                          window.open(src.url, '_blank', 'noopener,noreferrer');
+                                        });
+                                      }
+                                    }}
+                                    className="block p-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[10px]"
+                                  >
+                                    <div className="flex items-start justify-between gap-1.5">
+                                      <span className="text-slate-100 font-medium line-clamp-1">{src.title || src.sourceName}</span>
+                                      <ExternalLink className="w-2.5 h-2.5 text-cyan-300 flex-shrink-0 mt-0.5" />
+                                    </div>
+                                    <div className="text-[9px] text-slate-400 mt-0.5">
+                                      <span className="text-cyan-300 font-semibold">{src.sourceName}</span> • {formatSourcePublicationTime(src)}
+                                    </div>
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}

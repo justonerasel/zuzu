@@ -18,6 +18,7 @@ import { AppSettings } from '../types';
 import { speakText, stopSpeaking, playHapticSound } from '../utils/audio';
 import { apiFetch, APP_VERSION, directGeminiVisionAnalyze } from '../utils/apiConfig';
 import { resolveGeminiVoiceForSettings } from '../constants/personalities';
+import { recordUploadedFileMeta } from '../utils/storage';
 
 interface ScreenAssistantModalProps {
   isOpen: boolean;
@@ -130,6 +131,13 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    recordUploadedFileMeta({
+      name: file.name,
+      mimeType: file.type || 'image/*',
+      sizeBytes: file.size || 0,
+      source: 'screen_assistant'
+    });
 
     const reader = new FileReader();
     reader.onload = async (evt) => {

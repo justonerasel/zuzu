@@ -1,19 +1,20 @@
 /**
- * Phase 0 Security Specification Runner for Zuzu AI Firestore Rules (SU-ID)
- * Verifies that all "Dirty Dozen" adversarial payloads violate rule invariants.
+ * Security Specification Matrix for Zuzu AI Firestore Rules
+ * Covers UID-isolated UserProfile (/users/{userId}) and UserVault (/users/{userId}/vault/primary)
+ * plus locked legacy paths (/zu_accounts, /su_accounts).
  */
 
 export const DIRTY_DOZEN_CASES = [
-  { name: 'Unbounded List Scrape on /su_accounts', operation: 'list', path: '/su_accounts', expected: 'PERMISSION_DENIED' },
-  { name: 'Vault Enumeration on /vault', operation: 'list', path: '/su_accounts/rasel008/vault', expected: 'PERMISSION_DENIED' },
-  { name: 'Invalid SU-ID Username Format', operation: 'create', path: '/su_accounts/A!', payload: { accountId: 'A!' }, expected: 'PERMISSION_DENIED' },
-  { name: 'Existing Account Overwrite', operation: 'create', path: '/su_accounts/rasel008', payload: { accountId: 'rasel008' }, expected: 'PERMISSION_DENIED' },
-  { name: 'Password Hash / Verifier Mutation', operation: 'update', path: '/su_accounts/rasel008', payload: { passwordHash: '0'.repeat(64) }, expected: 'PERMISSION_DENIED' },
-  { name: 'Shadow Field Injection on Account', operation: 'create', path: '/su_accounts/rasel008', payload: { accountId: 'rasel008', isAdmin: true }, expected: 'PERMISSION_DENIED' },
-  { name: 'Forged Timestamp on Create', operation: 'create', path: '/su_accounts/rasel008', payload: { createdAt: new Date(0).toISOString() }, expected: 'PERMISSION_DENIED' },
-  { name: 'Unauthorized Vault Read (Wrong Capability Key)', operation: 'get', path: `/su_accounts/rasel008/vault/${'a'.repeat(64)}`, expected: 'PERMISSION_DENIED' },
-  { name: 'Unauthorized Vault Write (Wrong Capability Key)', operation: 'update', path: `/su_accounts/rasel008/vault/${'b'.repeat(64)}`, expected: 'PERMISSION_DENIED' },
-  { name: 'Shadow Field Injection on Vault', operation: 'create', path: `/su_accounts/rasel008/vault/${'c'.repeat(64)}`, payload: { shadowRole: 'root' }, expected: 'PERMISSION_DENIED' },
-  { name: 'Oversized String Resource Exhaustion', operation: 'create', path: '/su_accounts/rasel008', payload: { fullName: 'X'.repeat(500) }, expected: 'PERMISSION_DENIED' },
-  { name: 'Immortal AccountId Mutation on Vault Update', operation: 'update', path: `/su_accounts/rasel008/vault/${'d'.repeat(64)}`, payload: { accountId: 'otheruser99' }, expected: 'PERMISSION_DENIED' }
+  { name: 'Unbounded List Scrape on /users', operation: 'list', path: '/users', expected: 'PERMISSION_DENIED' },
+  { name: 'Cross-User Profile Read (UID mismatch)', operation: 'get', path: '/users/victimUid', authUid: 'attackerUid', expected: 'PERMISSION_DENIED' },
+  { name: 'Cross-User Vault Read (UID mismatch)', operation: 'get', path: '/users/victimUid/vault/primary', authUid: 'attackerUid', expected: 'PERMISSION_DENIED' },
+  { name: 'Cross-User Vault Write (UID mismatch)', operation: 'update', path: '/users/victimUid/vault/primary', authUid: 'attackerUid', expected: 'PERMISSION_DENIED' },
+  { name: 'Vault Enumeration on /users/{uid}/vault', operation: 'list', path: '/users/aliceUid/vault', authUid: 'aliceUid', expected: 'PERMISSION_DENIED' },
+  { name: 'Shadow Field Injection on UserProfile', operation: 'create', path: '/users/aliceUid', authUid: 'aliceUid', payload: { uid: 'aliceUid', displayName: 'Alice', role: 'admin' }, expected: 'PERMISSION_DENIED' },
+  { name: 'Immutable UID Mutation on UserProfile Update', operation: 'update', path: '/users/aliceUid', authUid: 'aliceUid', payload: { uid: 'otherUid' }, expected: 'PERMISSION_DENIED' },
+  { name: 'Forged createdAt Timestamp on Profile Create', operation: 'create', path: '/users/aliceUid', authUid: 'aliceUid', payload: { uid: 'aliceUid', displayName: 'Alice', createdAt: new Date(0).toISOString() }, expected: 'PERMISSION_DENIED' },
+  { name: 'Invalid Vault Document ID (must be primary)', operation: 'create', path: '/users/aliceUid/vault/secondary', authUid: 'aliceUid', payload: { uid: 'aliceUid' }, expected: 'PERMISSION_DENIED' },
+  { name: 'Oversized Avatar photoData Exhaustion (>200KB)', operation: 'update', path: '/users/aliceUid', authUid: 'aliceUid', payload: { photoData: 'X'.repeat(250000) }, expected: 'PERMISSION_DENIED' },
+  { name: 'Legacy /zu_accounts Public Access Lockdown', operation: 'get', path: '/zu_accounts/rasel008', authUid: 'aliceUid', expected: 'PERMISSION_DENIED' },
+  { name: 'Legacy /su_accounts Public Access Lockdown', operation: 'get', path: '/su_accounts/rasel008', authUid: 'aliceUid', expected: 'PERMISSION_DENIED' }
 ];

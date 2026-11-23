@@ -823,3 +823,29 @@ export async function checkAndRequestLocationPermission(): Promise<boolean> {
   }
   return Boolean(typeof navigator !== 'undefined' && navigator.geolocation);
 }
+
+export async function checkExactAlarmPermission(): Promise<{
+  canScheduleExactAlarms: boolean;
+  requiresSetting: boolean;
+}> {
+  const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin?.checkExactAlarmPermission) {
+    try {
+      const res = await nativePlugin.checkExactAlarmPermission();
+      const canSchedule = Boolean(res?.canScheduleExactAlarms);
+      return {
+        canScheduleExactAlarms: canSchedule,
+        requiresSetting: !canSchedule
+      };
+    } catch {}
+  }
+  return { canScheduleExactAlarms: true, requiresSetting: false };
+}
+
+export function openExactAlarmSettings(): void {
+  const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin?.openExactAlarmSettings) {
+    nativePlugin.openExactAlarmSettings().catch(() => {});
+  }
+}
+

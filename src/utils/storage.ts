@@ -1,5 +1,6 @@
-import { AppSettings, ChatMessage, VoiceSession, VoiceMessage, VoiceIdentity, PersonalityId, UserMemory } from '../types';
+import { AppSettings, ChatMessage, VoiceSession, VoiceMessage, VoiceIdentity, PersonalityId, UserMemory, NotebookNote, UserReminder } from '../types';
 import { getGeminiVoiceByName, getDefaultGeminiVoiceForIdentity } from '../constants/personalities';
+import { getNotesList, setNotesList, getRemindersList, setRemindersList } from './assistantStore';
 
 const STORAGE_KEYS = {
   CHAT_HISTORY: 'zuzu_chat_history_v2',
@@ -231,14 +232,15 @@ export function getChatMessages(): ChatMessage[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.CHAT_HISTORY);
     if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(SEED_CHAT_MESSAGES));
-      return SEED_CHAT_MESSAGES;
+      const cloned = SEED_CHAT_MESSAGES.map(m => ({ ...m }));
+      localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(cloned));
+      return cloned;
     }
     const parsed: ChatMessage[] = JSON.parse(raw);
     // Strict filter to ensure no voice conversations sneak in
     return parsed.filter(m => m.conversation_type === 'text');
   } catch {
-    return SEED_CHAT_MESSAGES;
+    return SEED_CHAT_MESSAGES.map(m => ({ ...m }));
   }
 }
 
@@ -258,19 +260,55 @@ export function clearChatHistory(): void {
   notifyZuDataChanged();
 }
 
+// ----------------- UPLOADED FILE METADATA STORE -----------------
+const UPLOADED_FILES_KEY = 'zuzu_uploaded_files_v1';
+
+export function getUploadedFilesMeta(): import('../types').UploadedFileMeta[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(UPLOADED_FILES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setUploadedFilesMeta(files: import('../types').UploadedFileMeta[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(UPLOADED_FILES_KEY, JSON.stringify(files.slice(0, 100)));
+    notifyZuDataChanged();
+  } catch {}
+}
+
+export function recordUploadedFileMeta(
+  file: Omit<import('../types').UploadedFileMeta, 'id' | 'uploadedAt'>
+): void {
+  const entry: import('../types').UploadedFileMeta = {
+    ...file,
+    id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    uploadedAt: Date.now()
+  };
+  const next = [entry, ...getUploadedFilesMeta()].slice(0, 100);
+  setUploadedFilesMeta(next);
+}
+
 // ----------------- VOICE HISTORY STORE (STRICT) -----------------
 export function getVoiceSessions(): VoiceSession[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.VOICE_SESSIONS);
     if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify(SEED_VOICE_SESSIONS));
-      return SEED_VOICE_SESSIONS;
+      const cloned = SEED_VOICE_SESSIONS.map(s => ({ ...s, messages: s.messages.map(m => ({ ...m })) }));
+      localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify(cloned));
+      return cloned;
     }
     const parsed: VoiceSession[] = JSON.parse(raw);
     // Strict filter to ensure only voice conversations
     return parsed.filter(s => s.conversation_type === 'voice');
   } catch {
-    return SEED_VOICE_SESSIONS;
+    return SEED_VOICE_SESSIONS.map(s => ({ ...s, messages: s.messages.map(m => ({ ...m })) }));
   }
 }
 
@@ -484,13 +522,14 @@ export function getMemories(): UserMemory[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.MEMORIES);
     if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(SEED_MEMORIES));
-      return SEED_MEMORIES;
+      const cloned = SEED_MEMORIES.map(m => ({ ...m }));
+      localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(cloned));
+      return cloned;
     }
     const parsed: UserMemory[] = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : SEED_MEMORIES;
+    return Array.isArray(parsed) ? parsed : SEED_MEMORIES.map(m => ({ ...m }));
   } catch {
-    return SEED_MEMORIES;
+    return SEED_MEMORIES.map(m => ({ ...m }));
   }
 }
 
@@ -617,16 +656,18 @@ export interface ZuzuBackupSnapshot {
   chatHistory: ChatMessage[];
   voiceSessions: VoiceSession[];
   memories: UserMemory[];
+  notes?: NotebookNote[];
+  reminders?: UserReminder[];
+  uploadedFiles?: import('../types').UploadedFileMeta[];
   settings: Partial<AppSettings>;
   savedAt: number;
 }
 
 /**
- * Exports all isolated stores for persistent ZU-ID Account cloud backup
+ * Exports all isolated stores for persistent Firebase UID cloud backup
  */
 export function getAllBackupPayload(): ZuzuBackupSnapshot {
   const settings = getAppSettings();
-  // Strip local-only session tokens/vault capability key from cloud-synced settings blob
   const {
     zuToken: _omitToken,
     zuVaultKey: _omitVaultKey,
@@ -636,13 +677,16 @@ export function getAllBackupPayload(): ZuzuBackupSnapshot {
     chatHistory: getChatMessages(),
     voiceSessions: getVoiceSessions(),
     memories: getMemories(),
+    notes: getNotesList(),
+    reminders: getRemindersList(),
+    uploadedFiles: getUploadedFilesMeta(),
     settings: syncableSettings,
     savedAt: Date.now()
   };
 }
 
 /**
- * Restores full chat history, voice sessions, long-term memories & settings after login/reinstall
+ * Restores full chat history, voice sessions, long-term memories, notes, reminders, uploaded files & settings
  */
 export function restoreAllBackupPayload(
   snapshot: Partial<ZuzuBackupSnapshot>,
@@ -659,21 +703,128 @@ export function restoreAllBackupPayload(
   if (Array.isArray(snapshot.memories)) {
     localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(snapshot.memories));
   }
+  if (Array.isArray(snapshot.notes)) {
+    const validNotes = snapshot.notes.filter(n => n && typeof n.text === 'string' && n.text.trim().length > 0);
+    setNotesList(validNotes);
+  }
+  if (Array.isArray(snapshot.reminders)) {
+    const validReminders = snapshot.reminders.filter(r => r && typeof r.title === 'string' && typeof r.time === 'number');
+    setRemindersList(validReminders);
+  }
+  if (Array.isArray(snapshot.uploadedFiles)) {
+    setUploadedFilesMeta(snapshot.uploadedFiles);
+  }
   if (snapshot.settings && typeof snapshot.settings === 'object') {
     const current = getAppSettings();
     const merged: AppSettings = {
       ...DEFAULT_SETTINGS,
       ...snapshot.settings,
-      zuAccountId: sessionOverrides?.zuAccountId || current.zuAccountId || snapshot.settings.zuAccountId,
-      zuUsername: sessionOverrides?.zuUsername || current.zuUsername || snapshot.settings.zuUsername,
-      zuFullName: sessionOverrides?.zuFullName || current.zuFullName || snapshot.settings.zuFullName,
-      zuPhone: sessionOverrides?.zuPhone || current.zuPhone || snapshot.settings.zuPhone,
-      zuToken: sessionOverrides?.zuToken || current.zuToken,
-      zuVaultKey: sessionOverrides?.zuVaultKey || current.zuVaultKey,
+      ...(sessionOverrides || {}),
       zuLastSyncedAt: Date.now()
     };
+    if (!merged.userNickname && current.userNickname) {
+      merged.userNickname = current.userNickname;
+    }
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(merged));
     return merged;
   }
+  if (sessionOverrides) {
+    return saveAppSettings(sessionOverrides);
+  }
   return getAppSettings();
 }
+
+const UID_VAULT_PREFIX = 'zuzu_uid_vault_v1_';
+const ACTIVE_AUTH_UID_KEY = 'zuzu_active_auth_uid';
+
+export function getStoredActiveAuthUid(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(ACTIVE_AUTH_UID_KEY);
+}
+
+export function setStoredActiveAuthUid(uid: string | null): void {
+  if (typeof window === 'undefined') return;
+  if (uid) {
+    localStorage.setItem(ACTIVE_AUTH_UID_KEY, uid);
+  } else {
+    localStorage.removeItem(ACTIVE_AUTH_UID_KEY);
+  }
+}
+
+export function stashUserNamespaceSnapshot(uid: string): void {
+  if (typeof window === 'undefined' || !uid) return;
+  try {
+    const snapshot = getAllBackupPayload();
+    localStorage.setItem(`${UID_VAULT_PREFIX}${uid}`, JSON.stringify(snapshot));
+  } catch {}
+}
+
+export function getUserNamespaceSnapshot(uid: string): ZuzuBackupSnapshot | null {
+  if (typeof window === 'undefined' || !uid) return null;
+  try {
+    const raw = localStorage.getItem(`${UID_VAULT_PREFIX}${uid}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as ZuzuBackupSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+export function clearUserNamespaceSnapshot(uid: string): void {
+  if (typeof window === 'undefined' || !uid) return;
+  try {
+    localStorage.removeItem(`${UID_VAULT_PREFIX}${uid}`);
+  } catch {}
+}
+
+export function hasMeaningfulPreLoginUserData(): boolean {
+  const chats = getChatMessages().filter(m => m.id !== 'seed-chat-1');
+  const voice = getVoiceSessions().filter(s => s.id !== 'seed-voice-session-1');
+  const memories = getMemories().filter(m => !m.id.startsWith('seed-mem-'));
+  const notes = getNotesList();
+  const reminders = getRemindersList();
+  const files = getUploadedFilesMeta();
+  const settings = getAppSettings();
+  return (
+    chats.length > 0 ||
+    voice.length > 0 ||
+    memories.length > 0 ||
+    notes.length > 0 ||
+    reminders.length > 0 ||
+    files.length > 0 ||
+    Boolean(settings.customGeminiApiKey?.trim())
+  );
+}
+
+/**
+ * Resets private user-scoped data stores cleanly when signing out so another user
+ * signing into the same device never inherits the previous user's chats, notes, reminders,
+ * memories, uploaded files, or personal API key.
+ */
+export function resetWorkspaceToCleanGuestState(): AppSettings {
+  if (typeof window === 'undefined') return DEFAULT_SETTINGS;
+  const prevSettings = getAppSettings();
+  localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(SEED_CHAT_MESSAGES));
+  localStorage.setItem(STORAGE_KEYS.VOICE_SESSIONS, JSON.stringify(SEED_VOICE_SESSIONS));
+  localStorage.setItem(STORAGE_KEYS.MEMORIES, JSON.stringify(SEED_MEMORIES));
+  setNotesList([]);
+  setRemindersList([]);
+  localStorage.setItem(UPLOADED_FILES_KEY, JSON.stringify([]));
+
+  const cleanSettings: AppSettings = {
+    ...DEFAULT_SETTINGS,
+    themePreset: prevSettings.themePreset,
+    viewMode: prevSettings.viewMode,
+    recognitionLanguage: prevSettings.recognitionLanguage,
+    orbStyle: prevSettings.orbStyle,
+    userNickname: 'Friend',
+    customGeminiApiKey: ''
+  };
+  localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(cleanSettings));
+  setStoredActiveAuthUid(null);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('zuzu-workspace-switched'));
+  }
+  return cleanSettings;
+}
+

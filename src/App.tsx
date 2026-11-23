@@ -25,10 +25,25 @@ import { stopSpeaking, playHapticSound } from './utils/audio';
 import { apiFetch, APP_VERSION, APP_VERSION_CODE } from './utils/apiConfig';
 import { syncBackgroundServicesWithSettings } from './utils/backgroundService';
 import { checkMicrophonePermission, getNativeZuzuPlugin } from './utils/permission';
+import {
+  computeNextRecurringTriggerMs,
+  getRemindersList,
+  setRemindersList,
+  syncRemindersToNative
+} from './utils/assistantStore';
 import { getDefaultGeminiVoiceForIdentity, getGeminiVoiceByName } from './constants/personalities';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
-import { syncZuCloudNow } from './utils/zuAccount';
+import { User } from 'firebase/auth';
+import { FirebaseUserProfile } from './types';
+import { subscribeFirebaseAuthState } from './utils/authService';
+import {
+  hydrateUserIsolatedWorkspace,
+  loadOrCreateUserProfile,
+  pushActiveVaultToCloud
+} from './utils/userCloudVault';
+import { AuthModal } from './components/AuthModal';
+import { SettingsCategoryId } from './components/SettingsView';
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => getAppSettings());
@@ -38,6 +53,15 @@ export default function App() {
   const [textMessageCount, setTextMessageCount] = useState(0);
   const [voiceSessionCount, setVoiceSessionCount] = useState(0);
   const [isBackendConnected, setIsBackendConnected] = useState(true);
+
+  // Firebase Auth & Isolated Profile State
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<FirebaseUserProfile | null>(null);
+  const [authModalConfig, setAuthModalConfig] = useState<{
+    isOpen: boolean;
+    mode: 'signin' | 'link_phone';
+  }>({ isOpen: false, mode: 'signin' });
+  const [settingsTargetCategory, setSettingsTargetCategory] = useState<SettingsCategoryId | null>(null);
 
   // Force Update Overlay State (only shown when server signals genuine required update)
   const [forceUpdateInfo, setForceUpdateInfo] = useState<ForceUpdatePayload | null>(null);
@@ -56,10 +80,11 @@ export default function App() {
     onResume?: () => void;
   }>({ isOpen: false });
 
-  // Initialize, configure edge-to-edge StatusBar, sync native mic status, check Force Update & migrate history
+  // Initialize, configure edge-to-edge StatusBar, sync native mic status, sync AlarmManager reminders, check Force Update & migrate history
   useEffect(() => {
     performHistoryMigration();
     updateCounts();
+    syncRemindersToNative().catch(() => {});
 
     checkMicrophonePermission()
       .then((perm) => {
@@ -97,6 +122,49 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // Subscribe to real Firebase Authentication state & isolate per-UID workspace
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = subscribeFirebaseAuthState(async (user) => {
+      if (!active) return;
+      setFirebaseUser(user);
+
+      if (user) {
+        try {
+          const hydrated = await hydrateUserIsolatedWorkspace(user);
+          if (!active) return;
+          setUserProfile(hydrated.profile);
+          setSettings(hydrated.settings);
+          updateCounts();
+        } catch {
+          try {
+            const fallbackProfile = await loadOrCreateUserProfile(user);
+            if (active) setUserProfile(fallbackProfile);
+          } catch {}
+        }
+      } else {
+        setUserProfile(null);
+        setSettings(getAppSettings());
+        updateCounts();
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
+  // Refresh reactive counts on workspace changes
+  useEffect(() => {
+    const onWorkspaceSwitched = () => {
+      setSettings(getAppSettings());
+      updateCounts();
+    };
+    window.addEventListener('zuzu-workspace-switched', onWorkspaceSwitched);
+    return () => window.removeEventListener('zuzu-workspace-switched', onWorkspaceSwitched);
+  }, []);
+
   // Sync Foreground Service, Always-On Wake Word & Custom Audio Triggers with Settings
   useEffect(() => {
     syncBackgroundServicesWithSettings(settings);
@@ -115,7 +183,7 @@ export default function App() {
       const detail = (e as CustomEvent)?.detail || {};
       const remaining = typeof detail.remainingCommand === 'string' ? detail.remainingCommand.trim() : '';
 
-      playHapticSound('switch');
+      playHapticSound('listen_start');
       setIsVoiceMinimized(false);
       setActiveTab('voice');
 
@@ -130,33 +198,27 @@ export default function App() {
     return () => window.removeEventListener('zuzu-wake-word-triggered', onWakeTriggered);
   }, []);
 
-  // Auto-sync ZU-ID Account Firebase cloud backup in background when local data changes
+  // Auto-sync authenticated user's private Firebase Cloud vault in background when local data changes
   useEffect(() => {
-    if (!settings.zuAccountId || !settings.zuVaultKey) return;
+    if (!firebaseUser) return;
     let syncTimer: ReturnType<typeof setTimeout> | null = null;
 
     const triggerDebouncedSync = () => {
       if (syncTimer) clearTimeout(syncTimer);
       syncTimer = setTimeout(() => {
-        const latest = getAppSettings();
-        if (latest.zuAccountId && latest.zuVaultKey) {
-          syncZuCloudNow(latest).catch(() => {});
-        }
+        pushActiveVaultToCloud(firebaseUser, true).catch(() => {});
       }, 3000);
     };
 
     window.addEventListener('zuzu-zu-data-changed', triggerDebouncedSync);
-    triggerDebouncedSync();
-
     return () => {
       if (syncTimer) clearTimeout(syncTimer);
       window.removeEventListener('zuzu-zu-data-changed', triggerDebouncedSync);
     };
   }, [
+    firebaseUser,
     textMessageCount,
     voiceSessionCount,
-    settings.zuAccountId,
-    settings.zuVaultKey,
     settings.userNickname,
     settings.activePersonality
   ]);
@@ -171,42 +233,54 @@ export default function App() {
     updateCounts();
   }, [activeTab, currentVoiceSession]);
 
-  // Poll due reminders every 20s and notify user
+  // Poll due reminders every 20s and notify/advance recurring reminders (never auto-complete)
   useEffect(() => {
     const checkDueReminders = () => {
       try {
-        const raw = localStorage.getItem('zuzu_user_reminders');
-        if (!raw) return;
-        const list = JSON.parse(raw);
-        if (!Array.isArray(list) || list.length === 0) return;
+        const list = getRemindersList();
+        if (list.length === 0) return;
 
         const now = Date.now();
         let updated = false;
-        const nextList = list.map((rem: any) => {
-          if (rem && !rem.completed && !rem.notified && typeof rem.time === 'number' && rem.time <= now) {
+        const nextList = list.map((rem) => {
+          if (!rem.completed && !rem.notified && typeof rem.time === 'number' && rem.time <= now) {
             updated = true;
-            setDueReminderToast(rem.title || 'Scheduled Reminder');
+            setDueReminderToast(
+              rem.description?.trim()
+                ? `${rem.title} — ${rem.description.trim()}`
+                : rem.title || 'Scheduled Reminder'
+            );
             const nativePlugin = getNativeZuzuPlugin();
-            if (nativePlugin?.scheduleReminderNotification) {
-              nativePlugin.scheduleReminderNotification({
-                id: rem.id || `rem-${now}`,
-                title: 'Zuzu AI Reminder',
-                body: rem.title || 'Reminder due now',
-                triggerAtMs: now
-              }).catch(() => {});
-            } else if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+            if (!nativePlugin && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
               try {
-                new Notification('Zuzu AI Reminder', { body: rem.title || 'Reminder due now' });
+                new Notification('Zuzu AI Reminder', {
+                  body: rem.description?.trim()
+                    ? `${rem.title} — ${rem.description.trim()}`
+                    : rem.title || 'Reminder due now'
+                });
               } catch {}
             }
-            return { ...rem, notified: true };
+
+            if (rem.recurrence && rem.recurrence !== 'none') {
+              return {
+                ...rem,
+                time: computeNextRecurringTriggerMs(
+                  rem.time,
+                  rem.recurrence,
+                  rem.recurrenceWeekday
+                ),
+                notified: false,
+                completed: false,
+                updatedAt: now
+              };
+            }
+            return { ...rem, notified: true, completed: false, updatedAt: now };
           }
           return rem;
         });
 
         if (updated) {
-          localStorage.setItem('zuzu_user_reminders', JSON.stringify(nextList));
-          window.dispatchEvent(new CustomEvent('zuzu-notes-reminders-changed'));
+          setRemindersList(nextList);
         }
       } catch {}
     };
@@ -233,6 +307,9 @@ export default function App() {
   const handleSelectTab = (tab: ActiveTab) => {
     if (tab === 'voice') {
       setIsVoiceMinimized(false);
+    }
+    if (tab !== 'settings') {
+      setSettingsTargetCategory(null);
     }
     setActiveTab(tab);
   };
@@ -262,10 +339,20 @@ export default function App() {
         activeIdentity={settings.activeIdentity}
         activePersonality={settings.activePersonality}
         onSelectIdentity={handleSelectIdentity}
-        onOpenSettings={() => setActiveTab('settings')}
+        onOpenSettings={() => {
+          setSettingsTargetCategory(null);
+          setActiveTab('settings');
+        }}
         onOpenChat={() => setActiveTab('chat')}
         onOpenHistory={() => setActiveTab('history')}
         isBackendConnected={isBackendConnected}
+        firebaseUser={firebaseUser}
+        userProfile={userProfile}
+        onOpenAuthModal={() => setAuthModalConfig({ isOpen: true, mode: 'signin' })}
+        onOpenProfile={() => {
+          setSettingsTargetCategory('profile');
+          setActiveTab('settings');
+        }}
       />
 
       {/* Main View Area */}
@@ -323,6 +410,23 @@ export default function App() {
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
             onNavigateTab={handleSelectTab}
+            initialCategory={settingsTargetCategory}
+            firebaseUser={firebaseUser}
+            userProfile={userProfile}
+            onProfileUpdated={(updatedProfile) => {
+              setUserProfile(updatedProfile);
+              if (updatedProfile.displayName) {
+                handleUpdateSettings({ userNickname: updatedProfile.displayName });
+              }
+            }}
+            onOpenAuthModal={(mode = 'signin') =>
+              setAuthModalConfig({ isOpen: true, mode })
+            }
+            onSignedOut={() => {
+              setUserProfile(null);
+              setSettings(getAppSettings());
+              updateCounts();
+            }}
           />
         )}
 
@@ -407,6 +511,21 @@ export default function App() {
           }, 120);
         }}
       />
+
+      {/* Firebase Authentication & Phone OTP Modal */}
+      <AuthModal
+        isOpen={authModalConfig.isOpen}
+        mode={authModalConfig.mode}
+        onClose={() => setAuthModalConfig((prev) => ({ ...prev, isOpen: false }))}
+        onAuthenticated={async (authenticatedUser) => {
+          setFirebaseUser(authenticatedUser);
+          try {
+            const p = await loadOrCreateUserProfile(authenticatedUser);
+            setUserProfile(p);
+          } catch {}
+        }}
+      />
     </AndroidFrame>
   );
 }
+

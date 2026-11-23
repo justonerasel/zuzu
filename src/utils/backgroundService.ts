@@ -3,19 +3,22 @@ import { extractAcousticFrameFeatures, matchAcousticFrame } from './audioTrigger
 
 /**
  * Zuzu AI Background Foreground Service, Always-On Wake Word & Custom Audio Triggers
- * - Bridges to Android ZuzuForegroundService (Silent NotificationChannel + WakeLock + boot persistence)
+ * - Bridges to Android ZuzuForegroundService (Silent NotificationChannel + WakeLock + Android 14+ FGS compliance)
  * - Uses silent Web Audio Voice Activity Detection (VAD) + Acoustic Trigger Matching (mouth whistle / finger snap)
- *   before waking SpeechRecognition so Android's recognizer does NOT play a continuous "tun-tun-tun" chime loop.
- * - On Native Android APK, also bridges to lightweight AudioRecord monitor when custom triggers are active.
+ * - On Native Android APK: supports BOTH native SpeechRecognizer wake matching ("Wake up Zuzu" / "Hey Zuzu")
+ *   when vocal onset is detected AND native AudioRecord trigger monitoring.
  */
 
 let foregroundActive = false;
+let foregroundRestrictionReason: string | null = null;
 let activeNativeWakeWord = '';
 let wakeLockSentinel: any = null;
 let keepAliveAudioCtx: AudioContext | null = null;
 let keepAliveOsc: OscillatorNode | null = null;
 
 let wakeRecognition: any = null;
+let nativeWakeActive = false;
+let nativeWakeHandles: Array<{ remove: () => Promise<void> | void }> = [];
 let wakeListenerShouldRun = false;
 let customTriggersActive = false;
 let activeCustomTriggers: CustomAudioTrigger[] = [];
@@ -29,6 +32,7 @@ let vadStream: MediaStream | null = null;
 let vadCheckTimer: ReturnType<typeof setInterval> | null = null;
 let consecutiveNoSpeechCount = 0;
 let lastAcousticTriggerAt = 0;
+let lastNativeWakeCheckAt = 0;
 const whistleStreakMap = new Map<string, number>();
 
 // Native Android AudioRecord trigger listener handle
@@ -59,6 +63,14 @@ function shouldRunAnyBackgroundMic(): boolean {
   return wakeListenerShouldRun || (customTriggersActive && activeCustomTriggers.length > 0);
 }
 
+function cleanupNativeWakeListeners(): void {
+  nativeWakeHandles.forEach((h) => {
+    try { h?.remove?.(); } catch {}
+  });
+  nativeWakeHandles = [];
+  nativeWakeActive = false;
+}
+
 function ensureVisibilityHook(): void {
   if (visibilityHooked || typeof document === 'undefined') return;
   visibilityHooked = true;
@@ -74,7 +86,7 @@ function ensureVisibilityHook(): void {
           keepAliveAudioCtx.resume().catch(() => {});
         }
       }
-      if (shouldRunAnyBackgroundMic() && !micBusyInActiveSession && !wakeRecognition && !vadCheckTimer) {
+      if (shouldRunAnyBackgroundMic() && !micBusyInActiveSession && !wakeRecognition && !nativeWakeActive && !vadCheckTimer) {
         scheduleWakeMonitor(500);
       }
     }
@@ -85,15 +97,17 @@ export function isForegroundServiceActive(): boolean {
   return foregroundActive;
 }
 
+export function getForegroundServiceRestrictionReason(): string | null {
+  return foregroundRestrictionReason;
+}
+
 export async function startZuzuForegroundService(wakeWordPhrase = 'Wake up Zuzu'): Promise<{
   success: boolean;
   native: boolean;
+  reason?: string;
 }> {
   const cleanPhrase = wakeWordPhrase.trim() || 'Wake up Zuzu';
   const alreadySyncedSame = foregroundActive && activeNativeWakeWord === cleanPhrase;
-
-  foregroundActive = true;
-  activeNativeWakeWord = cleanPhrase;
   const nativePlugin = getZuzuNativePlugin();
 
   if (nativePlugin?.startForegroundService) {
@@ -101,12 +115,27 @@ export async function startZuzuForegroundService(wakeWordPhrase = 'Wake up Zuzu'
       return { success: true, native: true };
     }
     try {
-      await nativePlugin.startForegroundService({ wakeWord: cleanPhrase });
+      const res = await nativePlugin.startForegroundService({ wakeWord: cleanPhrase });
+      if (res && res.started === false) {
+        foregroundActive = false;
+        foregroundRestrictionReason = String(res.reason || 'Foreground service blocked by Android OS.');
+        return { success: false, native: true, reason: foregroundRestrictionReason };
+      }
+      foregroundActive = true;
+      foregroundRestrictionReason = null;
+      activeNativeWakeWord = cleanPhrase;
       return { success: true, native: true };
-    } catch (err) {
+    } catch (err: any) {
+      foregroundActive = false;
+      foregroundRestrictionReason = err?.message || 'Grant Microphone permission & disable Battery Optimization for background listening.';
       console.warn('[ForegroundService] Native start notice:', err);
+      return { success: false, native: true, reason: foregroundRestrictionReason };
     }
   }
+
+  foregroundActive = true;
+  foregroundRestrictionReason = null;
+  activeNativeWakeWord = cleanPhrase;
 
   try {
     if (!wakeLockSentinel && typeof navigator !== 'undefined' && (navigator as any).wakeLock?.request) {
@@ -133,6 +162,7 @@ export async function startZuzuForegroundService(wakeWordPhrase = 'Wake up Zuzu'
 
 export async function stopZuzuForegroundService(): Promise<void> {
   foregroundActive = false;
+  foregroundRestrictionReason = null;
   activeNativeWakeWord = '';
   const nativePlugin = getZuzuNativePlugin();
 
@@ -260,6 +290,10 @@ export function setMicBusyForActiveSession(busy: boolean): void {
     }
     stopSilentVadGate();
     stopNativeTriggerMonitor();
+    if (nativeWakeActive) {
+      cleanupNativeWakeListeners();
+      getZuzuNativePlugin()?.cancelNativeSpeech?.().catch(() => {});
+    }
     if (wakeRecognition) {
       try {
         wakeRecognition.abort();
@@ -280,6 +314,7 @@ function matchesWakePhrase(transcript: string, customPhrase: string): { matched:
     'wake up zuzu',
     'hey zuzu',
     'ok zuzu',
+    'okay zuzu',
     'hello zuzu',
     'zuzu wake up',
     'ওঠো জুজু',
@@ -310,18 +345,22 @@ function scheduleWakeMonitor(delayMs = 1200): void {
 
 /**
  * Monitors ambient microphone quietly via Web Audio AnalyserNode (or native AudioRecord on APK)
- * matching both custom audio triggers (whistle / snap) AND vocal onset before opening OS SpeechRecognizer.
+ * matching both custom audio triggers (whistle / snap) AND vocal onset before opening SpeechRecognizer.
  */
 async function startSilentVadOrRecognition(): Promise<void> {
-  if (typeof window === 'undefined' || !shouldRunAnyBackgroundMic() || micBusyInActiveSession || wakeRecognition) {
+  if (
+    typeof window === 'undefined' ||
+    !shouldRunAnyBackgroundMic() ||
+    micBusyInActiveSession ||
+    wakeRecognition ||
+    nativeWakeActive
+  ) {
     return;
   }
 
   const cachedMic = localStorage.getItem('zuzu_mic_permission_status');
   if (cachedMic !== 'granted') return;
 
-  // On native Android APK, if custom triggers are active and wake-word speech isn't exclusively needed (or alongside),
-  // prefer native AudioRecord monitor when WebView getUserMedia shouldn't conflict with hardware AudioRecord.
   const hasTriggers = customTriggersActive && activeCustomTriggers.length > 0;
   if (isNativeAndroid() && hasTriggers && !wakeListenerShouldRun) {
     await startNativeTriggerMonitor();
@@ -403,9 +442,9 @@ async function startSilentVadOrRecognition(): Promise<void> {
             }
           }
 
-          // 2. Check Human Vocal Onset for Wake Word ("Wake up Zuzu") with ambient chatter rejection
+          // 2. Check Human Vocal Onset for Wake Word ("Wake up Zuzu" / "Hey Zuzu")
           if (wakeListenerShouldRun) {
-            if (features.rms > 0.072 && features.tonalityRatio < 4.2) {
+            if (features.rms > 0.068 && features.tonalityRatio < 4.5) {
               speechHits++;
               if (speechHits >= 3) {
                 stopSilentVadGate();
@@ -425,27 +464,115 @@ async function startSilentVadOrRecognition(): Promise<void> {
     }
   }
 
-  // Native fallback when custom triggers are active and WebView mic was unavailable
   if (isNativeAndroid() && hasTriggers) {
     await startNativeTriggerMonitor();
     return;
   }
 
-  // Browser fallback when Web Audio API unavailable
-  if (!isNativeAndroid() && wakeListenerShouldRun) {
+  if (wakeListenerShouldRun) {
     bootWakeRecognitionCycle();
+  }
+}
+
+async function bootNativeAndroidWakeCycle(): Promise<void> {
+  const nativePlugin = getZuzuNativePlugin();
+  if (!nativePlugin?.startNativeSpeech || !wakeListenerShouldRun || micBusyInActiveSession || nativeWakeActive) {
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastNativeWakeCheckAt < 3500) {
+    scheduleWakeMonitor(3500 - (now - lastNativeWakeCheckAt));
+    return;
+  }
+  lastNativeWakeCheckAt = now;
+  nativeWakeActive = true;
+
+  const fireWakeIfMatched = (text: string): boolean => {
+    const hit = matchesWakePhrase(text, currentWakeConfig.phrase);
+    if (!hit.matched) return false;
+    cleanupNativeWakeListeners();
+    nativePlugin.cancelNativeSpeech?.().catch(() => {});
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate([20, 30, 20]);
+    }
+    window.dispatchEvent(
+      new CustomEvent('zuzu-wake-word-triggered', {
+        detail: {
+          triggerType: 'voice',
+          transcript: text.trim(),
+          remainingCommand: hit.remainingCommand,
+          triggeredAt: Date.now()
+        }
+      })
+    );
+    return true;
+  };
+
+  try {
+    if (nativePlugin.addListener) {
+      nativeWakeHandles.push(
+        await nativePlugin.addListener('nativeSpeechPartial', (data: any) => {
+          if (!nativeWakeActive || micBusyInActiveSession) return;
+          const txt = String(data?.text || '');
+          if (txt) fireWakeIfMatched(txt);
+        })
+      );
+      nativeWakeHandles.push(
+        await nativePlugin.addListener('nativeSpeechResult', (data: any) => {
+          if (!nativeWakeActive) return;
+          const txt = String(data?.text || '');
+          const matched = txt ? fireWakeIfMatched(txt) : false;
+          if (!matched) {
+            cleanupNativeWakeListeners();
+            consecutiveNoSpeechCount = 0;
+            scheduleWakeMonitor(1500);
+          }
+        })
+      );
+      nativeWakeHandles.push(
+        await nativePlugin.addListener('nativeSpeechError', () => {
+          if (!nativeWakeActive) return;
+          cleanupNativeWakeListeners();
+          consecutiveNoSpeechCount++;
+          const backoffMs = Math.min(14000, 3200 + consecutiveNoSpeechCount * 1500);
+          scheduleWakeMonitor(backoffMs);
+        })
+      );
+      nativeWakeHandles.push(
+        await nativePlugin.addListener('nativeSpeechEnd', () => {
+          setTimeout(() => {
+            if (nativeWakeActive) {
+              cleanupNativeWakeListeners();
+              scheduleWakeMonitor(1800);
+            }
+          }, 900);
+        })
+      );
+    }
+
+    const wakeLang = currentWakeConfig.lang === 'bn-BD' ? 'bn-BD' : 'en-US';
+    await nativePlugin.startNativeSpeech({ language: wakeLang });
+  } catch {
+    cleanupNativeWakeListeners();
+    scheduleWakeMonitor(4000);
   }
 }
 
 function bootWakeRecognitionCycle(): void {
   if (typeof window === 'undefined' || !wakeListenerShouldRun || micBusyInActiveSession) return;
 
+  const cachedMic = localStorage.getItem('zuzu_mic_permission_status');
+  if (cachedMic !== 'granted') return;
+
+  if (isNativeAndroid()) {
+    bootNativeAndroidWakeCycle().catch(() => {});
+    return;
+  }
+
   const SpeechRecognitionClass =
     (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   if (!SpeechRecognitionClass) return;
-
-  const cachedMic = localStorage.getItem('zuzu_mic_permission_status');
-  if (cachedMic !== 'granted') return;
 
   try {
     if (wakeRecognition) {
@@ -456,7 +583,7 @@ function bootWakeRecognitionCycle(): void {
 
     const recognition = new SpeechRecognitionClass();
     wakeRecognition = recognition;
-    recognition.continuous = !isNativeAndroid();
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = currentWakeConfig.lang === 'bn-BD' ? 'bn-BD' : 'en-US';
 
@@ -502,8 +629,7 @@ function bootWakeRecognitionCycle(): void {
 
     recognition.onend = () => {
       wakeRecognition = null;
-      const delayMs = isNativeAndroid() ? 2200 : 1500;
-      scheduleWakeMonitor(delayMs);
+      scheduleWakeMonitor(1500);
     };
 
     recognition.start();
@@ -533,12 +659,16 @@ export async function syncBackgroundServicesWithSettings(settings: AppSettings):
   if (shouldRunAnyBackgroundMic()) {
     if (nativeMonitorRunning) {
       await startNativeTriggerMonitor();
-    } else if (!micBusyInActiveSession && !wakeRecognition && !vadCheckTimer) {
+    } else if (!micBusyInActiveSession && !wakeRecognition && !nativeWakeActive && !vadCheckTimer) {
       startSilentVadOrRecognition();
     }
   } else {
     stopSilentVadGate();
     stopNativeTriggerMonitor();
+    if (nativeWakeActive) {
+      cleanupNativeWakeListeners();
+      getZuzuNativePlugin()?.cancelNativeSpeech?.().catch(() => {});
+    }
     if (restartTimer) {
       clearTimeout(restartTimer);
       restartTimer = null;
@@ -557,6 +687,10 @@ export function stopAllBackgroundServices(): void {
   customTriggersActive = false;
   stopSilentVadGate();
   stopNativeTriggerMonitor();
+  if (nativeWakeActive) {
+    cleanupNativeWakeListeners();
+    getZuzuNativePlugin()?.cancelNativeSpeech?.().catch(() => {});
+  }
   if (restartTimer) {
     clearTimeout(restartTimer);
     restartTimer = null;

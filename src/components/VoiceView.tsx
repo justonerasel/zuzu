@@ -1,37 +1,41 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Mic, 
-  MicOff, 
-  Square, 
-  Minimize2, 
-  Sparkles, 
-  Volume2, 
-  Repeat, 
-  Radio, 
+import {
+  Mic,
+  Square,
+  Minimize2,
+  Repeat,
+  Radio,
   AlertCircle,
-  HelpCircle,
-  ChevronDown,
   X,
   History,
-  Send
+  Send,
+  Globe2,
+  ExternalLink
 } from 'lucide-react';
-import { AppSettings, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
+import { AppSettings, SearchSourceItem, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
 import {
   PERSONALITIES,
   VOICE_IDENTITIES,
   getDefaultGeminiVoiceForIdentity,
   resolveGeminiVoiceForSettings
 } from '../constants/personalities';
-import { detectVoiceSwitchIntent, detectVoiceActionIntent } from '../utils/intentDetector';
+import {
+  detectSleepStopIntent,
+  detectVoiceSwitchIntent,
+  detectVoiceActionIntent,
+  PendingReminderClarification,
+  resolvePendingReminderClarification
+} from '../utils/intentDetector';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
 import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
-import { checkMicrophonePermission } from '../utils/permission';
+import { checkMicrophonePermission, getNativeZuzuPlugin } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import { executeConfirmedMessageIntent } from './NotesRemindersModal';
 import { streamUnifiedAiChat } from '../utils/apiConfig';
 import { startVoiceCapture, VoiceCaptureController } from '../utils/speech';
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { setMicBusyForActiveSession } from '../utils/backgroundService';
+import { formatSourcePublicationTime } from '../utils/sourceFormat';
 
 interface VoiceViewProps {
   settings: AppSettings;
@@ -58,6 +62,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   const [transcript, setTranscript] = useState('');
   const [statusMessage, setStatusMessage] = useState('Tap microphone to start voice session');
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const [lastSources, setLastSources] = useState<SearchSourceItem[]>([]);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [pendingMessageDraft, setPendingMessageDraft] = useState<{
     recipient: string;
@@ -67,6 +72,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
   const captureControllerRef = useRef<VoiceCaptureController | null>(null);
   const aiAbortControllerRef = useRef<AbortController | null>(null);
+  const pendingClarificationRef = useRef<PendingReminderClarification | null>(null);
+  const suppressContinuousOnceRef = useRef(false);
   const isContinuousRef = useRef(settings.continuousListening);
   const activeIdentityRef = useRef(settings.activeIdentity);
   const settingsRef = useRef(settings);
@@ -98,7 +105,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     };
   }, []);
 
-  const currentIdentityConfig = VOICE_IDENTITIES[settings.activeIdentity];
   const currentPersonality = PERSONALITIES[settings.activePersonality] || PERSONALITIES.Normal;
 
   // Initialize or retrieve voice session
@@ -142,10 +148,11 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     saveVoiceSession(updatedSession);
   };
 
-  // Start Speech Recognition via unified native Android + Web Speech controller
+  // Start Speech Recognition via unified native Android + Web Speech + Cloud Transcription fallback
   const startListening = async () => {
     setErrorNotice(null);
     isCancelledRef.current = false;
+    suppressContinuousOnceRef.current = false;
     stopSpeaking();
     setIsSpeaking(false);
 
@@ -215,7 +222,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     }
   };
 
-  // Verify microphone permission and immediately open microphone listening (no automatic greeting speech)
+  // Verify microphone permission and immediately open microphone listening
   const ensurePermissionAndStart = async () => {
     try {
       const perm = await checkMicrophonePermission();
@@ -234,6 +241,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       const detail = (e as CustomEvent)?.detail || {};
       const cmd = typeof detail.remainingCommand === 'string' ? detail.remainingCommand.trim() : '';
       setIsSpeaking(false);
+      suppressContinuousOnceRef.current = false;
       if (cmd) {
         handleUserVoiceInputRef.current(cmd);
       } else {
@@ -273,6 +281,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   // Cancel action: stops everything immediately
   const handleCancel = () => {
     isCancelledRef.current = true;
+    suppressContinuousOnceRef.current = true;
     if (aiAbortControllerRef.current) {
       aiAbortControllerRef.current.abort();
       aiAbortControllerRef.current = null;
@@ -321,10 +330,13 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         setStatusMessage('Listening finished.');
         onFinishCallback?.();
 
-        // Continuous listening: restart listening after speaking finishes
-        if (isContinuousRef.current && !isCancelledRef.current) {
+        if (
+          isContinuousRef.current &&
+          !isCancelledRef.current &&
+          !suppressContinuousOnceRef.current
+        ) {
           setTimeout(() => {
-            if (!isCancelledRef.current) {
+            if (!isCancelledRef.current && !suppressContinuousOnceRef.current) {
               startListening();
             }
           }, 350);
@@ -333,36 +345,98 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       onError: (err) => {
         console.warn('Speech playback error:', err);
         setIsSpeaking(false);
-        if (isContinuousRef.current && !isCancelledRef.current) {
-          setTimeout(() => startListening(), 350);
+        if (
+          isContinuousRef.current &&
+          !isCancelledRef.current &&
+          !suppressContinuousOnceRef.current
+        ) {
+          setTimeout(() => {
+            if (!isCancelledRef.current && !suppressContinuousOnceRef.current) {
+              startListening();
+            }
+          }, 350);
         }
       }
     });
   };
 
-  // Core Voice Input Processing & Identity Switching Logic
+  // Core Voice Input Processing
   const handleUserVoiceInput = async (spokenText: string) => {
     if (!spokenText.trim()) return;
 
     setIsProcessing(true);
     setStatusMessage('Processing speech intent...');
+    setLastSources([]);
 
     const currentId = activeIdentityRef.current;
+    const latestSettings = settingsRef.current;
+
+    // 0. Check "Bye Zuzu" / "Sleep Zuzu" Standby Command
+    const sleepIntent = detectSleepStopIntent(spokenText, latestSettings.assistantNickname || 'Zuzu');
+    if (sleepIntent.isSleepCommand) {
+      suppressContinuousOnceRef.current = true;
+      playHapticSound('listen_stop');
+      appendVoiceMessage({
+        sender: 'user',
+        text: spokenText,
+        timestamp: Date.now(),
+        voiceIdentity: currentId
+      });
+      appendVoiceMessage({
+        sender: 'assistant',
+        text: sleepIntent.confirmationSpoken,
+        timestamp: Date.now() + 80,
+        voiceIdentity: currentId
+      });
+      setIsProcessing(false);
+      setTranscript(sleepIntent.confirmationSpoken);
+      speakZuzuResponse(sleepIntent.confirmationSpoken, currentId, () => {
+        setStatusMessage('Standby mode • Say "Wake up Zuzu" anytime');
+      });
+      return;
+    }
+
+    // 0.5 Resolve pending reminder clarification if user answered a previous time/AM-PM prompt
+    if (
+      pendingClarificationRef.current &&
+      Date.now() - pendingClarificationRef.current.createdAt < 3 * 60 * 1000
+    ) {
+      const resolved = resolvePendingReminderClarification(
+        spokenText,
+        pendingClarificationRef.current
+      );
+      pendingClarificationRef.current = resolved.pendingClarification || null;
+      playHapticSound('message_sent');
+      appendVoiceMessage({
+        sender: 'user',
+        text: spokenText,
+        timestamp: Date.now(),
+        voiceIdentity: currentId
+      });
+      appendVoiceMessage({
+        sender: 'assistant',
+        text: resolved.spokenConfirmation,
+        timestamp: Date.now() + 80,
+        voiceIdentity: currentId
+      });
+      setIsProcessing(false);
+      setTranscript(resolved.spokenConfirmation);
+      speakZuzuResponse(resolved.spokenConfirmation, currentId);
+      return;
+    }
+    pendingClarificationRef.current = null;
 
     // 1. Check for Voice Switch Command in English or Bengali
     const switchIntent = detectVoiceSwitchIntent(spokenText, currentId);
 
-    // Case A: Unambiguous Switch Command Detected
     if (switchIntent.isSwitchCommand && switchIntent.targetIdentity) {
       const newIdentity = switchIntent.targetIdentity;
       const newVoice = getDefaultGeminiVoiceForIdentity(newIdentity).id;
       playHapticSound('switch');
 
-      // Update active identity & matching Gemini voice in state and storage
       onUpdateSettings({ activeIdentity: newIdentity, geminiVoiceName: newVoice });
       activeIdentityRef.current = newIdentity;
 
-      // Save user switch command to Voice History
       appendVoiceMessage({
         sender: 'user',
         text: spokenText,
@@ -371,10 +445,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         isSwitchCommand: true
       });
 
-      // Confirmation response to be spoken by NEW identity
       const confirmationText = switchIntent.confirmationSpoken;
-
-      // Save assistant confirmation to Voice History
       appendVoiceMessage({
         sender: 'assistant',
         text: confirmationText,
@@ -384,39 +455,36 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       });
 
       setIsProcessing(false);
-
-      // Speak using the NEW identity's Gemini neural voice
       speakZuzuResponse(confirmationText, newIdentity);
       return;
     }
 
-    // Case B: Ambiguous command detected (ask confirmation)
     if (switchIntent.isAmbiguous && switchIntent.ambiguousQuestion) {
       const clarifyText = switchIntent.ambiguousQuestion;
-
       appendVoiceMessage({
         sender: 'user',
         text: spokenText,
         timestamp: Date.now(),
         voiceIdentity: currentId
       });
-
       appendVoiceMessage({
         sender: 'assistant',
         text: clarifyText,
         timestamp: Date.now() + 100,
         voiceIdentity: currentId
       });
-
       setIsProcessing(false);
       speakZuzuResponse(clarifyText, currentId);
       return;
     }
 
-    // 1.2 Natural Language Voice Command Action Intents
+    // 1.2 Natural Language Voice Command Action Intents (Apps, Notes CRUD, Reminders Lifecycle, Messages)
     const actionIntent = detectVoiceActionIntent(spokenText);
     if (actionIntent.hasActionIntent) {
       playHapticSound('message_sent');
+      if (actionIntent.intentType === 'clarify_reminder' && actionIntent.pendingClarification) {
+        pendingClarificationRef.current = actionIntent.pendingClarification;
+      }
       if (actionIntent.requiresConfirmation && actionIntent.messageDraft) {
         setPendingMessageDraft(actionIntent.messageDraft);
       } else {
@@ -439,12 +507,12 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       });
 
       setIsProcessing(false);
+      setTranscript(actionIntent.spokenConfirmation);
       speakZuzuResponse(actionIntent.spokenConfirmation, currentId);
       return;
     }
 
-    // Case C: Standard Voice Query / Conversation
-    const latestSettings = settingsRef.current;
+    // Case C: Standard Voice Query / Conversation / Live Internet Search
     appendVoiceMessage({
       sender: 'user',
       text: spokenText,
@@ -456,12 +524,12 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       const session = sessionRef.current;
       const historyContext = (session?.messages || []).map(m => ({
         sender: m.sender,
-        text: m.text
+        text: m.text,
+        usedRealtimeSearch: m.usedRealtimeSearch
       }));
 
       const activeMemories = latestSettings.memoryEnabled ? getMemories() : [];
 
-      // Auto-extract voice memory instruction if spoken
       if (latestSettings.memoryEnabled) {
         const lowerVoice = spokenText.toLowerCase().trim();
         if (
@@ -486,7 +554,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         }
       }
 
-      // Call fast unified Gemini streaming pipeline
       if (aiAbortControllerRef.current) {
         aiAbortControllerRef.current.abort();
       }
@@ -517,19 +584,21 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       }
 
       const aiReply = aiResult.reply;
+      const sources = Array.isArray(aiResult.sources) ? aiResult.sources : [];
+      setLastSources(sources);
 
-      // Save AI voice response to Voice History
       appendVoiceMessage({
         sender: 'assistant',
         text: aiReply,
         timestamp: Date.now() + 100,
-        voiceIdentity: currentId
+        voiceIdentity: currentId,
+        usedRealtimeSearch: Boolean(aiResult.usedRealtimeSearch),
+        sources: sources.length > 0 ? sources : undefined
       });
 
       setIsProcessing(false);
-      setTranscript('');
+      setTranscript(aiReply);
 
-      // Speak the response using the active identity's Gemini voice
       speakZuzuResponse(aiReply, currentId);
     } catch (err: any) {
       if (err?.name === 'AbortError' || isCancelledRef.current) {
@@ -570,14 +639,22 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     setStatusMessage(`Switched to ${VOICE_IDENTITIES[target].name}.`);
   };
 
-  // Dynamic visualizer bars
+  const handleOpenSourceLink = (e: React.MouseEvent, url: string) => {
+    const nativePlugin = getNativeZuzuPlugin();
+    if (nativePlugin?.openExternalUrl) {
+      e.preventDefault();
+      nativePlugin.openExternalUrl({ url }).catch(() => {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      });
+    }
+  };
+
   const currentOrbState: OrbState = isSpeaking ? 'speaking' : isProcessing ? 'thinking' : isListening ? 'listening' : 'idle';
 
   return (
     <div className="flex-1 flex flex-col h-full bg-gradient-to-b from-[#eef0fc] via-[#f5f3ff] to-[#faf8ff] text-slate-800 relative overflow-hidden select-none">
       {/* Top Controls bar within Voice View */}
       <div className="px-5 py-3.5 flex items-center justify-between z-20 border-b border-white/60 bg-white/40 backdrop-blur-md">
-        {/* Identity Selector Pill */}
         <button
           onClick={handleManualSwitch}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
@@ -592,7 +669,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         </button>
 
         <div className="flex items-center gap-2">
-          {/* Continuous Listening Toggle */}
           <button
             onClick={handleToggleContinuous}
             className={`px-3 py-1.5 rounded-full text-[11px] font-semibold border flex items-center gap-1.5 transition-all ${
@@ -616,7 +692,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             </button>
           )}
 
-          {/* Minimize Button */}
           <button
             onClick={onMinimize}
             className="p-1.5 rounded-full bg-white/80 hover:bg-white text-slate-600 border border-slate-200/80 shadow-sm transition-colors"
@@ -629,10 +704,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
       {/* Main Center Stage: 3D Holographic Particle Orb */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 py-2 relative z-10 overflow-y-auto">
-        {/* Subtle Ambient Radial Glow */}
         <div className="absolute w-80 h-80 rounded-full blur-3xl opacity-35 bg-gradient-to-tr from-purple-200 via-indigo-200 to-pink-200 pointer-events-none -z-0"></div>
 
-        {/* 3D Interactive Dot/Particle Orb */}
         <div className="relative my-auto flex flex-col items-center">
           <ParticleOrb
             state={currentOrbState}
@@ -653,7 +726,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             }
           />
 
-          {/* Status Pill below Orb */}
           <div className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/80 border border-white shadow-sm text-xs font-semibold text-slate-700">
             <span
               className={`w-2 h-2 rounded-full ${
@@ -677,7 +749,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             </span>
           </div>
 
-          {/* Personality & Voice Tag */}
           <div className="mt-2 text-center">
             <p className="text-[11px] text-slate-500">
               Personality: <span className="font-semibold text-slate-700">{currentPersonality.name}</span>
@@ -690,11 +761,46 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           <div className="w-full max-w-sm mt-3 p-3.5 bg-white/80 backdrop-blur-md rounded-2xl border border-white/80 shadow-sm text-xs animate-fade-in">
             <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
               <span>Live Transcript</span>
-              <span className="text-purple-600 font-medium text-[10px]">Active Session</span>
+              <span className="text-purple-600 font-medium text-[10px]">{statusMessage}</span>
             </div>
-            <p className="text-slate-700 italic line-clamp-3">
+            <p className="text-slate-700 italic line-clamp-4">
               "{transcript || sessionRef.current?.messages.slice(-1)[0]?.text || ''}"
             </p>
+
+            {lastSources.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-purple-100 space-y-1.5">
+                <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-purple-700">
+                  <Globe2 className="w-3 h-3" />
+                  <span>Google Search Sources</span>
+                </div>
+                <div className="space-y-1.5">
+                  {lastSources.slice(0, 6).map((src, idx) => (
+                    <a
+                      key={`${src.url}-${idx}`}
+                      href={src.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => handleOpenSourceLink(e, src.url)}
+                      className="block p-2 rounded-xl bg-purple-50/90 hover:bg-purple-100 border border-purple-200 transition-colors"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="text-[11px] font-semibold text-slate-800 line-clamp-1">
+                          {src.title || src.sourceName}
+                        </span>
+                        <ExternalLink className="w-3 h-3 text-purple-600 flex-shrink-0 mt-0.5" />
+                      </div>
+                      <div className="mt-0.5 flex items-center flex-wrap gap-1.5 text-[10px]">
+                        <span className="font-bold text-purple-800">{src.sourceName}</span>
+                        <span className="text-slate-400">•</span>
+                        <span className={src.isWithin20Min ? 'font-bold text-emerald-700' : 'text-slate-500'}>
+                          {formatSourcePublicationTime(src)}
+                        </span>
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -728,7 +834,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           </div>
         )}
 
-        {/* Error notification if mic blocked */}
         {errorNotice && (
           <div className="mt-3 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs flex items-center gap-2 max-w-sm">
             <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-500" />
@@ -736,9 +841,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           </div>
         )}
 
-        {/* Floating Voice Assistant Controls Dock (Cancel FAB & Quick Controls) */}
+        {/* Floating Voice Assistant Controls Dock */}
         <div className="w-full max-w-xs mt-3 flex items-center justify-center gap-2.5 z-20 pb-2">
-          {/* Main Voice Toggle */}
           <button
             onClick={() =>
               isListening
@@ -768,7 +872,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             )}
           </button>
 
-          {/* Hold or Tap-to-Cancel FAB */}
           {(isListening || isSpeaking || isProcessing) && (
             <button
               onClick={handleCancel}
@@ -784,7 +887,6 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             </button>
           )}
 
-          {/* Quick Minimize */}
           <button
             onClick={onMinimize}
             className="p-2.5 rounded-2xl bg-white/90 hover:bg-white text-slate-600 border border-purple-100 shadow-xs transition-colors"

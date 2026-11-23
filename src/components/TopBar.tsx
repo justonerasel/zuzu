@@ -1,6 +1,7 @@
 import React from 'react';
-import { MessageSquare, Settings, History } from 'lucide-react';
-import { VoiceIdentity, PersonalityId } from '../types';
+import { MessageSquare, Settings, History, LogIn } from 'lucide-react';
+import { User } from 'firebase/auth';
+import { VoiceIdentity, PersonalityId, FirebaseUserProfile } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { playHapticSound } from '../utils/audio';
 
@@ -12,6 +13,10 @@ interface TopBarProps {
   onOpenChat?: () => void;
   onOpenHistory?: () => void;
   isBackendConnected?: boolean;
+  firebaseUser?: User | null;
+  userProfile?: FirebaseUserProfile | null;
+  onOpenAuthModal?: () => void;
+  onOpenProfile?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -21,7 +26,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenSettings,
   onOpenChat,
   onOpenHistory,
-  isBackendConnected = true
+  firebaseUser,
+  userProfile,
+  onOpenAuthModal,
+  onOpenProfile
 }) => {
   const currentIdentity = VOICE_IDENTITIES[activeIdentity];
   const personality = PERSONALITIES[activePersonality] || PERSONALITIES.Normal;
@@ -31,6 +39,15 @@ export const TopBar: React.FC<TopBarProps> = ({
     playHapticSound('switch');
     onSelectIdentity(nextId);
   };
+
+  const avatarSrc = userProfile?.photoData || firebaseUser?.photoURL || '';
+  const displayName =
+    userProfile?.displayName ||
+    firebaseUser?.displayName ||
+    firebaseUser?.email ||
+    firebaseUser?.phoneNumber ||
+    '';
+  const initials = displayName ? displayName.slice(0, 2).toUpperCase() : 'ZU';
 
   return (
     <header className="px-4 pt-[max(env(safe-area-inset-top,0px),0.65rem)] pb-2.5 bg-white/75 backdrop-blur-xl border-b border-purple-100/70 flex items-center justify-between z-30 select-none shadow-sm shadow-purple-950/5">
@@ -75,7 +92,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
       </div>
 
-      {/* 3. Upper Right: Settings Shortcut & Quick Identity Switch */}
+      {/* 3. Upper Right: Account Avatar/Sign-In, Identity Switch & Settings */}
       <div className="flex items-center gap-1.5">
         <button
           onClick={handleToggleIdentity}
@@ -86,8 +103,33 @@ export const TopBar: React.FC<TopBarProps> = ({
           }`}
           title="Switch Voice Gender"
         >
-          <span>{activeIdentity === 'female' ? '♀ Female' : '♂ Male'}</span>
+          <span>{activeIdentity === 'female' ? '♀' : '♂'}</span>
         </button>
+
+        {firebaseUser ? (
+          <button
+            onClick={onOpenProfile || onOpenSettings}
+            className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 text-white shadow-sm border border-purple-200 flex items-center justify-center overflow-hidden transition-all active:scale-95"
+            title={displayName ? `Signed in as ${displayName}` : 'Manage Account'}
+          >
+            {avatarSrc ? (
+              <img src={avatarSrc} alt={displayName || 'Profile'} className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-[11px] font-black">{initials}</span>
+            )}
+          </button>
+        ) : (
+          onOpenAuthModal && (
+            <button
+              onClick={onOpenAuthModal}
+              className="h-9 px-2.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-bold shadow-sm flex items-center gap-1 transition-all active:scale-95"
+              title="Sign In with Google or Mobile OTP"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline">Sign In</span>
+            </button>
+          )
+        )}
 
         <button
           onClick={onOpenSettings}

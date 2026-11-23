@@ -63,7 +63,8 @@ import {
   OrbParticleDensity,
   ThemePresetId,
   GfIntensity,
-  ActiveTab
+  ActiveTab,
+  FirebaseUserProfile
 } from '../types';
 import {
   PERSONALITIES,
@@ -103,19 +104,29 @@ import {
   openAndroidAppSettingsGuide, 
   checkMicrophonePermission, 
   requestMicrophonePermission, 
-  MicrophonePermissionState 
+  MicrophonePermissionState,
+  checkExactAlarmPermission,
+  openExactAlarmSettings
 } from '../utils/permission';
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { THEME_PRESETS, isValidHexColor, getThemeDetails } from '../utils/theme';
-import { 
-  registerZuAccount, 
-  loginZuAccount, 
-  syncZuCloudNow, 
-  logoutZuAccount 
-} from '../utils/zuAccount';
-import { 
-  syncBackgroundServicesWithSettings, 
+import { User as FirebaseAuthUser } from 'firebase/auth';
+import {
+  linkGoogleToCurrentUser,
+  resizeAvatarImageFile,
+  signOutFirebaseUser,
+  unlinkAuthProvider
+} from '../utils/authService';
+import {
+  deleteAccountAndPrivateData,
+  performIsolatedSignOutCleanup,
+  pushActiveVaultToCloud,
+  updateAuthenticatedUserProfile
+} from '../utils/userCloudVault';
+import {
+  syncBackgroundServicesWithSettings,
   isForegroundServiceActive,
+  getForegroundServiceRestrictionReason,
   setMicBusyForActiveSession
 } from '../utils/backgroundService';
 import { recordCustomAudioTrigger } from '../utils/audioTriggers';
@@ -125,6 +136,12 @@ interface SettingsViewProps {
   settings: AppSettings;
   onUpdateSettings: (settings: Partial<AppSettings>) => void;
   onNavigateTab?: (tab: ActiveTab) => void;
+  initialCategory?: SettingsCategoryId | null;
+  firebaseUser?: FirebaseAuthUser | null;
+  userProfile?: FirebaseUserProfile | null;
+  onProfileUpdated?: (profile: FirebaseUserProfile) => void;
+  onOpenAuthModal?: (mode?: 'signin' | 'link_phone') => void;
+  onSignedOut?: () => void;
 }
 
 export type SettingsCategoryId = 
@@ -157,10 +174,10 @@ interface CategoryCardInfo {
 const CATEGORIES: CategoryCardInfo[] = [
   {
     id: 'profile',
-    title: 'Profile & Identity',
-    subtitle: 'User profile, assistant nickname & language preferences',
+    title: 'Account & Profile',
+    subtitle: 'Google & Mobile OTP login, profile, nickname & language',
     icon: User,
-    badge: 'User',
+    badge: 'Account',
     colorTheme: {
       bg: 'bg-purple-50/70 hover:bg-purple-50',
       border: 'border-purple-200/80',
@@ -330,13 +347,31 @@ const ORB_STYLES: Array<{
   }
 ];
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSettings, onNavigateTab }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({
+  settings,
+  onUpdateSettings,
+  onNavigateTab,
+  initialCategory = null,
+  firebaseUser = null,
+  userProfile = null,
+  onProfileUpdated,
+  onOpenAuthModal,
+  onSignedOut
+}) => {
   // Navigation State
-  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId | null>(null);
+  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId | null>(initialCategory);
   const [searchQuery, setSearchQuery] = useState('');
 
+  useEffect(() => {
+    if (initialCategory) {
+      setActiveCategory(initialCategory);
+    }
+  }, [initialCategory]);
+
   // Profile state
-  const [userNickname, setUserNickname] = useState(settings.userNickname || 'Rasel');
+  const [userNickname, setUserNickname] = useState(
+    userProfile?.displayName || settings.userNickname || 'Rasel'
+  );
   const [assistantNickname, setAssistantNickname] = useState(settings.assistantNickname || 'Zuzu');
   const [isEditingAssistantNick, setIsEditingAssistantNick] = useState(false);
   const [greetingStyle, setGreetingStyle] = useState<'friendly' | 'formal' | 'cheerful'>('friendly');
@@ -397,30 +432,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   const [newMemCategory, setNewMemCategory] = useState<MemoryCategory>('personal');
   const [memError, setMemError] = useState<string | null>(null);
 
-  // ZU-ID Account State (Custom Username + Firebase Firestore)
-  const [zuMode, setZuMode] = useState<'login' | 'register'>('login');
-  const [zuUsernameInput, setZuUsernameInput] = useState(settings.zuUsername || settings.zuAccountId || '');
-  const [zuFullNameInput, setZuFullNameInput] = useState(settings.zuFullName || settings.userNickname || '');
-  const [zuPhoneInput, setZuPhoneInput] = useState(settings.zuPhone || '');
-  const [zuPasswordInput, setZuPasswordInput] = useState('');
-  const [zuConfirmPasswordInput, setZuConfirmPasswordInput] = useState('');
-  const [showZuPassword, setShowZuPassword] = useState(false);
-  const [newlyCreatedZuId, setNewlyCreatedZuId] = useState<string | null>(null);
-  const [zuLoading, setZuLoading] = useState(false);
-  const [zuStatusMsg, setZuStatusMsg] = useState<string | null>(null);
+  // Firebase Account & Profile Management State
+  const [authBusyAction, setAuthBusyAction] = useState<string | null>(null);
+  const [authStatusMsg, setAuthStatusMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
 
   useEffect(() => {
-    if (settings.userNickname) {
-      setUserNickname(settings.userNickname);
+    const nextName = userProfile?.displayName || settings.userNickname;
+    if (nextName) {
+      setUserNickname(nextName);
     }
-  }, [settings.userNickname]);
+  }, [userProfile?.displayName, settings.userNickname]);
+
+  useEffect(() => {
+    const onWorkspaceSwitch = () => {
+      setMemories(getMemories());
+      updateCounts();
+    };
+    window.addEventListener('zuzu-workspace-switched', onWorkspaceSwitch);
+    return () => window.removeEventListener('zuzu-workspace-switched', onWorkspaceSwitch);
+  }, []);
 
   // Background Service & Wake Word & Custom Audio Triggers State
   const [wakeWordDraft, setWakeWordDraft] = useState(settings.wakeWordPhrase || 'wake up zuzu');
   const [bgServiceStatus, setBgServiceStatus] = useState<string | null>(null);
+  const [fgsRestriction, setFgsRestriction] = useState<string | null>(() => getForegroundServiceRestrictionReason());
+  const [exactAlarmStatus, setExactAlarmStatus] = useState<{ canScheduleExactAlarms: boolean; requiresSetting: boolean } | null>(null);
   const [recordingTriggerKind, setRecordingTriggerKind] = useState<CustomAudioTriggerKind | null>(null);
   const [recordingProgress, setRecordingProgress] = useState(0);
   const [customTriggerLabel, setCustomTriggerLabel] = useState('');
+
+  useEffect(() => {
+    if (activeCategory === 'background_wake') {
+      setFgsRestriction(getForegroundServiceRestrictionReason());
+      checkExactAlarmPermission().then(setExactAlarmStatus).catch(() => {});
+    }
+  }, [activeCategory, settings.foregroundServiceEnabled]);
 
   const handleRecordAudioTrigger = async (kind: CustomAudioTriggerKind) => {
     if (recordingTriggerKind) return;
@@ -715,18 +762,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
   };
 
   const handleConfirmReset = () => {
-    // Reset general configuration while preserving Gemini API key (unless opted out), ZU-ID session, memories & chat history
+    // Reset general configuration while preserving Gemini API key (unless opted out), memories & chat history
     const newSettings: AppSettings = {
       ...DEFAULT_SETTINGS,
       customGeminiApiKey: resetApiKeysToggle ? '' : (settings.customGeminiApiKey || ''),
       userNickname: settings.userNickname,
       assistantNickname: settings.assistantNickname,
-      zuAccountId: settings.zuAccountId,
-      zuUsername: settings.zuUsername,
-      zuFullName: settings.zuFullName,
-      zuPhone: settings.zuPhone,
-      zuToken: settings.zuToken,
-      zuVaultKey: settings.zuVaultKey,
       zuLastSyncedAt: settings.zuLastSyncedAt
     };
     onUpdateSettings(newSettings);
@@ -993,325 +1034,437 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             {/* ----------------------------------------------------------- */}
             {/* 1. PROFILE & IDENTITY SUB-PAGE                             */}
             {/* ----------------------------------------------------------- */}
-            {activeCategory === 'profile' && (
+            {activeCategory === 'profile' && (() => {
+              const providers = (firebaseUser?.providerData || []).map((p) => p.providerId);
+              const hasGoogleLinked = providers.includes('google.com');
+              const hasPhoneLinked = providers.includes('phone') || Boolean(firebaseUser?.phoneNumber);
+              const canUnlink = providers.length > 1;
+              const avatarSrc = userProfile?.photoData || firebaseUser?.photoURL || '';
+              const activeDisplayName =
+                userProfile?.displayName ||
+                firebaseUser?.displayName ||
+                userNickname ||
+                'Zuzu User';
+
+              return (
               <div className="space-y-3.5 animate-fade-in text-slate-800">
+                {/* Profile Summary & Display Name / Photo Editor */}
                 <div className="p-4 bg-white/90 border border-purple-100 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center gap-3">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-500 to-indigo-500 text-white flex items-center justify-center font-extrabold text-xl shadow-sm">
-                      {userNickname ? userNickname.slice(0, 2).toUpperCase() : 'ME'}
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-500 to-indigo-500 text-white flex items-center justify-center font-extrabold text-xl shadow-sm overflow-hidden flex-shrink-0 border border-purple-200">
+                      {avatarSrc ? (
+                        <img
+                          src={avatarSrc}
+                          alt={activeDisplayName}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span>{activeDisplayName.slice(0, 2).toUpperCase()}</span>
+                      )}
                     </div>
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <div className="text-xs font-bold text-slate-800">User Profile</div>
-                      <div className="text-sm font-black text-purple-700">{userNickname || 'Personal User'}</div>
-                      <div className="text-[10px] text-slate-400">Primary Android Device Account</div>
+                      <div className="text-sm font-black text-purple-700 truncate">{activeDisplayName}</div>
+                      <div className="text-[10px] text-slate-500 truncate">
+                        {firebaseUser
+                          ? firebaseUser.email || firebaseUser.phoneNumber || `UID: ${firebaseUser.uid.slice(0, 10)}...`
+                          : 'Offline Local Mode • Sign in for cloud isolation & sync'}
+                      </div>
                     </div>
+                    {firebaseUser && (
+                      <label className="px-2.5 py-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 border border-purple-200 text-[10px] font-bold text-purple-700 cursor-pointer flex-shrink-0">
+                        <span>{authBusyAction === 'photo' ? 'Saving...' : 'Photo'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={Boolean(authBusyAction)}
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = '';
+                            if (!file || !firebaseUser) return;
+                            setAuthBusyAction('photo');
+                            setAuthStatusMsg(null);
+                            try {
+                              const compressed = await resizeAvatarImageFile(file);
+                              const updated = await updateAuthenticatedUserProfile(firebaseUser, {
+                                photoData: compressed
+                              });
+                              onProfileUpdated?.(updated);
+                              setAuthStatusMsg({ type: 'ok', text: 'Profile photo updated & synced.' });
+                              playHapticSound('message_sent');
+                            } catch (err: any) {
+                              setAuthStatusMsg({
+                                type: 'err',
+                                text: err?.message || 'Failed to update profile photo.'
+                              });
+                              playHapticSound('listen_stop');
+                            } finally {
+                              setAuthBusyAction(null);
+                            }
+                          }}
+                        />
+                      </label>
+                    )}
                   </div>
 
-                  <div className="space-y-1 pt-2 border-t border-slate-100">
+                  <div className="space-y-1.5 pt-2 border-t border-slate-100">
                     <label className="text-[11px] font-semibold text-slate-600">
-                      User Nickname (What Zuzu calls you):
+                      Display Name / Nickname (What Zuzu calls you):
                     </label>
-                    <input
-                      type="text"
-                      value={userNickname}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setUserNickname(val);
-                        onUpdateSettings({ userNickname: val });
-                      }}
-                      placeholder="e.g. Rasel, Alex, Boss"
-                      className="w-full bg-purple-50/50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-purple-100 focus:outline-none focus:border-purple-300"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={userNickname}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setUserNickname(val);
+                          onUpdateSettings({ userNickname: val });
+                        }}
+                        placeholder="e.g. Rasel, Alex, Boss"
+                        className="flex-1 bg-purple-50/50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-purple-100 focus:outline-none focus:border-purple-300"
+                      />
+                      {firebaseUser && (
+                        <button
+                          type="button"
+                          disabled={Boolean(authBusyAction) || !userNickname.trim()}
+                          onClick={async () => {
+                            if (!firebaseUser) return;
+                            setAuthBusyAction('save_name');
+                            setAuthStatusMsg(null);
+                            try {
+                              const updated = await updateAuthenticatedUserProfile(firebaseUser, {
+                                displayName: userNickname.trim()
+                              });
+                              onProfileUpdated?.(updated);
+                              setAuthStatusMsg({ type: 'ok', text: 'Display name saved to Firebase Profile.' });
+                              playHapticSound('message_sent');
+                            } catch (err: any) {
+                              setAuthStatusMsg({ type: 'err', text: err?.message || 'Could not save display name.' });
+                            } finally {
+                              setAuthBusyAction(null);
+                            }
+                          }}
+                          className="px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold disabled:opacity-50"
+                        >
+                          {authBusyAction === 'save_name' ? 'Saving...' : 'Save'}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                {/* Custom Username & ZU-ID Account Login + Firebase Cloud Persistent Memory Card */}
+                {/* Firebase Authentication Account Card */}
                 <div className="p-4 bg-white/95 border border-indigo-200 rounded-2xl shadow-xs space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
                       <img
                         src="/zuzu-logo.png"
-                        alt="Zuzu AI ZU-ID"
-                        className="w-12 h-12 rounded-xl object-cover border border-indigo-200 shadow-xs flex-shrink-0"
+                        alt="Zuzu AI Account"
+                        className="w-11 h-11 rounded-xl object-cover border border-indigo-200 shadow-xs flex-shrink-0"
                       />
                       <div>
                         <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <span>ZU-ID Cloud Account</span>
-                          <span className="text-[9px] font-mono font-bold bg-indigo-100 text-indigo-800 px-1.5 py-0.2 rounded">
-                            ZU-ID
+                          <span>Firebase Cloud Account</span>
+                          <span
+                            className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                              firebaseUser
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {firebaseUser ? 'Signed In' : 'Guest'}
                           </span>
                         </div>
                         <div className="text-[10px] text-slate-500">
-                          Firebase Firestore backup • Custom Username login
+                          Google Sign-In &amp; Mobile OTP • Strict UID data isolation
                         </div>
                       </div>
                     </div>
-                    {settings.zuAccountId && settings.zuVaultKey && (
-                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
-                        ZU-{settings.zuUsername || settings.zuAccountId}
-                      </span>
-                    )}
                   </div>
 
-                  {settings.zuAccountId && settings.zuVaultKey ? (
-                    <div className="space-y-2.5 pt-1 border-t border-slate-100">
-                      {newlyCreatedZuId && (
-                        <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-950 space-y-0.5">
-                          <div className="font-extrabold">Account Ready: <span className="font-mono text-emerald-700">{newlyCreatedZuId}</span></div>
-                          <div className="text-[10px] text-emerald-800">Log in anytime using your custom Username and password to restore all chats &amp; memories.</div>
+                  {firebaseUser ? (
+                    <div className="space-y-3 pt-2 border-t border-slate-100">
+                      {/* Verified Identities & Linked Providers */}
+                      <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-100 space-y-1.5 text-[11px]">
+                        {firebaseUser.email && (
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-slate-500 font-semibold">Email:</span>
+                            <span className="font-bold text-slate-800 truncate">{firebaseUser.email}</span>
+                          </div>
+                        )}
+                        {firebaseUser.phoneNumber && (
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-slate-500 font-semibold">Mobile:</span>
+                            <span className="font-mono font-bold text-slate-800">{firebaseUser.phoneNumber}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500 font-semibold">Last synced:</span>
+                          <span className="text-slate-600">
+                            {settings.zuLastSyncedAt ? new Date(settings.zuLastSyncedAt).toLocaleString() : 'Auto-sync active'}
+                          </span>
+                        </div>
+
+                        <div className="pt-1.5 flex flex-wrap gap-1.5">
+                          {hasGoogleLinked && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-[10px] font-bold text-indigo-800">
+                              <span>Google Linked</span>
+                              {canUnlink && (
+                                <button
+                                  type="button"
+                                  disabled={Boolean(authBusyAction)}
+                                  onClick={async () => {
+                                    setAuthBusyAction('unlink_google');
+                                    setAuthStatusMsg(null);
+                                    try {
+                                      const res = await unlinkAuthProvider('google.com');
+                                      if (!res.success) {
+                                        setAuthStatusMsg({ type: 'err', text: res.error || 'Could not unlink Google.' });
+                                      } else {
+                                        setAuthStatusMsg({ type: 'ok', text: 'Google account unlinked.' });
+                                      }
+                                    } finally {
+                                      setAuthBusyAction(null);
+                                    }
+                                  }}
+                                  className="text-rose-600 hover:underline ml-1"
+                                >
+                                  Unlink
+                                </button>
+                              )}
+                            </span>
+                          )}
+                          {hasPhoneLinked && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-200 text-[10px] font-bold text-emerald-800">
+                              <span>Phone OTP Linked</span>
+                              {canUnlink && (
+                                <button
+                                  type="button"
+                                  disabled={Boolean(authBusyAction)}
+                                  onClick={async () => {
+                                    setAuthBusyAction('unlink_phone');
+                                    setAuthStatusMsg(null);
+                                    try {
+                                      const res = await unlinkAuthProvider('phone');
+                                      if (!res.success) {
+                                        setAuthStatusMsg({ type: 'err', text: res.error || 'Could not unlink phone.' });
+                                      } else {
+                                        setAuthStatusMsg({ type: 'ok', text: 'Phone number unlinked.' });
+                                      }
+                                    } finally {
+                                      setAuthBusyAction(null);
+                                    }
+                                  }}
+                                  className="text-rose-600 hover:underline ml-1"
+                                >
+                                  Unlink
+                                </button>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Account Linking Buttons */}
+                      {(!hasGoogleLinked || !hasPhoneLinked) && (
+                        <div className="space-y-1.5">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            Link Another Sign-In Method
+                          </div>
+                          <div className="flex gap-2 flex-wrap">
+                            {!hasGoogleLinked && (
+                              <button
+                                type="button"
+                                disabled={Boolean(authBusyAction)}
+                                onClick={async () => {
+                                  setAuthBusyAction('link_google');
+                                  setAuthStatusMsg(null);
+                                  try {
+                                    const res = await linkGoogleToCurrentUser();
+                                    if (res.success) {
+                                      setAuthStatusMsg({ type: 'ok', text: 'Google account linked cleanly.' });
+                                      playHapticSound('message_sent');
+                                    } else if (!res.cancelled) {
+                                      setAuthStatusMsg({ type: 'err', text: res.error || 'Could not link Google.' });
+                                    }
+                                  } finally {
+                                    setAuthBusyAction(null);
+                                  }
+                                }}
+                                className="flex-1 min-h-[40px] py-2 px-3 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-xs font-bold text-slate-800"
+                              >
+                                {authBusyAction === 'link_google' ? 'Linking Google...' : '+ Link Google'}
+                              </button>
+                            )}
+                            {!hasPhoneLinked && (
+                              <button
+                                type="button"
+                                disabled={Boolean(authBusyAction)}
+                                onClick={() => onOpenAuthModal?.('link_phone')}
+                                className="flex-1 min-h-[40px] py-2 px-3 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-xs font-bold text-slate-800"
+                              >
+                                + Link Mobile (OTP)
+                              </button>
+                            )}
+                          </div>
                         </div>
                       )}
 
-                      <div className="p-2.5 rounded-xl bg-indigo-50/60 border border-indigo-100 text-[11px] flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="font-bold text-indigo-900 truncate">
-                            {settings.zuFullName || settings.userNickname || 'Zuzu User'} • <span className="font-mono">ZU-{settings.zuUsername || settings.zuAccountId}</span>
-                          </div>
-                          {settings.zuPhone && (
-                            <div className="text-[10px] text-slate-600 truncate">Identifier: {settings.zuPhone}</div>
-                          )}
-                          <div className="text-[10px] text-slate-500">
-                            Last synced: {settings.zuLastSyncedAt ? new Date(settings.zuLastSyncedAt).toLocaleString() : 'Just now'}
-                          </div>
-                        </div>
-                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full flex-shrink-0">
-                          Firebase ✓
-                        </span>
-                      </div>
-
+                      {/* Sync & Sign Out */}
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
-                          disabled={zuLoading}
+                          disabled={Boolean(authBusyAction)}
                           onClick={async () => {
-                            setZuLoading(true);
-                            setZuStatusMsg(null);
+                            setAuthBusyAction('sync');
+                            setAuthStatusMsg(null);
                             try {
-                              const res = await syncZuCloudNow(settings);
-                              setZuStatusMsg(res.message);
-                              if (res.success && res.lastSyncedAt) {
-                                onUpdateSettings({ zuLastSyncedAt: res.lastSyncedAt });
+                              const res = await pushActiveVaultToCloud(firebaseUser, true);
+                              setAuthStatusMsg({
+                                type: res.success ? 'ok' : 'err',
+                                text: res.message
+                              });
+                              if (res.success && res.syncedAt) {
+                                onUpdateSettings({ zuLastSyncedAt: res.syncedAt });
                                 playHapticSound('message_sent');
                               }
+                            } catch (err: any) {
+                              setAuthStatusMsg({ type: 'err', text: err?.message || 'Cloud sync failed.' });
                             } finally {
-                              setZuLoading(false);
+                              setAuthBusyAction(null);
                             }
                           }}
-                          className="py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1 shadow-xs disabled:opacity-50"
+                          className="min-h-[40px] py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1 shadow-xs disabled:opacity-50"
                         >
-                          <RefreshCw className={`w-3.5 h-3.5 ${zuLoading ? 'animate-spin' : ''}`} />
-                          <span>{zuLoading ? 'Syncing...' : 'Sync Now'}</span>
+                          <RefreshCw className={`w-3.5 h-3.5 ${authBusyAction === 'sync' ? 'animate-spin' : ''}`} />
+                          <span>{authBusyAction === 'sync' ? 'Syncing...' : 'Sync Now'}</span>
                         </button>
 
                         <button
                           type="button"
-                          onClick={() => {
-                            const next = logoutZuAccount();
-                            onUpdateSettings(next);
-                            setNewlyCreatedZuId(null);
-                            setZuPasswordInput('');
-                            setZuConfirmPasswordInput('');
-                            setZuStatusMsg('Signed out of ZU-ID Account.');
-                            playHapticSound('listen_stop');
+                          disabled={Boolean(authBusyAction)}
+                          onClick={async () => {
+                            setAuthBusyAction('signout');
+                            setAuthStatusMsg(null);
+                            try {
+                              const uid = firebaseUser.uid;
+                              await pushActiveVaultToCloud(firebaseUser, true).catch(() => {});
+                              await signOutFirebaseUser();
+                              const cleanGuest = performIsolatedSignOutCleanup(uid);
+                              onUpdateSettings(cleanGuest);
+                              onSignedOut?.();
+                              setMemories(getMemories());
+                              updateCounts();
+                              setAuthStatusMsg({
+                                type: 'ok',
+                                text: 'Signed out cleanly. Private workspace data has been cleared from the active session.'
+                              });
+                              playHapticSound('listen_stop');
+                            } finally {
+                              setAuthBusyAction(null);
+                            }
                           }}
-                          className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
+                          className="min-h-[40px] py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
                         >
                           Sign Out
                         </button>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-2.5 pt-1 border-t border-slate-100">
-                      <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl">
-                        <button
-                          type="button"
-                          onClick={() => { setZuMode('login'); setZuStatusMsg(null); }}
-                          className={`py-1.5 rounded-lg text-[11px] font-bold transition-all ${
-                            zuMode === 'login' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
-                          }`}
-                        >
-                          Login (ZU-ID)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setZuMode('register'); setZuStatusMsg(null); }}
-                          className={`py-1.5 rounded-lg text-[11px] font-bold transition-all ${
-                            zuMode === 'register' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500'
-                          }`}
-                        >
-                          Register Custom ZU-ID
-                        </button>
-                      </div>
 
-                      {zuMode === 'login' ? (
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                            Username or ZU-ID
-                          </label>
-                          <input
-                            type="text"
-                            value={zuUsernameInput}
-                            onChange={(e) => setZuUsernameInput(e.target.value)}
-                            placeholder="Enter your Username (e.g. rasel008 or ZU-rasel008)"
-                            className="w-full bg-slate-50 text-xs font-mono text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
-                          />
-                        </div>
-                      ) : (
-                        <>
-                          <div className="space-y-1">
-                            <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                              Choose Custom Username / ZU-ID (Letters &amp; Numbers)
-                            </label>
-                            <div className="flex items-center bg-slate-50 rounded-xl border border-slate-200 focus-within:border-indigo-400 overflow-hidden">
-                              <span className="px-2.5 py-2 text-[11px] font-mono font-bold text-indigo-700 bg-indigo-50 border-r border-slate-200">
-                                ZU-
-                              </span>
-                              <input
-                                type="text"
-                                value={zuUsernameInput.replace(/^(zu|su)-/i, '')}
-                                onChange={(e) => setZuUsernameInput(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
-                                placeholder="e.g. Rasel008"
-                                className="flex-1 bg-transparent text-xs font-mono text-slate-800 px-2.5 py-2 focus:outline-none"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                              Full Name (Display Name)
-                            </label>
-                            <input
-                              type="text"
-                              value={zuFullNameInput}
-                              onChange={(e) => setZuFullNameInput(e.target.value)}
-                              placeholder="e.g. MD Rasel Hossen"
-                              className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
-                            />
-                          </div>
-
-                          <div className="space-y-1">
-                            <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                              Phone Number / Recovery Identifier (Optional)
-                            </label>
-                            <input
-                              type="text"
-                              value={zuPhoneInput}
-                              onChange={(e) => setZuPhoneInput(e.target.value)}
-                              placeholder="e.g. +88017XXXXXXXX or email"
-                              className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
-                            />
-                          </div>
-                        </>
-                      )}
-
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                          {zuMode === 'register' ? 'Secure Password (min 6 chars)' : 'Password'}
-                        </label>
-                        <div className="relative">
-                          <input
-                            type={showZuPassword ? 'text' : 'password'}
-                            value={zuPasswordInput}
-                            onChange={(e) => setZuPasswordInput(e.target.value)}
-                            placeholder={zuMode === 'register' ? 'Create secure password (min 6 chars)' : 'Enter your ZU-ID password'}
-                            className="w-full bg-slate-50 text-xs text-slate-800 pl-3 pr-9 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
-                          />
+                      {/* Account Deletion */}
+                      <div className="pt-2 border-t border-slate-100">
+                        {!confirmDeleteAccount ? (
                           <button
                             type="button"
-                            onClick={() => setShowZuPassword(v => !v)}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                            title={showZuPassword ? 'Hide password' : 'Show password'}
+                            onClick={() => setConfirmDeleteAccount(true)}
+                            className="text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline"
                           >
-                            {showZuPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            Delete Account &amp; Private Cloud Data...
                           </button>
-                        </div>
-                      </div>
-
-                      {zuMode === 'register' && (
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-semibold text-slate-500 px-0.5">
-                            Confirm Password
-                          </label>
-                          <input
-                            type={showZuPassword ? 'text' : 'password'}
-                            value={zuConfirmPasswordInput}
-                            onChange={(e) => setZuConfirmPasswordInput(e.target.value)}
-                            placeholder="Re-enter password to confirm"
-                            className="w-full bg-slate-50 text-xs text-slate-800 px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-400"
-                          />
-                        </div>
-                      )}
-
-                      <button
-                        type="button"
-                        disabled={zuLoading}
-                        onClick={async () => {
-                          setZuLoading(true);
-                          setZuStatusMsg(null);
-                          try {
-                            if (zuMode === 'register') {
-                              const res = await registerZuAccount({
-                                username: zuUsernameInput,
-                                fullName: zuFullNameInput,
-                                phone: zuPhoneInput,
-                                password: zuPasswordInput,
-                                confirmPassword: zuConfirmPasswordInput
-                              });
-                              setZuStatusMsg(res.message);
-                              if (res.success && res.username) {
-                                setZuUsernameInput(res.username);
-                                setNewlyCreatedZuId(`ZU-${res.username}`);
-                                setZuPasswordInput('');
-                                setZuConfirmPasswordInput('');
-                                if (res.fullName) {
-                                  setUserNickname(res.fullName);
-                                }
-                                if (res.restoredSettings) {
-                                  onUpdateSettings(res.restoredSettings);
-                                }
-                                playHapticSound('message_sent');
-                              } else {
-                                playHapticSound('listen_stop');
-                              }
-                            } else {
-                              const res = await loginZuAccount(zuUsernameInput, zuPasswordInput);
-                              setZuStatusMsg(res.message);
-                              if (res.success) {
-                                setZuPasswordInput('');
-                                setNewlyCreatedZuId(null);
-                                if (res.restoredSettings) {
-                                  onUpdateSettings(res.restoredSettings);
-                                  if (res.restoredSettings.userNickname) {
-                                    setUserNickname(res.restoredSettings.userNickname);
+                        ) : (
+                          <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 space-y-2">
+                            <p className="text-[11px] font-semibold text-rose-900">
+                              Permanently delete your Firebase account and all private cloud chats, voice sessions, notes, reminders, and memories? This cannot be undone.
+                            </p>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                disabled={Boolean(authBusyAction)}
+                                onClick={async () => {
+                                  setAuthBusyAction('delete');
+                                  setAuthStatusMsg(null);
+                                  try {
+                                    await deleteAccountAndPrivateData(firebaseUser);
+                                    setConfirmDeleteAccount(false);
+                                    onSignedOut?.();
+                                    setMemories(getMemories());
+                                    updateCounts();
+                                    setAuthStatusMsg({
+                                      type: 'ok',
+                                      text: 'Account and private data permanently deleted.'
+                                    });
+                                  } catch (err: any) {
+                                    setConfirmDeleteAccount(false);
+                                    setAuthStatusMsg({
+                                      type: 'err',
+                                      text:
+                                        err?.code === 'auth/requires-recent-login'
+                                          ? 'For your security, sign out and sign back in freshly before deleting your account.'
+                                          : err?.message || 'Account deletion failed.'
+                                    });
+                                  } finally {
+                                    setAuthBusyAction(null);
                                   }
-                                }
-                                setMemories(getMemories());
-                                updateCounts();
-                                playHapticSound('switch');
-                              } else {
-                                playHapticSound('listen_stop');
-                              }
-                            }
-                          } catch (err: any) {
-                            setZuStatusMsg(err?.message || 'Firebase ZU-ID connection failed.');
-                          } finally {
-                            setZuLoading(false);
-                          }
-                        }}
-                        className="w-full py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs disabled:opacity-50"
-                      >
-                        {zuLoading
-                          ? 'Connecting to Firebase Cloud...'
-                          : zuMode === 'register'
-                          ? 'Create ZU-ID & Sign In'
-                          : 'Sign In & Restore All Memory'}
-                      </button>
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold"
+                              >
+                                {authBusyAction === 'delete' ? 'Deleting...' : 'Confirm Permanent Delete'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteAccount(false)}
+                                className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 text-[11px] font-bold"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5 pt-2 border-t border-slate-100">
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Sign in using your verified Google account or SMS Mobile OTP to isolate your personal chats, reminders, notes, memories, and API settings across devices.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onOpenAuthModal?.('signin')}
+                          className="min-h-[44px] py-2.5 px-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-bold shadow-xs"
+                        >
+                          Continue with Google
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onOpenAuthModal?.('signin')}
+                          className="min-h-[44px] py-2.5 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs font-bold"
+                        >
+                          Mobile Number (OTP)
+                        </button>
+                      </div>
                     </div>
                   )}
 
-                  {zuStatusMsg && (
-                    <div className="p-2 rounded-xl bg-indigo-50 border border-indigo-200 text-[11px] text-indigo-900 font-medium">
-                      {zuStatusMsg}
+                  {authStatusMsg && (
+                    <div
+                      className={`p-2.5 rounded-xl border text-[11px] font-medium ${
+                        authStatusMsg.type === 'err'
+                          ? 'bg-rose-50 border-rose-200 text-rose-800'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      }`}
+                    >
+                      {authStatusMsg.text}
                     </div>
                   )}
                 </div>
@@ -1409,7 +1562,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {/* ----------------------------------------------------------- */}
             {/* 2. UNIFIED GEMINI API & CONNECTION SUB-PAGE                 */}
@@ -2599,7 +2753,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                         const updated = { ...settings, foregroundServiceEnabled: nextVal };
                         onUpdateSettings({ foregroundServiceEnabled: nextVal });
                         await syncBackgroundServicesWithSettings(updated);
-                        setBgServiceStatus(nextVal ? 'Silent background service active.' : 'Background service paused.');
+                        const restriction = getForegroundServiceRestrictionReason();
+                        setFgsRestriction(restriction);
+                        if (nextVal && restriction) {
+                          setBgServiceStatus(restriction);
+                        } else {
+                          setBgServiceStatus(
+                            nextVal
+                              ? isForegroundServiceActive()
+                                ? 'Silent background service active.'
+                                : 'Background service requested (standby).'
+                              : 'Background service paused.'
+                          );
+                        }
                         playHapticSound('switch');
                       }}
                       className={`px-3 py-1 rounded-xl text-xs font-bold border transition-colors ${
@@ -2614,7 +2780,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
 
                   <div className="flex items-center justify-between p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-100 text-[11px]">
                     <span className="text-slate-700 font-medium">
-                      Service Status: <strong className="text-indigo-800">{isForegroundServiceActive() ? 'Running Silently' : 'Standby'}</strong>
+                      Service Status:{' '}
+                      <strong className={fgsRestriction ? 'text-amber-700' : 'text-indigo-800'}>
+                        {isForegroundServiceActive()
+                          ? 'Running Silently'
+                          : fgsRestriction
+                          ? 'OS Restricted'
+                          : 'Standby'}
+                      </strong>
                     </span>
                     <button
                       type="button"
@@ -2625,6 +2798,44 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                       className="px-2.5 py-1 rounded-lg bg-white border border-indigo-200 text-indigo-700 font-bold text-[10px] hover:bg-indigo-100"
                     >
                       Ignore Battery Opt
+                    </button>
+                  </div>
+
+                  {fgsRestriction && (
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-bold">Background Service Notice</div>
+                        <p className="text-[10px] text-amber-800 leading-relaxed">{fgsRestriction}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] gap-2">
+                    <div className="min-w-0">
+                      <div className="font-bold text-slate-800">Reminder Exact Alarms (Android 12+)</div>
+                      <div className="text-[10px] text-slate-500">
+                        {exactAlarmStatus?.requiresSetting
+                          ? 'Exact alarms restricted — reminders may fire slightly late unless allowed.'
+                          : 'Exact alarm scheduling enabled for reliable on-time reminders.'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openExactAlarmSettings();
+                        setBgServiceStatus('Opening Android Alarms & Reminders settings...');
+                        setTimeout(() => {
+                          checkExactAlarmPermission().then(setExactAlarmStatus).catch(() => {});
+                        }, 1500);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg border font-bold text-[10px] flex-shrink-0 ${
+                        exactAlarmStatus?.requiresSetting
+                          ? 'bg-amber-600 text-white border-amber-600 hover:bg-amber-700'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {exactAlarmStatus?.requiresSetting ? 'Allow Exact' : 'Check Alarms'}
                     </button>
                   </div>
                 </div>
@@ -2699,6 +2910,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
                   >
                     Test Wake Word Trigger ("{settings.wakeWordPhrase || 'Wake up Zuzu'}")
                   </button>
+
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    Say <strong>"{settings.wakeWordPhrase || 'Wake up Zuzu'}"</strong> or <strong>"Hey Zuzu"</strong> to activate, and <strong>"Bye Zuzu"</strong> / <strong>"Sleep Zuzu"</strong> to pause hands-free listening. On Android 14+, background microphone wake works while Zuzu AI is running in foreground/minimized mode (OS restricts auto-starting microphone services on cold boot). Offline Bangla speech errors automatically fall back to Gemini Cloud Transcription.
+                  </p>
                 </div>
 
                 {/* 3. Custom Audio Triggers (Mouth Whistle & Finger Snap Detection) */}

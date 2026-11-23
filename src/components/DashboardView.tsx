@@ -1,30 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Sparkles, 
-  MessageSquare, 
-  Settings, 
-  Monitor, 
-  Brain, 
-  Globe2, 
-  Mic, 
-  MicOff, 
-  Volume2, 
-  VolumeX, 
-  X, 
-  Minimize2, 
-  ShieldCheck, 
-  Check, 
+import {
+  Sparkles,
+  Monitor,
+  Globe2,
+  Mic,
+  X,
   ChevronRight,
   ExternalLink,
-  Share2,
-  Image as ImageIcon,
   StickyNote,
   Bell,
   Send
 } from 'lucide-react';
-import { ActiveTab, AppSettings, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
+import { ActiveTab, AppSettings, SearchSourceItem, VoiceIdentity, VoiceMessage, VoiceSession } from '../types';
 import {
-  PERSONALITIES,
   VOICE_IDENTITIES,
   getDefaultGeminiVoiceForIdentity,
   resolveGeminiVoiceForSettings
@@ -33,17 +21,24 @@ import { ParticleOrb, OrbState } from './ParticleOrb';
 import { BengaliMarqueeWidget } from './BengaliMarqueeWidget';
 import { WeatherCard } from './WeatherCard';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
-import { checkMicrophonePermission } from '../utils/permission';
+import { checkMicrophonePermission, getNativeZuzuPlugin } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
-import { detectVoiceSwitchIntent, detectVoiceActionIntent } from '../utils/intentDetector';
+import {
+  detectSleepStopIntent,
+  detectVoiceSwitchIntent,
+  detectVoiceActionIntent,
+  PendingReminderClarification,
+  resolvePendingReminderClarification
+} from '../utils/intentDetector';
 import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
 import { getPersonalizedGreeting } from '../utils/greetingHelper';
-import { FacebookAutomationModal, FacebookTaskType } from './FacebookAutomationModal';
 import { ScreenAssistantModal } from './ScreenAssistantModal';
 import { NotesRemindersModal, getNotes, getReminders, executeConfirmedMessageIntent } from './NotesRemindersModal';
+import { getReminderCategory } from '../utils/assistantStore';
 import { streamUnifiedAiChat } from '../utils/apiConfig';
 import { startVoiceCapture, VoiceCaptureController } from '../utils/speech';
 import { setMicBusyForActiveSession } from '../utils/backgroundService';
+import { formatSourcePublicationTime } from '../utils/sourceFormat';
 
 interface DashboardViewProps {
   settings: AppSettings;
@@ -59,9 +54,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   settings,
   onUpdateSettings,
   onNavigateTab,
-  textMessageCount,
-  voiceSessionCount,
-  isBackendConnected,
   onRequestApiKeyModal
 }) => {
   // 1. Clock and Greeting State
@@ -76,6 +68,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [statusText, setStatusText] = useState<string>('ZUZU AI OFF • TAP TO START');
   const [transcriptText, setTranscriptText] = useState<string>('');
   const [lastAiResponse, setLastAiResponse] = useState<string | null>(null);
+  const [lastSources, setLastSources] = useState<SearchSourceItem[]>([]);
   const [isVoiceActive, setIsVoiceActive] = useState<boolean>(false);
   const [showPermissionModal, setShowPermissionModal] = useState<boolean>(false);
 
@@ -85,21 +78,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [showNotesModal, setShowNotesModal] = useState<boolean>(false);
   const [notesModalTab, setNotesModalTab] = useState<'notes' | 'reminders'>('notes');
   const [notesCount, setNotesCount] = useState<number>(() => getNotes().length);
-  const [remindersCount, setRemindersCount] = useState<number>(() => getReminders().filter(r => !r.completed).length);
+  const [remindersCount, setRemindersCount] = useState<number>(() =>
+    getReminders().filter((r) => getReminderCategory(r) === 'upcoming').length
+  );
+  const [overdueCount, setOverdueCount] = useState<number>(() =>
+    getReminders().filter((r) => getReminderCategory(r) === 'overdue').length
+  );
   const [pendingMessageDraft, setPendingMessageDraft] = useState<{
     recipient: string;
     text: string;
     app: 'messenger' | 'whatsapp' | 'sms';
   } | null>(null);
 
-  // 4. Facebook & Gallery Automation State
-  const [showFacebookModal, setShowFacebookModal] = useState<boolean>(false);
-  const [fbModalTask, setFbModalTask] = useState<FacebookTaskType>('search');
-  const [fbModalQuery, setFbModalQuery] = useState<string>('');
-
   // Audio & Speech Recognition Refs
   const captureControllerRef = useRef<VoiceCaptureController | null>(null);
   const aiAbortControllerRef = useRef<AbortController | null>(null);
+  const pendingClarificationRef = useRef<PendingReminderClarification | null>(null);
+  const suppressContinuousOnceRef = useRef<boolean>(false);
   const currentSessionRef = useRef<VoiceSession | null>(null);
   const isCancelledRef = useRef<boolean>(false);
   const settingsRef = useRef<AppSettings>(settings);
@@ -110,12 +105,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   useEffect(() => {
     const syncCounts = () => {
+      const now = Date.now();
+      const all = getReminders();
       setNotesCount(getNotes().length);
-      setRemindersCount(getReminders().filter(r => !r.completed).length);
+      setRemindersCount(all.filter((r) => getReminderCategory(r, now) === 'upcoming').length);
+      setOverdueCount(all.filter((r) => getReminderCategory(r, now) === 'overdue').length);
     };
     window.addEventListener('zuzu-notes-reminders-changed', syncCounts);
+    window.addEventListener('zuzu-workspace-switched', syncCounts);
+    const tick = setInterval(syncCounts, 20000);
     return () => {
+      clearInterval(tick);
       window.removeEventListener('zuzu-notes-reminders-changed', syncCounts);
+      window.removeEventListener('zuzu-workspace-switched', syncCounts);
       aiAbortControllerRef.current?.abort();
       aiAbortControllerRef.current = null;
       captureControllerRef.current?.cancel();
@@ -130,17 +132,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const now = new Date();
       const hour = now.getHours();
 
-      // Dynamic Personalized Greeting (Supports GF Mode, Intensity & Local Time)
       setGreeting(getPersonalizedGreeting(settings, now));
 
-      // Time strings
       const rawHour = hour % 12 || 12;
       const formattedHour = String(rawHour).padStart(2, '0');
       const formattedMin = String(now.getMinutes()).padStart(2, '0');
       setTimeString(`${formattedHour}:${formattedMin}`);
       setAmPmString(hour >= 12 ? 'PM' : 'AM');
 
-      // Date strings
       const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
       const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
       setDayString(days[now.getDay()]);
@@ -161,9 +160,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     settings.recognitionLanguage
   ]);
 
-  // Begin live microphone speech capture cleanly (shared by post-greeting & continuous turns)
+  // Begin live microphone speech capture cleanly
   const beginMicCapture = async () => {
     if (isCancelledRef.current) return;
+    suppressContinuousOnceRef.current = false;
 
     const latestSettings = settingsRef.current;
     if (!currentSessionRef.current) {
@@ -230,11 +230,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
-  // Immediately verify microphone permission and start listening (no automatic greeting speech)
+  // Immediately verify microphone permission and start listening
   const startVoiceInteraction = async () => {
     isCancelledRef.current = false;
+    suppressContinuousOnceRef.current = false;
     setTranscriptText('');
     setLastAiResponse(null);
+    setLastSources([]);
     stopSpeaking();
 
     if (aiAbortControllerRef.current) {
@@ -261,6 +263,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Stop / Cancel voice interaction
   const stopVoiceInteraction = () => {
     isCancelledRef.current = true;
+    suppressContinuousOnceRef.current = true;
     setMicBusyForActiveSession(false);
     if (aiAbortControllerRef.current) {
       aiAbortControllerRef.current.abort();
@@ -296,12 +299,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const latestSettings = settingsRef.current;
     setOrbState('thinking');
     setStatusText('THINKING...');
+    setLastSources([]);
     playHapticSound('message_sent');
 
     const currentId = latestSettings.activeIdentity;
     const nickname = (latestSettings.assistantNickname || 'Zuzu').trim();
 
-    // 0. Handle Custom Assistant Nickname wake-words (e.g. "Hey Maya", "Maya open weather")
+    // 0. Check "Bye Zuzu" / "Sleep Zuzu" standby command
+    const sleepIntent = detectSleepStopIntent(spoken, nickname);
+    if (sleepIntent.isSleepCommand) {
+      suppressContinuousOnceRef.current = true;
+      setLastAiResponse(sleepIntent.confirmationSpoken);
+      speakSpokenReply(sleepIntent.confirmationSpoken, currentId);
+      return;
+    }
+
+    // 0.1 Resolve pending reminder clarification if open
+    if (
+      pendingClarificationRef.current &&
+      Date.now() - pendingClarificationRef.current.createdAt < 3 * 60 * 1000
+    ) {
+      const resolved = resolvePendingReminderClarification(
+        spoken,
+        pendingClarificationRef.current
+      );
+      pendingClarificationRef.current = resolved.pendingClarification || null;
+      setLastAiResponse(resolved.spokenConfirmation);
+      speakSpokenReply(resolved.spokenConfirmation, currentId);
+      return;
+    }
+    pendingClarificationRef.current = null;
+
+    // 0.2 Handle Custom Assistant Nickname wake-words
     let cleanedSpoken = spoken.trim();
     const escapedNick = nickname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const wakeRegex = new RegExp(`^(hey|hi|hello)?\\s*(${escapedNick}|zuzu|stonic)\\b[,:\\s]*`, 'i');
@@ -312,67 +341,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
     }
 
-    // 0.1 Check Facebook Automation Commands (Requirement 10)
     const lowerSpoken = cleanedSpoken.toLowerCase();
-    if (/facebook|fb/i.test(lowerSpoken)) {
-      // Check search
-      if (/search|খোঁজো|খোজ/i.test(lowerSpoken)) {
-        const queryMatch = cleanedSpoken.match(/(?:search\s+(?:for\s+)?|খোঁজো\s+|খোজ\s+)(.+?)(?:\s+(?:on|in)?\s+facebook|$)/i);
-        const query = queryMatch ? queryMatch[1].replace(/facebook/i, '').trim() : '';
-        setFbModalTask('search');
-        setFbModalQuery(query);
-        setShowFacebookModal(true);
-        const fbReply = `Opening Facebook search for ${query || 'this person'}.`;
-        setLastAiResponse(fbReply);
-        speakSpokenReply(fbReply, currentId);
-        return;
-      }
 
-      // Check gallery photo upload
-      if (/upload|photo|gallery|ছবি|আপলোড/i.test(lowerSpoken)) {
-        setFbModalTask('upload_photo');
-        setShowFacebookModal(true);
-        const fbReply = "Opening Gallery photo selection for your Facebook post.";
-        setLastAiResponse(fbReply);
-        speakSpokenReply(fbReply, currentId);
-        return;
-      }
-
-      // Check comment
-      if (/comment|মন্তব্য/i.test(lowerSpoken)) {
-        setFbModalTask('comment');
-        setShowFacebookModal(true);
-        const fbReply = "Preparing your Facebook comment workflow.";
-        setLastAiResponse(fbReply);
-        speakSpokenReply(fbReply, currentId);
-        return;
-      }
-
-      // Check like
-      if (/like|লাইক/i.test(lowerSpoken)) {
-        setFbModalTask('like');
-        setShowFacebookModal(true);
-        const fbReply = "Preparing to like post on Facebook.";
-        setLastAiResponse(fbReply);
-        speakSpokenReply(fbReply, currentId);
-        return;
-      }
-
-      // Generic Facebook open
-      setFbModalTask('search');
-      setShowFacebookModal(true);
-      const fbReply = "Opening Facebook Assistant.";
-      setLastAiResponse(fbReply);
-      speakSpokenReply(fbReply, currentId);
-      return;
-    }
-
-    // 0.2 Check Image Creator Intent (Requirement 2)
+    // 0.3 Check Image Creator Intent
     if (
       /create\s+(?:an?\s+)?image|generate\s+(?:an?\s+)?image|image\s+creator|draw\s+|ছবি\s*(?:বানাও|তৈরি)/i.test(lowerSpoken)
     ) {
       onNavigateTab('image_creator');
-      const imgReply = "Opening Zuzu AI Image Creator!";
+      const imgReply = 'Opening Zuzu AI Image Creator!';
       setLastAiResponse(imgReply);
       speakSpokenReply(imgReply, currentId);
       return;
@@ -394,10 +370,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       return;
     }
 
-    // 1.1 Check Natural Language Voice Action Intents
+    // 1.1 Check Natural Language Voice Action Intents (Apps, Notes CRUD, Reminders Lifecycle, Messages)
     const actionIntent = detectVoiceActionIntent(cleanedSpoken);
     if (actionIntent.hasActionIntent) {
       playHapticSound('message_sent');
+      if (actionIntent.intentType === 'clarify_reminder' && actionIntent.pendingClarification) {
+        pendingClarificationRef.current = actionIntent.pendingClarification;
+      }
       if (actionIntent.requiresConfirmation && actionIntent.messageDraft) {
         setPendingMessageDraft(actionIntent.messageDraft);
       } else {
@@ -451,7 +430,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     try {
       const historyContext = (currentSessionRef.current?.messages || []).map(m => ({
         sender: m.sender,
-        text: m.text
+        text: m.text,
+        usedRealtimeSearch: m.usedRealtimeSearch
       }));
 
       if (aiAbortControllerRef.current) {
@@ -484,9 +464,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
 
       const reply = aiResult.reply;
+      const sources = Array.isArray(aiResult.sources) ? aiResult.sources : [];
       setLastAiResponse(reply);
+      setLastSources(sources);
 
-      // Record assistant voice message
       const aiVoiceMsg: VoiceMessage = {
         id: `vox-ai-${Date.now()}`,
         conversation_type: 'voice',
@@ -495,7 +476,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         text: reply,
         timestamp: Date.now() + 100,
         voiceIdentity: currentId,
-        audioDuration: 3
+        audioDuration: 3,
+        usedRealtimeSearch: Boolean(aiResult.usedRealtimeSearch),
+        sources: sources.length > 0 ? sources : undefined
       };
       if (currentSessionRef.current) {
         currentSessionRef.current.messages.push(aiVoiceMsg);
@@ -540,8 +523,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       },
       onEnd: () => {
         setOrbState('idle');
-        setStatusText('VOICE SESSION ACTIVE');
-        if (settingsRef.current.continuousListening && !isCancelledRef.current) {
+        if (
+          settingsRef.current.continuousListening &&
+          !isCancelledRef.current &&
+          !suppressContinuousOnceRef.current
+        ) {
+          setStatusText('VOICE SESSION ACTIVE');
           setTimeout(() => beginMicCapture(), 350);
         } else {
           setIsVoiceActive(false);
@@ -573,7 +560,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         stream.getVideoTracks()[0].onended = () => {
           setScreenStreamActive(false);
         };
-      } catch (err) {
+      } catch {
         setShowScreenModal(true);
       }
     } else {
@@ -588,6 +575,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     onUpdateSettings({ recognitionLanguage: nextLang });
   };
 
+  const handleOpenSourceLink = (e: React.MouseEvent, url: string) => {
+    const nativePlugin = getNativeZuzuPlugin();
+    if (nativePlugin?.openExternalUrl) {
+      e.preventDefault();
+      nativePlugin.openExternalUrl({ url }).catch(() => {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      });
+    }
+  };
+
   return (
     <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2.5 pb-4 select-none custom-scrollbar">
       {/* 1. Greeting & Large Digital Clock */}
@@ -597,7 +594,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span>{greeting}</span>
         </div>
 
-        {/* Large Digital Clock */}
         <div className="flex items-baseline justify-center gap-1.5">
           <span className="text-4xl sm:text-5xl font-black text-slate-800 tracking-tight font-sans">
             {timeString}
@@ -607,7 +603,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </span>
         </div>
 
-        {/* Day & Date */}
         <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
           <span>{dayString}</span>
           <span className="mx-1.5 opacity-40">•</span>
@@ -628,7 +623,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           size={255}
         />
 
-        {/* 3. Compact Voice Status Pill */}
         <div className="mt-1 flex items-center justify-center">
           <button
             onClick={handleOrbTap}
@@ -658,10 +652,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Single-Layer Scrolling LED Marquee for Today's Date & Special Events in Bengali */}
+      {/* Single-Layer Scrolling LED Marquee */}
       <BengaliMarqueeWidget />
 
-      {/* Spoken Transcript & AI Reply Card (when active or recently spoken) */}
+      {/* Spoken Transcript & AI Reply Card */}
       {(transcriptText || lastAiResponse) && (
         <div className="rounded-2xl bg-white/80 backdrop-blur-xl border border-white/90 p-3.5 shadow-md shadow-purple-900/5 space-y-2 animate-fade-in relative">
           <div className="flex items-center justify-between border-b border-purple-100/60 pb-1.5">
@@ -682,6 +676,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 onClick={() => {
                   setTranscriptText('');
                   setLastAiResponse(null);
+                  setLastSources([]);
                 }}
                 className="p-1 text-slate-400 hover:text-slate-600"
               >
@@ -697,8 +692,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
 
           {lastAiResponse && (
-            <div className="text-xs text-slate-800 font-semibold leading-relaxed pt-1">
+            <div className="text-xs text-slate-800 font-semibold leading-relaxed pt-1 whitespace-pre-wrap">
               {lastAiResponse}
+            </div>
+          )}
+
+          {lastSources.length > 0 && (
+            <div className="pt-2 border-t border-purple-100 space-y-1.5">
+              <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-purple-700">
+                <Globe2 className="w-3 h-3" />
+                <span>Google Search Sources</span>
+              </div>
+              <div className="space-y-1.5">
+                {lastSources.slice(0, 6).map((src, idx) => (
+                  <a
+                    key={`${src.url}-${idx}`}
+                    href={src.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => handleOpenSourceLink(e, src.url)}
+                    className="block p-2 rounded-xl bg-purple-50/80 hover:bg-purple-100/80 border border-purple-200/80 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[11px] font-semibold text-slate-800 line-clamp-1">
+                        {src.title || src.sourceName}
+                      </span>
+                      <ExternalLink className="w-3 h-3 text-purple-600 flex-shrink-0 mt-0.5" />
+                    </div>
+                    <div className="mt-0.5 flex items-center flex-wrap gap-1.5 text-[10px]">
+                      <span className="font-bold text-purple-800">{src.sourceName}</span>
+                      <span className="text-slate-400">•</span>
+                      <span className={src.isWithin20Min ? 'font-bold text-emerald-700' : 'text-slate-500'}>
+                        {formatSourcePublicationTime(src)}
+                      </span>
+                    </div>
+                  </a>
+                ))}
+              </div>
             </div>
           )}
 
@@ -731,12 +761,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* 4. Large Rounded Weather Card (Requirement 6) */}
+      {/* 4. Large Rounded Weather Card */}
       <WeatherCard />
 
-      {/* 5. Three Compact Quick Action Cards (Requirement 7) */}
+      {/* 5. Three Compact Quick Action Cards */}
       <div className="grid grid-cols-3 gap-2.5">
-        {/* A. Screen Card */}
         <button
           onClick={handleToggleScreenShare}
           className={`p-2.5 rounded-2xl bg-white/70 hover:bg-white/90 backdrop-blur-xl border border-white/80 shadow-xs transition-all active:scale-95 text-left flex flex-col justify-between h-20 group ${
@@ -754,7 +783,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </button>
 
-        {/* B. Image Creator Card */}
         <button
           onClick={() => {
             playHapticSound('switch');
@@ -774,7 +802,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </button>
 
-        {/* C. Language Card */}
         <button
           onClick={handleToggleLanguage}
           className="p-2.5 rounded-2xl bg-white/70 hover:bg-white/90 backdrop-blur-xl border border-white/80 shadow-xs transition-all active:scale-95 text-left flex flex-col justify-between h-20 group"
@@ -824,23 +851,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center">
               <Bell className="w-3.5 h-3.5" />
             </div>
-            <div className="text-left">
-              <div className="text-xs font-bold text-slate-800">Reminders</div>
-              <div className="text-[10px] text-slate-500">{remindersCount} upcoming</div>
+            <div className="text-left min-w-0">
+              <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <span>Reminders</span>
+                {overdueCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded bg-rose-100 text-rose-700 text-[9px] font-extrabold uppercase">
+                    {overdueCount} Overdue
+                  </span>
+                )}
+              </div>
+              <div className="text-[10px] text-slate-500 truncate">
+                {remindersCount} upcoming{overdueCount > 0 ? ` • ${overdueCount} overdue` : ''}
+              </div>
             </div>
           </div>
           <ChevronRight className="w-4 h-4 text-slate-400" />
         </button>
       </div>
 
-      {/* Notes & Reminders Modal */}
       <NotesRemindersModal
         isOpen={showNotesModal}
         onClose={() => setShowNotesModal(false)}
         initialTab={notesModalTab}
       />
 
-      {/* Multimodal Screen Assistant Modal */}
       <ScreenAssistantModal
         isOpen={showScreenModal}
         onClose={() => {
@@ -850,7 +884,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         settings={settings}
       />
 
-      {/* Microphone Permission Modal */}
       <MicrophonePermissionModal
         isOpen={showPermissionModal}
         onClose={() => setShowPermissionModal(false)}
@@ -859,16 +892,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           startVoiceInteraction();
         }}
       />
-
-      {/* Facebook & Gallery Automation Modal */}
-      <FacebookAutomationModal
-        isOpen={showFacebookModal}
-        onClose={() => setShowFacebookModal(false)}
-        initialTask={fbModalTask}
-        initialQuery={fbModalQuery}
-        settings={settings}
-      />
     </div>
   );
 };
-

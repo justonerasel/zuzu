@@ -1,21 +1,30 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  Send, 
-  Trash2, 
-  Bot, 
-  User, 
-  Sparkles, 
-  Copy, 
-  Check, 
+import {
+  Send,
+  Trash2,
+  Bot,
+  User,
+  Sparkles,
+  Copy,
+  Check,
   ShieldCheck,
   AlertCircle,
-  Square
+  Square,
+  ExternalLink,
+  Globe2
 } from 'lucide-react';
-import { AppSettings, ChatMessage, VoiceIdentity } from '../types';
+import { AppSettings, ChatMessage, SearchSourceItem } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { getChatMessages, saveChatMessage, clearChatHistory, getMemories, saveMemory } from '../utils/storage';
 import { playHapticSound } from '../utils/audio';
 import { streamUnifiedAiChat } from '../utils/apiConfig';
+import {
+  detectVoiceActionIntent,
+  PendingReminderClarification,
+  resolvePendingReminderClarification
+} from '../utils/intentDetector';
+import { getNativeZuzuPlugin } from '../utils/permission';
+import { formatSourcePublicationTime } from '../utils/sourceFormat';
 
 interface ChatViewProps {
   settings: AppSettings;
@@ -33,6 +42,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
   const [apiErrorBanner, setApiErrorBanner] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const pendingClarificationRef = useRef<PendingReminderClarification | null>(null);
 
   const activeIdentity = VOICE_IDENTITIES[settings.activeIdentity];
   const activePersonality = PERSONALITIES[settings.activePersonality] || PERSONALITIES.Normal;
@@ -46,7 +56,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
   }, [messages, isLoading, streamingText]);
 
   useEffect(() => {
+    const onWorkspaceSwitch = () => {
+      setMessages(getChatMessages());
+    };
+    window.addEventListener('zuzu-workspace-switched', onWorkspaceSwitch);
     return () => {
+      window.removeEventListener('zuzu-workspace-switched', onWorkspaceSwitch);
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
     };
@@ -62,6 +77,16 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
     playHapticSound('listen_stop');
   };
 
+  const handleOpenSourceLink = (e: React.MouseEvent, url: string) => {
+    const nativePlugin = getNativeZuzuPlugin();
+    if (nativePlugin?.openExternalUrl) {
+      e.preventDefault();
+      nativePlugin.openExternalUrl({ url }).catch(() => {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      });
+    }
+  };
+
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const text = inputText.trim();
@@ -71,9 +96,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
 
     playHapticSound('message_sent');
     setApiErrorBanner(null);
@@ -89,11 +111,62 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
       personality: settings.activePersonality
     };
 
-    // Save strictly to Chat History
     saveChatMessage(userMsg);
     const updatedMessages = [...messages, userMsg];
     setMessages(updatedMessages);
     setInputText('');
+
+    // 2. Check pending reminder clarification (e.g., user replying "8 PM" or "tomorrow morning")
+    if (
+      pendingClarificationRef.current &&
+      Date.now() - pendingClarificationRef.current.createdAt < 3 * 60 * 1000
+    ) {
+      const resolved = resolvePendingReminderClarification(text, pendingClarificationRef.current);
+      pendingClarificationRef.current = resolved.pendingClarification || null;
+      const assistantMsg: ChatMessage = {
+        id: `chat-ai-${Date.now() + 1}`,
+        conversation_type: 'text',
+        sender: 'assistant',
+        text: resolved.spokenConfirmation,
+        timestamp: Date.now() + 1,
+        voiceIdentity: settings.activeIdentity,
+        personality: settings.activePersonality
+      };
+      saveChatMessage(assistantMsg);
+      setMessages(prev => [...prev, assistantMsg]);
+      return;
+    }
+    pendingClarificationRef.current = null;
+
+    // 3. Check Smart Notebook & Smart Reminder NL CRUD commands in text chat
+    const actionIntent = detectVoiceActionIntent(text);
+    if (
+      actionIntent.hasActionIntent &&
+      (actionIntent.intentType === 'save_note' ||
+        actionIntent.intentType === 'manage_note' ||
+        actionIntent.intentType === 'manage_reminder' ||
+        actionIntent.intentType === 'clarify_reminder')
+    ) {
+      if (actionIntent.intentType === 'clarify_reminder' && actionIntent.pendingClarification) {
+        pendingClarificationRef.current = actionIntent.pendingClarification;
+      }
+      const assistantMsg: ChatMessage = {
+        id: `chat-ai-${Date.now() + 1}`,
+        conversation_type: 'text',
+        sender: 'assistant',
+        text: actionIntent.spokenConfirmation,
+        timestamp: Date.now() + 1,
+        voiceIdentity: settings.activeIdentity,
+        personality: settings.activePersonality
+      };
+      saveChatMessage(assistantMsg);
+      setMessages(prev => [...prev, assistantMsg]);
+      return;
+    }
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setStreamingText('');
     setIsLoading(true);
 
@@ -125,7 +198,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
 
       const conversationContext = updatedMessages.map(m => ({
         sender: m.sender,
-        text: m.text
+        text: m.text,
+        usedRealtimeSearch: m.usedRealtimeSearch
       }));
 
       const aiResult = await streamUnifiedAiChat({
@@ -159,7 +233,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
         text: aiResult.reply,
         timestamp: Date.now(),
         voiceIdentity: settings.activeIdentity,
-        personality: settings.activePersonality
+        personality: settings.activePersonality,
+        usedRealtimeSearch: Boolean(aiResult.usedRealtimeSearch),
+        sources: Array.isArray(aiResult.sources) && aiResult.sources.length > 0 ? aiResult.sources : undefined
       };
 
       saveChatMessage(assistantMsg);
@@ -190,6 +266,45 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const renderSourcesBlock = (sources?: SearchSourceItem[], usedSearch?: boolean) => {
+    if (!sources || sources.length === 0) return null;
+    return (
+      <div className="mt-2.5 pt-2 border-t border-white/10 space-y-1.5">
+        <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-cyan-300">
+          <Globe2 className="w-3 h-3" />
+          <span>{usedSearch ? 'Google Search Sources' : 'Sources'}</span>
+        </div>
+        <div className="space-y-1.5">
+          {sources.slice(0, 6).map((src, idx) => (
+            <a
+              key={`${src.url}-${idx}`}
+              href={src.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => handleOpenSourceLink(e, src.url)}
+              className="block p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+              title={`${src.title}${src.publishedAt ? ` • ${src.publishedAt}` : ''}`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-[11px] font-semibold text-slate-100 line-clamp-2">
+                  {src.title || src.sourceName}
+                </span>
+                <ExternalLink className="w-3 h-3 text-cyan-300 flex-shrink-0 mt-0.5" />
+              </div>
+              <div className="mt-1 flex items-center flex-wrap gap-1.5 text-[10px]">
+                <span className="font-bold text-cyan-300">{src.sourceName || 'Web Source'}</span>
+                <span className="text-slate-500">•</span>
+                <span className={src.isWithin20Min ? 'font-bold text-emerald-400' : 'text-slate-400'}>
+                  {formatSourcePublicationTime(src)}
+                </span>
+              </div>
+            </a>
+          ))}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -291,6 +406,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
                   )}
 
                   <div className="whitespace-pre-wrap break-words">{msg.text}</div>
+
+                  {!isUser && renderSourcesBlock(msg.sources, msg.usedRealtimeSearch)}
 
                   <div
                     className={`text-[9px] mt-1 font-mono flex items-center justify-end gap-1 ${

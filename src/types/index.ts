@@ -27,6 +27,60 @@ export interface Personality {
 
 export type ConversationType = 'text' | 'voice';
 
+export interface SearchSourceItem {
+  title: string;
+  url: string;
+  sourceName: string;
+  publishedAt?: string;
+  ageLabel?: string;
+  isWithin20Min?: boolean;
+  snippet?: string;
+}
+
+export interface NotebookNote {
+  id: string;
+  text: string;
+  category?: string;
+  timestamp: number;
+  updatedAt?: number;
+}
+
+export type ReminderRecurrence = 'none' | 'daily' | 'weekly' | 'weekday';
+
+export interface UserReminder {
+  id: string;
+  title: string;
+  description?: string;
+  time: number;
+  completed: boolean;
+  notified?: boolean;
+  recurrence?: ReminderRecurrence;
+  recurrenceWeekday?: number; // 0 = Sunday .. 6 = Saturday
+  createdAt?: number;
+  updatedAt?: number;
+  completedAt?: number;
+}
+
+export interface UploadedFileMeta {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes?: number;
+  source: 'screen_assistant' | 'profile_avatar' | 'chat';
+  uploadedAt: number;
+}
+
+export interface FirebaseUserProfile {
+  uid: string;
+  displayName: string;
+  email: string;
+  phoneNumber: string;
+  photoData: string;
+  providers: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
 // Strict separation: Text Chat message
 export interface ChatMessage {
   id: string;
@@ -36,6 +90,8 @@ export interface ChatMessage {
   timestamp: number;
   voiceIdentity: VoiceIdentity;
   personality: PersonalityId;
+  sources?: SearchSourceItem[];
+  usedRealtimeSearch?: boolean;
 }
 
 // Strict separation: Voice Conversation message
@@ -49,6 +105,8 @@ export interface VoiceMessage {
   voiceIdentity: VoiceIdentity;
   audioDuration?: number;
   isSwitchCommand?: boolean;
+  sources?: SearchSourceItem[];
+  usedRealtimeSearch?: boolean;
 }
 
 // Strict separation: Voice Session Container

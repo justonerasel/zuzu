@@ -1,137 +1,79 @@
 {
   "entities": {
-    "ZuAccount": {
-      "title": "ZU-ID Account Identity",
-      "description": "Publicly addressable account metadata using custom lowercase username/zu_id key without exposing raw PII or chat data.",
+    "UserProfile": {
+      "title": "Authenticated Zuzu AI User Profile",
+      "description": "Firebase Auth UID-scoped user profile storing displayName, verified email/phone, avatar data, and linked authentication providers.",
       "type": "object",
       "properties": {
-        "zu_id": {
+        "uid": {
           "type": "string",
-          "description": "Normalized canonical ZU-ID lookup key derived from custom alphanumeric username",
-          "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
-          "minLength": 3,
-          "maxLength": 32
-        },
-        "accountId": {
-          "type": "string",
-          "description": "Canonical ZU-ID alias matching zu_id",
-          "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
-          "minLength": 3,
-          "maxLength": 32
-        },
-        "username": {
-          "type": "string",
-          "description": "User's chosen custom Username (letters and numbers, optional _ or -)",
-          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$",
-          "minLength": 3,
-          "maxLength": 32
-        },
-        "fullName": {
-          "type": "string",
-          "description": "Display full name",
-          "minLength": 1,
-          "maxLength": 80
-        },
-        "phoneMasked": {
-          "type": "string",
-          "description": "Masked display phone/identifier (no raw PII stored on root document)",
-          "minLength": 2,
-          "maxLength": 32
-        },
-        "passwordSalt": {
-          "type": "string",
-          "description": "Random hex salt for password key derivation",
-          "pattern": "^[a-f0-9]+$",
-          "minLength": 16,
-          "maxLength": 64
-        },
-        "passwordHash": {
-          "type": "string",
-          "description": "Salted SHA-256 password digest",
-          "pattern": "^[a-f0-9]+$",
-          "minLength": 64,
+          "minLength": 6,
           "maxLength": 128
         },
-        "vaultVerifier": {
-          "type": "string",
-          "description": "SHA-256 hash of ('verify::' + vaultId) used by Firestore Rules to authorize vault access",
-          "pattern": "^[a-f0-9]{64}$",
-          "minLength": 64,
-          "maxLength": 64
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server last update timestamp"
-        }
-      },
-      "required": [
-        "zu_id",
-        "accountId",
-        "username",
-        "fullName",
-        "phoneMasked",
-        "passwordSalt",
-        "passwordHash",
-        "vaultVerifier",
-        "createdAt",
-        "updatedAt"
-      ]
-    },
-    "ZuVault": {
-      "title": "ZU-ID Persistent Memory & Backup Vault",
-      "description": "Capability-keyed backup containing user phone identifier, chat history, voice sessions, assistant memories, and assistant settings.",
-      "type": "object",
-      "properties": {
-        "zu_id": {
-          "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
-          "minLength": 3,
-          "maxLength": 32
-        },
-        "accountId": {
-          "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$",
-          "minLength": 3,
-          "maxLength": 32
-        },
-        "username": {
-          "type": "string",
-          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{2,31}$",
-          "minLength": 3,
-          "maxLength": 32
-        },
-        "phone": {
-          "type": "string",
-          "description": "User phone number or identifier stored strictly inside private vault",
-          "minLength": 3,
-          "maxLength": 40
-        },
-        "fullName": {
+        "displayName": {
           "type": "string",
           "minLength": 1,
           "maxLength": 80
         },
-        "chatHistory": {
+        "email": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "phoneNumber": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "photoData": {
+          "type": "string",
+          "maxLength": 200000
+        },
+        "providers": {
           "type": "array",
-          "description": "Persisted text chat messages"
+          "items": {
+            "type": "string"
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "providers", "createdAt", "updatedAt"]
+    },
+    "UserVault": {
+      "title": "UID-Isolated Private Assistant Vault",
+      "description": "Private user vault keyed by Firebase Auth UID containing isolated chat history, voice sessions, long-term memories, notebook notes, reminders, uploaded file metadata, and assistant settings.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 128
+        },
+        "chatHistory": {
+          "type": "array"
         },
         "voiceSessions": {
-          "type": "array",
-          "description": "Persisted voice conversation sessions"
+          "type": "array"
         },
         "memories": {
-          "type": "array",
-          "description": "Persisted Zuzu AI long-term memories"
+          "type": "array"
+        },
+        "notes": {
+          "type": "array"
+        },
+        "reminders": {
+          "type": "array"
+        },
+        "uploadedFiles": {
+          "type": "array"
         },
         "settings": {
-          "type": "object",
-          "description": "Persisted app settings, voice identity preferences, and wake word configuration"
+          "type": "object"
         },
         "createdAt": {
           "type": "string",
@@ -143,14 +85,12 @@
         }
       },
       "required": [
-        "zu_id",
-        "accountId",
-        "username",
-        "phone",
-        "fullName",
+        "uid",
         "chatHistory",
         "voiceSessions",
         "memories",
+        "notes",
+        "reminders",
         "settings",
         "createdAt",
         "updatedAt"
@@ -158,17 +98,17 @@
     }
   },
   "firestore": {
-    "/zu_accounts/{zuId}": {
+    "/users/{userId}": {
       "schema": {
-        "$ref": "#/entities/ZuAccount"
+        "$ref": "#/entities/UserProfile"
       },
-      "description": "ZU-ID Account identity lookup document keyed by normalized custom username (zu_id)."
+      "description": "Authenticated user profile strictly readable/writable by request.auth.uid == userId."
     },
-    "/zu_accounts/{zuId}/vault/{vaultId}": {
+    "/users/{userId}/vault/{vaultId}": {
       "schema": {
-        "$ref": "#/entities/ZuVault"
+        "$ref": "#/entities/UserVault"
       },
-      "description": "Private capability-protected vault storing user PII, chat histories, voice sessions, memories, and settings across uninstall/reinstall."
+      "description": "Private per-UID assistant vault strictly readable/writable by request.auth.uid == userId."
     }
   }
 }

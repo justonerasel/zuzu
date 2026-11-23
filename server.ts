@@ -4,6 +4,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { generateIntelligentAnswer } from './src/utils/aiEngine.ts';
+import { classifyRealtimeSearchIntent } from './src/utils/searchIntent.ts';
+import {
+  extractGroundingSourcesFromResponse,
+  gatherRealtimeIntelligence,
+  mergeSearchSources
+} from './server/realtimeSearch.ts';
+import type { SearchSourceItem } from './src/types/index.ts';
 
 dotenv.config();
 
@@ -13,7 +20,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '15mb' }));
 
 // Enable CORS for Android APK (Capacitor/WebView) and remote clients
 app.use((req, res, next) => {
@@ -30,12 +37,14 @@ const LATEST_APP_VERSION = '3.7.0';
 const LATEST_VERSION_CODE = 370;
 const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.7.0';
 
-// Centralized Gemini model configuration (never exposed to users)
+// Centralized Gemini model configuration (never exposed to users; zero deprecated models)
 const GEMINI_MODELS = {
   textPrimary: 'gemini-4-hydrogen',
-  textFallbacks: ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
+  textFallbacks: ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'],
   ttsPrimary: 'gemini-3.8-flash-lite-tts',
-  ttsFallbacks: ['gemini-3.8-flash-lite-tts', 'gemini-2.5-flash-preview-tts'],
+  ttsFallbacks: ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'],
+  transcribePrimary: 'gemini-3.5-transcribe',
+  transcribeFallbacks: ['gemini-3.5-transcribe', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'],
   imagePrimary: 'gemini-3.1-flash-lite-image',
 } as const;
 
@@ -121,10 +130,17 @@ function mapGeminiError(err: any): { status: number; message: string } {
   return { status: 502, message: raw };
 }
 
-function buildConfigForModel(modelId: string, systemInstruction?: string): Record<string, any> {
+function buildConfigForModel(
+  modelId: string,
+  systemInstruction?: string,
+  enableGoogleSearch = false
+): Record<string, any> {
   const cfg: Record<string, any> = {};
   if (systemInstruction) {
     cfg.systemInstruction = systemInstruction;
+  }
+  if (enableGoogleSearch) {
+    cfg.tools = [{ googleSearch: {} }];
   }
   // Enforce LOW thinking level on Gemini 4 Hydrogen for snappy, low-latency responses
   if (modelId.startsWith('gemini-4')) {
@@ -181,9 +197,20 @@ function buildZuzuSystemInstruction(params: {
 
   const identityName = voiceIdentity === 'female' ? 'Female Zuzu' : 'Male Zuzu';
   const pronoun = voiceIdentity === 'female' ? 'female companion & assistant' : 'male companion & assistant';
+  const liveNowDhaka = new Date().toLocaleString('en-US', {
+    timeZone: 'Asia/Dhaka',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
 
   let sys = `You are ${identityName} (${assistantNickname || 'Zuzu'}), a natural, intelligent, emotionally perceptive AI companion running on Android.
 Your voice persona is ${pronoun}. The user's name is "${userNickname || 'Friend'}".
+Current Server Date & Time (Asia/Dhaka): ${liveNowDhaka} | UTC: ${new Date().toISOString()}
 
 CREATOR KNOWLEDGE:
 - Your creator and lead developer is Rasel (MD. Rasel Hossen), a Computer Science student and full-stack Android & AI developer from Bangladesh (GitHub & TikTok: @justonerasel).
@@ -243,6 +270,7 @@ async function generateWithGeminiResilience(
     contents: any;
     systemInstruction?: string;
     timeoutMs?: number;
+    enableGoogleSearch?: boolean;
   }
 ): Promise<{ response: any; usedModel: string }> {
   let lastErr: any = null;
@@ -252,14 +280,15 @@ async function generateWithGeminiResilience(
     const hasMore = i < GEMINI_MODELS.textFallbacks.length - 1;
     let timeoutHandle: NodeJS.Timeout | null = null;
     try {
-      const config = buildConfigForModel(modelId, params.systemInstruction);
+      const config = buildConfigForModel(modelId, params.systemInstruction, Boolean(params.enableGoogleSearch));
       const requestPromise = clientAi.models.generateContent({
         model: modelId,
         contents: params.contents,
         ...(Object.keys(config).length > 0 ? { config } : {})
       });
 
-      const timeoutMs = params.timeoutMs ?? (hasMore ? 9000 : 14000);
+      const baseTimeout = params.enableGoogleSearch ? 18000 : 10000;
+      const timeoutMs = params.timeoutMs ?? (hasMore ? baseTimeout : baseTimeout + 6000);
       const response = await Promise.race([
         requestPromise,
         new Promise<never>((_, reject) => {
@@ -309,12 +338,14 @@ function wrapPcm16MonoAsWav(pcmBuffer: Buffer, sampleRate = 24000): Buffer {
   return Buffer.concat([header, pcmBuffer]);
 }
 
-// Endpoint: Configuration check
+// Endpoint: Configuration check (never leaks secrets)
 app.get('/api/config', (_req, res) => {
   res.json({
     appName: 'Zuzu AI',
     provider: 'gemini',
     hasGeminiKey: Boolean(getEffectiveGeminiKey()),
+    searchEnabled: true,
+    googleSearchGrounding: true,
     version: `v${LATEST_APP_VERSION} (Latest Release)`,
     versionCode: LATEST_VERSION_CODE,
     targetCompatibility: 'Android 9.0 (Pie) through Android 16'
@@ -475,8 +506,18 @@ app.post('/api/chat/stream', async (req, res) => {
 
     const latestUserMsg = [...messages].reverse().find((m: any) => m.sender === 'user')?.text || '';
     const effectiveGeminiKey = getEffectiveGeminiKey(customGeminiKey);
+    const searchClass = classifyRealtimeSearchIntent(latestUserMsg, messages);
 
     if (!effectiveGeminiKey) {
+      if (searchClass.needsSearch) {
+        const missingSearchNotice = searchClass.isBengali
+          ? 'লাইভ গুগল ইন্টারনেট সার্চ এবং সর্বশেষ খবর দেখার জন্য Google Gemini API Key প্রয়োজন। অনুগ্রহ করে Settings → Gemini API & Connection-এ আপনার Gemini API Key যুক্ত করুন। আমি ভুয়া বা অনুমাননির্ভর রিয়েল-টাইম তথ্য দিই না।'
+          : 'Live Google Internet Search requires a configured Google Gemini API key. Please add your Gemini API key in Settings → Gemini API & Connection to search live websites and breaking news. I cannot fabricate real-time web results offline.';
+        sendEvent({ delta: missingSearchNotice });
+        sendEvent({ done: true, isCloudAI: false, requiresKey: true, usedRealtimeSearch: false, sources: [] });
+        return res.end();
+      }
+
       const localAnswer = generateIntelligentAnswer({
         userQuestion: latestUserMsg,
         conversationHistory: messages,
@@ -492,7 +533,7 @@ app.post('/api/chat/stream', async (req, res) => {
       return res.end();
     }
 
-    const systemInstruction = buildZuzuSystemInstruction({
+    let systemInstruction = buildZuzuSystemInstruction({
       personality,
       voiceIdentity,
       customPersonalityPrompt,
@@ -503,6 +544,13 @@ app.post('/api/chat/stream', async (req, res) => {
       userNickname,
       gfIntensity
     });
+
+    let feedSources: SearchSourceItem[] = [];
+    if (searchClass.needsSearch) {
+      const intel = await gatherRealtimeIntelligence(searchClass);
+      feedSources = intel.feedSources;
+      systemInstruction += intel.systemAugmentation;
+    }
 
     const clientAi = createGeminiClient(effectiveGeminiKey);
     const contents = formatGeminiHistory(messages, latestUserMsg || 'Hello');
@@ -516,15 +564,17 @@ app.post('/api/chat/stream', async (req, res) => {
       let timeoutHandle: NodeJS.Timeout | null = null;
       const timeoutController = new AbortController();
       activeAbortController = timeoutController;
+      const idleTimeoutMs = searchClass.needsSearch ? 22000 : hasMore ? 11000 : 16000;
       const resetTimeout = () => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
-        timeoutHandle = setTimeout(() => timeoutController.abort(), hasMore ? 10000 : 15000);
+        timeoutHandle = setTimeout(() => timeoutController.abort(), idleTimeoutMs);
       };
 
       let streamedAny = false;
+      const groundingSources: SearchSourceItem[] = [];
       try {
         resetTimeout();
-        const config = buildConfigForModel(modelId, systemInstruction);
+        const config = buildConfigForModel(modelId, systemInstruction, searchClass.needsSearch);
         const stream = await clientAi.models.generateContentStream({
           model: modelId,
           contents,
@@ -542,6 +592,10 @@ app.post('/api/chat/stream', async (req, res) => {
             streamedAny = true;
             sendEvent({ delta });
           }
+          const chunkSources = extractGroundingSourcesFromResponse(chunk);
+          if (chunkSources.length > 0) {
+            groundingSources.push(...chunkSources);
+          }
         }
 
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -549,7 +603,15 @@ app.post('/api/chat/stream', async (req, res) => {
         if (clientClosed) return res.end();
 
         if (streamedAny) {
-          sendEvent({ done: true, isCloudAI: true });
+          const sources = searchClass.needsSearch
+            ? mergeSearchSources(groundingSources, feedSources)
+            : [];
+          sendEvent({
+            done: true,
+            isCloudAI: true,
+            usedRealtimeSearch: searchClass.needsSearch,
+            sources
+          });
           return res.end();
         }
         lastErr = new Error('Gemini returned an empty response. Please try again.');
@@ -601,8 +663,23 @@ app.post('/api/chat', async (req, res) => {
 
     const latestUserMsg = [...messages].reverse().find((m: any) => m.sender === 'user')?.text || '';
     const effectiveGeminiKey = getEffectiveGeminiKey(customGeminiKey);
+    const searchClass = classifyRealtimeSearchIntent(latestUserMsg, messages);
 
     if (!effectiveGeminiKey) {
+      if (searchClass.needsSearch) {
+        const missingSearchNotice = searchClass.isBengali
+          ? 'লাইভ গুগল ইন্টারনেট সার্চ এবং সর্বশেষ খবর দেখার জন্য Google Gemini API Key প্রয়োজন। অনুগ্রহ করে Settings → Gemini API & Connection-এ আপনার Gemini API Key যুক্ত করুন। আমি ভুয়া বা অনুমাননির্ভর রিয়েল-টাইম তথ্য দিই না।'
+          : 'Live Google Internet Search requires a configured Google Gemini API key. Please add your Gemini API key in Settings → Gemini API & Connection to search live websites and breaking news. I cannot fabricate real-time web results offline.';
+        return res.json({
+          reply: missingSearchNotice,
+          isCloudAI: false,
+          requiresKey: true,
+          hasGeminiKey: false,
+          usedRealtimeSearch: false,
+          sources: []
+        });
+      }
+
       const answer = generateIntelligentAnswer({
         userQuestion: latestUserMsg,
         conversationHistory: messages,
@@ -622,7 +699,7 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    const systemInstruction = buildZuzuSystemInstruction({
+    let systemInstruction = buildZuzuSystemInstruction({
       personality,
       voiceIdentity,
       customPersonalityPrompt,
@@ -634,6 +711,13 @@ app.post('/api/chat', async (req, res) => {
       gfIntensity
     });
 
+    let feedSources: SearchSourceItem[] = [];
+    if (searchClass.needsSearch) {
+      const intel = await gatherRealtimeIntelligence(searchClass);
+      feedSources = intel.feedSources;
+      systemInstruction += intel.systemAugmentation;
+    }
+
     const clientAi = createGeminiClient(effectiveGeminiKey);
     const contents = formatGeminiHistory(messages, latestUserMsg || 'Hello');
 
@@ -641,15 +725,25 @@ app.post('/api/chat', async (req, res) => {
       const { response } = await generateWithGeminiResilience(clientAi, {
         contents,
         systemInstruction,
-        timeoutMs: 16000
+        enableGoogleSearch: searchClass.needsSearch,
+        timeoutMs: searchClass.needsSearch ? 22000 : 16000
       });
 
       const replyText = response?.text?.trim();
+      const groundingSources = searchClass.needsSearch
+        ? extractGroundingSourcesFromResponse(response)
+        : [];
+      const sources = searchClass.needsSearch
+        ? mergeSearchSources(groundingSources, feedSources)
+        : [];
+
       if (replyText && replyText.length > 0) {
         return res.json({
           reply: replyText,
           isCloudAI: true,
-          provider: 'google_gemini'
+          provider: 'google_gemini',
+          usedRealtimeSearch: searchClass.needsSearch,
+          sources
         });
       }
 
@@ -676,6 +770,88 @@ app.post('/api/chat', async (req, res) => {
       error: 'Chat service error.',
       isCloudAI: false
     });
+  }
+});
+
+// Endpoint: Audio Transcription Fallback (solves Android SpeechRecognizer Error 12 / missing Bangla packs)
+app.post('/api/transcribe', async (req, res) => {
+  try {
+    const {
+      audioBase64,
+      mimeType = 'audio/webm',
+      language = 'auto',
+      customGeminiKey = ''
+    } = req.body;
+
+    if (!audioBase64 || typeof audioBase64 !== 'string') {
+      return res.status(400).json({ success: false, error: 'Audio data is required.' });
+    }
+
+    const effectiveKey = getEffectiveGeminiKey(customGeminiKey);
+    if (!effectiveKey) {
+      return res.status(401).json({
+        success: false,
+        requiresKey: true,
+        error: 'Gemini API key is required for cloud speech transcription.'
+      });
+    }
+
+    const cleanBase64 = audioBase64.replace(/^data:audio\/[a-zA-Z0-9.+_-]+;base64,/, '').trim();
+    const langHint =
+      language === 'bn-BD'
+        ? 'The speaker is speaking Bengali (বাংলা) or mixed Bengali-English. Transcribe accurately in Bengali script where spoken in Bengali.'
+        : language === 'en-US'
+        ? 'The speaker is speaking English. Transcribe accurately in English.'
+        : 'Auto-detect Bengali (বাংলা) or English and transcribe accurately in the spoken language.';
+
+    const clientAi = createGeminiClient(effectiveKey);
+    let lastErr: any = null;
+
+    for (const modelId of GEMINI_MODELS.transcribeFallbacks) {
+      let timeoutHandle: NodeJS.Timeout | null = null;
+      try {
+        const config = buildConfigForModel(
+          modelId,
+          `You are a precise speech-to-text transcriber. ${langHint} Return ONLY the exact spoken transcript text with zero commentary, quotes, or filler. If silence or unintelligible noise only, return an empty string.`
+        );
+        const response = await Promise.race([
+          clientAi.models.generateContent({
+            model: modelId,
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { inlineData: { data: cleanBase64, mimeType } },
+                  { text: 'Transcribe this voice recording verbatim.' }
+                ]
+              }
+            ],
+            ...(Object.keys(config).length > 0 ? { config } : {})
+          }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error('Transcription timed out.')), 14000);
+          })
+        ]);
+
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        const transcript = (response?.text || '').trim();
+        return res.json({ success: true, text: transcript, model: modelId });
+      } catch (err: any) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        lastErr = err;
+        const msg = err?.message || '';
+        if (/404|NOT_FOUND|not found|not supported|503|UNAVAILABLE|timeout/i.test(msg)) {
+          continue;
+        }
+        break;
+      }
+    }
+
+    const mapped = mapGeminiError(lastErr);
+    return res.status(mapped.status).json({ success: false, error: mapped.message });
+  } catch (err: any) {
+    const mapped = mapGeminiError(err);
+    return res.status(mapped.status).json({ success: false, error: mapped.message });
   }
 });
 

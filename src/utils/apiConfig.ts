@@ -1,19 +1,21 @@
-import { AppSettings, UserMemory } from '../types';
+import { AppSettings, SearchSourceItem, UserMemory } from '../types';
 import { generateIntelligentAnswer } from './aiEngine';
+import { classifyRealtimeSearchIntent } from './searchIntent';
 import { getAppSettings } from './storage';
 
 /**
- * Centralized Google Gemini API client, streaming SSE pipeline, timeout safety,
- * and Android APK routing for Zuzu AI.
+ * Centralized Google Gemini API client, streaming SSE pipeline, real-time search grounding,
+ * timeout safety, and Android APK routing for Zuzu AI.
  */
 
 // Current Application Build Version (Keep synchronized across Gradle, Server, UI & CI)
 export const APP_VERSION = '3.7.0';
 export const APP_VERSION_CODE = 370;
 
-// Centralized Gemini Model Configuration (never hardcoded in UI components)
-const GEMINI_TEXT_CANDIDATES = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'] as const;
-const GEMINI_TTS_CANDIDATES = ['gemini-3.8-flash-lite-tts', 'gemini-2.5-flash-preview-tts'] as const;
+// Centralized Gemini Model Configuration (never hardcoded in UI components; zero deprecated models)
+const GEMINI_TEXT_CANDIDATES = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
+const GEMINI_TTS_CANDIDATES = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'] as const;
+const GEMINI_TRANSCRIBE_CANDIDATES = ['gemini-3.5-transcribe', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
 const GEMINI_IMAGE_CANDIDATES = ['gemini-3.1-flash-lite-image', 'gemini-nano-banana-2.1'] as const;
 
 // Deployed Cloud Run Production Backend URL for Android APK
@@ -339,6 +341,53 @@ function formatMessagesForGeminiRest(
   return contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: 'Hello' }] }];
 }
 
+function extractSourcesFromRestCandidate(parsed: any): SearchSourceItem[] {
+  const chunks = parsed?.candidates?.[0]?.groundingMetadata?.groundingChunks;
+  if (!Array.isArray(chunks)) return [];
+  const out: SearchSourceItem[] = [];
+  for (const ch of chunks) {
+    const uri = ch?.web?.uri;
+    const rawTitle = ch?.web?.title;
+    if (typeof uri === 'string' && /^https?:\/\//i.test(uri)) {
+      let host = 'Web Source';
+      try {
+        host = new URL(uri).hostname.replace(/^www\./, '');
+      } catch {}
+      const cleanTitle = typeof rawTitle === 'string' && rawTitle.trim() ? rawTitle.trim() : host;
+      let sourceName = host;
+      if (
+        host.includes('vertexaisearch.cloud.google.com') ||
+        host === 'google.com' ||
+        host === 'news.google.com'
+      ) {
+        const dashParts = cleanTitle.split(/\s+[-|—]\s+/);
+        sourceName =
+          dashParts.length > 1
+            ? dashParts[dashParts.length - 1].trim().slice(0, 48)
+            : cleanTitle.replace(/^www\./, '').slice(0, 48);
+      }
+      out.push({
+        title: cleanTitle,
+        url: uri,
+        sourceName
+      });
+    }
+  }
+  return out;
+}
+
+function dedupeSources(sources: SearchSourceItem[]): SearchSourceItem[] {
+  const seen = new Set<string>();
+  const out: SearchSourceItem[] = [];
+  for (const s of sources) {
+    if (!s?.url || seen.has(s.url)) continue;
+    seen.add(s.url);
+    out.push(s);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
 /**
  * Direct Multi-Turn Gemini REST SSE Streaming call (critical for standalone Android APK & fast progressive UI)
  */
@@ -346,19 +395,28 @@ async function directGeminiStreamContent(params: {
   apiKey: string;
   messages: Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>;
   systemInstruction: string;
+  enableGoogleSearch?: boolean;
   signal?: AbortSignal;
   onDelta?: (accumulatedText: string, delta: string) => void;
-}): Promise<{ text: string; isCloudAI: boolean }> {
+}): Promise<{ text: string; isCloudAI: boolean; sources?: SearchSourceItem[] }> {
   const cleanKey = params.apiKey.trim();
   const contents = formatMessagesForGeminiRest(params.messages);
   let lastErrorMsg = 'Google Gemini request failed.';
+
+  let sysInst = params.systemInstruction;
+  if (params.enableGoogleSearch) {
+    sysInst += `\n\nREAL-TIME GOOGLE SEARCH GROUNDING ENABLED:\n- Use verified live Google Search results (supporting both English and Bengali queries) for current events, breaking news, prices, weather, and recent updates.\n- Prioritize newly published web articles and news reports, including items published within the last 20 minutes when available.\n- Include publisher/source names and exact publication times when confirmed by retrieved articles.\n- Never fabricate publication timestamps, headlines, or URLs. If no verified reports exist inside a requested narrow time window (e.g., last 20 minutes), state that honestly and provide the latest verified updates with their real timestamps.`;
+  }
 
   for (const modelId of GEMINI_TEXT_CANDIDATES) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(cleanKey)}`;
     const body: any = {
       contents,
-      systemInstruction: { parts: [{ text: params.systemInstruction }] }
+      systemInstruction: { parts: [{ text: sysInst }] }
     };
+    if (params.enableGoogleSearch) {
+      body.tools = [{ googleSearch: {} }];
+    }
     if (modelId.startsWith('gemini-4')) {
       body.generationConfig = {
         thinkingConfig: { thinkingLevel: 'LOW' }
@@ -372,7 +430,7 @@ async function directGeminiStreamContent(params: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       },
-      16000,
+      params.enableGoogleSearch ? 22000 : 16000,
       params.signal
     );
 
@@ -390,6 +448,7 @@ async function directGeminiStreamContent(params: {
       throw new Error(lastErrorMsg);
     }
 
+    const collectedSources: SearchSourceItem[] = [];
     const reader = res.body?.getReader();
     if (!reader) {
       // Fallback if ReadableStream unavailable in older WebView
@@ -407,10 +466,11 @@ async function directGeminiStreamContent(params: {
             assembled += chunkText;
             params.onDelta?.(assembled, chunkText);
           }
+          collectedSources.push(...extractSourcesFromRestCandidate(parsed));
         } catch {}
       }
       if (!assembled.trim()) throw new Error('Gemini returned an empty response. Please try again.');
-      return { text: assembled.trim(), isCloudAI: true };
+      return { text: assembled.trim(), isCloudAI: true, sources: dedupeSources(collectedSources) };
     }
 
     const decoder = new TextDecoder();
@@ -437,12 +497,13 @@ async function directGeminiStreamContent(params: {
             accumulated += chunkText;
             params.onDelta?.(accumulated, chunkText);
           }
+          collectedSources.push(...extractSourcesFromRestCandidate(parsed));
         } catch {}
       }
     }
 
     if (accumulated.trim()) {
-      return { text: accumulated.trim(), isCloudAI: true };
+      return { text: accumulated.trim(), isCloudAI: true, sources: dedupeSources(collectedSources) };
     }
     throw new Error('Gemini returned an empty response. Please try again.');
   }
@@ -680,6 +741,8 @@ export interface UnifiedChatResult {
   isCloudAI: boolean;
   isError?: boolean;
   requiresKey?: boolean;
+  usedRealtimeSearch?: boolean;
+  sources?: SearchSourceItem[];
 }
 
 /**
@@ -687,7 +750,7 @@ export interface UnifiedChatResult {
  * Uses a single Google Gemini credential (`customGeminiApiKey`) and cancels cleanly via AbortSignal.
  */
 export async function streamUnifiedAiChat(params: {
-  messages: Array<{ sender: 'user' | 'assistant'; text: string }>;
+  messages: Array<{ sender: 'user' | 'assistant'; text: string; usedRealtimeSearch?: boolean }>;
   settings: AppSettings;
   memories: UserMemory[];
   isVoiceMode: boolean;
@@ -703,6 +766,7 @@ export async function streamUnifiedAiChat(params: {
 
   const latestUserMsg = [...params.messages].reverse().find(m => m.sender === 'user')?.text || '';
   const hasUserGeminiKey = settings.customGeminiApiKey.length > 0 && settings.geminiEnabled !== false;
+  const searchClassification = classifyRealtimeSearchIntent(latestUserMsg, params.messages);
 
   // 1. Try Backend SSE Stream first (/api/chat/stream)
   let backendExplicitError: string | null = null;
@@ -725,7 +789,7 @@ export async function streamUnifiedAiChat(params: {
           gfIntensity: settings.gfIntensity || 'sweet'
         })
       },
-      16000,
+      searchClassification.needsSearch ? 22000 : 16000,
       params.signal
     );
 
@@ -735,7 +799,12 @@ export async function streamUnifiedAiChat(params: {
       const decoder = new TextDecoder();
       let buffer = '';
       let accumulated = '';
-      let doneMeta: { isCloudAI?: boolean; requiresKey?: boolean } = {};
+      let doneMeta: {
+        isCloudAI?: boolean;
+        requiresKey?: boolean;
+        usedRealtimeSearch?: boolean;
+        sources?: SearchSourceItem[];
+      } = {};
 
       while (true) {
         const { value, done } = await reader.read();
@@ -772,7 +841,9 @@ export async function streamUnifiedAiChat(params: {
           return {
             reply: accumulated.trim(),
             isCloudAI: Boolean(doneMeta.isCloudAI),
-            requiresKey: Boolean(doneMeta.requiresKey)
+            requiresKey: Boolean(doneMeta.requiresKey),
+            usedRealtimeSearch: Boolean(doneMeta.usedRealtimeSearch),
+            sources: Array.isArray(doneMeta.sources) ? doneMeta.sources : []
           };
         }
       }
@@ -802,12 +873,15 @@ export async function streamUnifiedAiChat(params: {
           apiKey: settings.customGeminiApiKey,
           messages: params.messages,
           systemInstruction: sysPrompt,
+          enableGoogleSearch: searchClassification.needsSearch,
           signal: params.signal,
           onDelta: params.onDelta
         });
         return {
           reply: directRes.text,
-          isCloudAI: true
+          isCloudAI: true,
+          usedRealtimeSearch: searchClassification.needsSearch,
+          sources: directRes.sources || []
         };
       } catch (directErr: any) {
         if (directErr?.name === 'AbortError' && params.signal?.aborted) {
@@ -839,6 +913,20 @@ export async function streamUnifiedAiChat(params: {
   }
 
   // 3. Offline / Unconfigured fallback when no API key exists
+  if (searchClassification.needsSearch) {
+    const honestNotice = searchClassification.isBengali
+      ? 'লাইভ গুগল ইন্টারনেট সার্চ এখন চালানো যাচ্ছে না কারণ ডিভাইসে বা সার্ভারে কোনো Gemini API Key যুক্ত নেই অথবা ইন্টারনেট/সার্ভার সংযোগ পাওয়া যাচ্ছে না। অনুগ্রহ করে Settings → Gemini API & Connection থেকে আপনার Google Gemini API Key যুক্ত করুন।'
+      : 'Live Google Internet Search is currently unavailable because no Google Gemini API key is configured (or the search service is unreachable). Please add your Gemini API key in Settings → Gemini API & Connection to search live websites and breaking news.';
+    params.onDelta?.(honestNotice, honestNotice);
+    return {
+      reply: honestNotice,
+      isCloudAI: false,
+      requiresKey: !hasUserGeminiKey,
+      usedRealtimeSearch: false,
+      sources: []
+    };
+  }
+
   const localReply = generateIntelligentAnswer({
     userQuestion: latestUserMsg,
     conversationHistory: params.messages,
@@ -862,7 +950,7 @@ export async function streamUnifiedAiChat(params: {
  * Convenience non-streaming wrapper backed by the same unified Gemini stream pipeline.
  */
 export async function sendUnifiedAiChat(params: {
-  messages: Array<{ sender: 'user' | 'assistant'; text: string }>;
+  messages: Array<{ sender: 'user' | 'assistant'; text: string; usedRealtimeSearch?: boolean }>;
   settings: AppSettings;
   memories: UserMemory[];
   isVoiceMode: boolean;
@@ -870,3 +958,105 @@ export async function sendUnifiedAiChat(params: {
 }): Promise<UnifiedChatResult> {
   return streamUnifiedAiChat(params);
 }
+
+/**
+ * Transcribes recorded audio via backend /api/transcribe or direct Gemini REST API.
+ * Used automatically when Android SpeechRecognizer reports Error 12/13 (missing language pack).
+ */
+export async function transcribeAudioWithGemini(params: {
+  audioBase64: string;
+  mimeType: string;
+  language: 'auto' | 'en-US' | 'bn-BD';
+  signal?: AbortSignal;
+}): Promise<{ success: boolean; text?: string; error?: string }> {
+  const settings = getAppSettings();
+  const customGeminiKey = (settings.customGeminiApiKey || '').trim();
+
+  // 1. Try backend /api/transcribe first
+  try {
+    const res = await apiFetch(
+      '/api/transcribe',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          audioBase64: params.audioBase64,
+          mimeType: params.mimeType,
+          language: params.language,
+          customGeminiKey
+        })
+      },
+      15000,
+      params.signal
+    );
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.success) {
+      return { success: true, text: String(data.text || '').trim() };
+    }
+    if (data?.error && !/requiresKey|API key/i.test(String(data.error))) {
+      // fall through to direct if key exists, else return error
+      if (!customGeminiKey) return { success: false, error: String(data.error) };
+    }
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw err;
+  }
+
+  // 2. Direct Gemini REST fallback for standalone APK
+  if (!customGeminiKey) {
+    return {
+      success: false,
+      error: 'Voice language pack unavailable locally (Error 12). Add your Gemini API key in Settings for Cloud Bangla/English speech transcription.'
+    };
+  }
+
+  const cleanBase64 = params.audioBase64.replace(/^data:audio\/[a-zA-Z0-9.+_-]+;base64,/, '').trim();
+  const langHint =
+    params.language === 'bn-BD'
+      ? 'The speaker is speaking Bengali (বাংলা) or mixed Bengali-English. Transcribe accurately in Bengali script where spoken in Bengali.'
+      : params.language === 'en-US'
+      ? 'The speaker is speaking English. Transcribe accurately.'
+      : 'Auto-detect Bengali (বাংলা) or English and transcribe accurately.';
+
+  for (const modelId of GEMINI_TRANSCRIBE_CANDIDATES) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(customGeminiKey)}`;
+      const res = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: `You are a precise speech-to-text transcriber. ${langHint} Return ONLY the verbatim spoken text.` }]
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { inlineData: { mimeType: params.mimeType, data: cleanBase64 } },
+                  { text: 'Transcribe this audio verbatim.' }
+                ]
+              }
+            ]
+          })
+        },
+        15000,
+        params.signal
+      );
+
+      if (!res.ok) {
+        if (res.status === 404 || res.status === 503) continue;
+        const errJson = await res.json().catch(() => ({}));
+        return { success: false, error: formatGeminiFriendlyError(errJson?.error?.message || '', res.status) };
+      }
+
+      const data = await res.json();
+      const transcript = (data?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('').trim();
+      return { success: true, text: transcript };
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
+    }
+  }
+
+  return { success: false, error: 'Cloud speech transcription failed. Check your internet connection or API key.' };
+}
+

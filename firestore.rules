@@ -6,17 +6,17 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // 2. Hardened Validation Helpers
-    function isValidZuId(id) {
-      return id is string && id.size() >= 3 && id.size() <= 32 && id.matches('^[a-z0-9][a-z0-9_\\-]{2,31}$');
+    // 2. Hardened Identity & Schema Helpers
+    function isAuthenticated() {
+      return request.auth != null;
     }
 
-    function isValidUsername(name) {
-      return name is string && name.size() >= 3 && name.size() <= 32 && name.matches('^[a-zA-Z0-9][a-zA-Z0-9_\\-]{2,31}$');
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isValidVaultId(id) {
-      return id is string && id.size() == 64 && id.matches('^[a-f0-9]{64}$');
+    function isValidUid(id) {
+      return id is string && id.size() >= 6 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-:\\.]+$');
     }
 
     function incoming() {
@@ -27,113 +27,96 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isValidZuAccount(data, zuId) {
+    function isValidUserProfile(data, userId) {
       return data.keys().hasAll([
-          'zu_id', 'accountId', 'username', 'fullName', 'phoneMasked',
-          'passwordSalt', 'passwordHash', 'vaultVerifier',
-          'createdAt', 'updatedAt'
+          'uid', 'displayName', 'providers', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'zu_id', 'accountId', 'username', 'fullName', 'phoneMasked',
-          'passwordSalt', 'passwordHash', 'vaultVerifier',
-          'createdAt', 'updatedAt'
+          'uid', 'displayName', 'email', 'phoneNumber', 'photoData', 'providers', 'createdAt', 'updatedAt'
         ])
-        && data.zu_id is string && data.zu_id == zuId
-        && data.accountId is string && data.accountId == zuId
-        && isValidUsername(data.username) && data.username.lower() == zuId
-        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80
-        && data.phoneMasked is string && data.phoneMasked.size() >= 2 && data.phoneMasked.size() <= 32
-        && data.passwordSalt is string && data.passwordSalt.size() >= 16 && data.passwordSalt.size() <= 64 && data.passwordSalt.matches('^[a-f0-9]+$')
-        && data.passwordHash is string && data.passwordHash.size() >= 64 && data.passwordHash.size() <= 128 && data.passwordHash.matches('^[a-f0-9]+$')
-        && data.vaultVerifier is string && data.vaultVerifier.size() == 64 && data.vaultVerifier.matches('^[a-f0-9]{64}$')
+        && data.uid is string && data.uid == userId
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && (!('email' in data) || (data.email is string && data.email.size() <= 160))
+        && (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 40))
+        && (!('photoData' in data) || (data.photoData is string && data.photoData.size() <= 200000))
+        && data.providers is list && data.providers.size() >= 1 && data.providers.size() <= 10 && data.providers[0] is string
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
-    function isValidZuVault(data, zuId) {
+    function isValidUserVault(data, userId) {
       return data.keys().hasAll([
-          'zu_id', 'accountId', 'username', 'phone', 'fullName',
-          'chatHistory', 'voiceSessions', 'memories', 'settings',
-          'createdAt', 'updatedAt'
+          'uid', 'chatHistory', 'voiceSessions', 'memories', 'notes', 'reminders', 'settings', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'zu_id', 'accountId', 'username', 'phone', 'fullName',
-          'chatHistory', 'voiceSessions', 'memories', 'settings',
-          'createdAt', 'updatedAt'
+          'uid', 'chatHistory', 'voiceSessions', 'memories', 'notes', 'reminders', 'uploadedFiles', 'settings', 'createdAt', 'updatedAt'
         ])
-        && data.zu_id is string && data.zu_id == zuId
-        && data.accountId is string && data.accountId == zuId
-        && isValidUsername(data.username) && data.username.lower() == zuId
-        && data.phone is string && data.phone.size() >= 3 && data.phone.size() <= 40
-        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 80
+        && data.uid is string && data.uid == userId
         && data.chatHistory is list && data.chatHistory.size() <= 500 && (data.chatHistory.size() == 0 || data.chatHistory[0] is map)
         && data.voiceSessions is list && data.voiceSessions.size() <= 200 && (data.voiceSessions.size() == 0 || data.voiceSessions[0] is map)
         && data.memories is list && data.memories.size() <= 300 && (data.memories.size() == 0 || data.memories[0] is map)
+        && data.notes is list && data.notes.size() <= 200 && (data.notes.size() == 0 || data.notes[0] is map)
+        && data.reminders is list && data.reminders.size() <= 200 && (data.reminders.size() == 0 || data.reminders[0] is map)
+        && (!('uploadedFiles' in data) || (data.uploadedFiles is list && data.uploadedFiles.size() <= 100 && (data.uploadedFiles.size() == 0 || data.uploadedFiles[0] is map)))
         && data.settings is map && data.settings.keys().size() <= 80
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
-    function hasValidVaultCapability(zuId, vaultId) {
-      return exists(/databases/$(database)/documents/zu_accounts/$(zuId))
-        && hashing.sha256(('verify::' + vaultId).toUtf8()).toHexString().lower()
-           == get(/databases/$(database)/documents/zu_accounts/$(zuId)).data.vaultVerifier;
-    }
-
-    // 3. ZU-ID Custom Username Identity Lookup (Zero list access; point-get only; no PII/chats)
-    match /zu_accounts/{zuId} {
+    // 3. Authenticated User Profile (UID-strict; zero enumeration; zero cross-user read)
+    match /users/{userId} {
       allow list: if false;
-      allow get: if isValidZuId(zuId);
+      allow get: if isOwner(userId);
 
-      allow create: if isValidZuId(zuId)
-        && isValidZuAccount(incoming(), zuId)
+      allow create: if isOwner(userId)
+        && isValidUid(userId)
+        && isValidUserProfile(incoming(), userId)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && !exists(/databases/$(database)/documents/zu_accounts/$(zuId));
+        && !exists(/databases/$(database)/documents/users/$(userId));
 
-      allow update: if isValidZuId(zuId)
-        && isValidZuAccount(incoming(), zuId)
-        && incoming().zu_id == existing().zu_id
-        && incoming().accountId == existing().accountId
-        && incoming().username == existing().username
+      allow update: if isOwner(userId)
+        && isValidUid(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
-        && incoming().passwordSalt == existing().passwordSalt
-        && incoming().passwordHash == existing().passwordHash
-        && incoming().vaultVerifier == existing().vaultVerifier
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phoneMasked', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'email', 'phoneNumber', 'photoData', 'providers', 'updatedAt'
+        ]);
 
-      allow delete: if false;
+      allow delete: if isOwner(userId);
 
-      // 4. Private Password-Capability Protected Backup Vault
+      // 4. UID-Isolated Private Data Vault (chatHistory, voiceSessions, memories, notes, reminders, uploadedFiles, settings)
       match /vault/{vaultId} {
         allow list: if false;
-        allow get: if isValidZuId(zuId)
-          && isValidVaultId(vaultId)
-          && hasValidVaultCapability(zuId, vaultId);
+        allow get: if isOwner(userId) && vaultId == 'primary';
 
-        allow create: if isValidZuId(zuId)
-          && isValidVaultId(vaultId)
-          && isValidZuVault(incoming(), zuId)
-          && hasValidVaultCapability(zuId, vaultId)
+        allow create: if isOwner(userId)
+          && isValidUid(userId)
+          && vaultId == 'primary'
+          && isValidUserVault(incoming(), userId)
           && incoming().createdAt == request.time
           && incoming().updatedAt == request.time;
 
-        allow update: if isValidZuId(zuId)
-          && isValidVaultId(vaultId)
-          && isValidZuVault(incoming(), zuId)
-          && hasValidVaultCapability(zuId, vaultId)
-          && incoming().zu_id == existing().zu_id
-          && incoming().accountId == existing().accountId
-          && incoming().username == existing().username
+        allow update: if isOwner(userId)
+          && isValidUid(userId)
+          && vaultId == 'primary'
+          && isValidUserVault(incoming(), userId)
+          && incoming().uid == existing().uid
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly([
-            'phone', 'fullName', 'chatHistory', 'voiceSessions', 'memories', 'settings', 'updatedAt'
+            'chatHistory', 'voiceSessions', 'memories', 'notes', 'reminders', 'uploadedFiles', 'settings', 'updatedAt'
           ]);
 
-        allow delete: if false;
+        allow delete: if isOwner(userId) && vaultId == 'primary';
       }
+    }
+
+    // 5. Legacy ZU-ID collection locked down after Firebase Auth migration
+    match /zu_accounts/{zuId} {
+      allow read, write: if false;
     }
   }
 }

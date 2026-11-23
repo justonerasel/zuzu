@@ -1,5 +1,6 @@
 package com.zuzu.ai.assistant;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -8,6 +9,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
@@ -15,11 +17,12 @@ import android.os.PowerManager;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 /**
  * Persistent Silent Android Foreground Service for Zuzu AI.
  * Keeps background Wake-Word listening alive across Android 9 - Android 16
- * with IMPORTANCE_MIN, zero sound, and zero vibration.
+ * with IMPORTANCE_MIN, zero sound, zero vibration, and Android 14+ microphone FGS safety.
  */
 public class ZuzuForegroundService extends Service {
     public static final String CHANNEL_ID = "zuzu_ai_silent_guard_v3";
@@ -56,6 +59,14 @@ public class ZuzuForegroundService extends Service {
             return START_NOT_STICKY;
         }
 
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            isRunning = false;
+            saveEnabledPref(false);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
         String wakeWord = "Wake up Zuzu";
         if (intent != null && intent.hasExtra(KEY_WAKE_WORD)) {
             String extra = intent.getStringExtra(KEY_WAKE_WORD);
@@ -67,17 +78,9 @@ public class ZuzuForegroundService extends Service {
             wakeWord = prefs.getString(KEY_WAKE_WORD, "Wake up Zuzu");
         }
 
-        saveEnabledPref(true);
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .edit()
-                .putString(KEY_WAKE_WORD, wakeWord)
-                .apply();
-
-        // Avoid re-posting identical notifications repeatedly while already running
         if (isRunning && wakeWord.equals(activeWakeWord)) {
             return START_STICKY;
         }
-        activeWakeWord = wakeWord;
 
         createSilentNotificationChannel();
         Notification notification = buildSilentNotification(wakeWord);
@@ -92,12 +95,37 @@ public class ZuzuForegroundService extends Service {
             } else {
                 startForeground(NOTIFICATION_ID, notification);
             }
+        } catch (SecurityException | IllegalStateException e) {
+            isRunning = false;
+            activeWakeWord = null;
+            saveEnabledPref(false);
+            stopSelf();
+            return START_NOT_STICKY;
         } catch (Exception e) {
+            if (Build.VERSION.SDK_INT >= 34) {
+                isRunning = false;
+                activeWakeWord = null;
+                saveEnabledPref(false);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
             try {
                 startForeground(NOTIFICATION_ID, notification);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+                isRunning = false;
+                activeWakeWord = null;
+                saveEnabledPref(false);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
         }
 
+        saveEnabledPref(true);
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putString(KEY_WAKE_WORD, wakeWord)
+                .apply();
+        activeWakeWord = wakeWord;
         isRunning = true;
         return START_STICKY;
     }
@@ -205,14 +233,20 @@ public class ZuzuForegroundService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        if (prefs.getBoolean(KEY_SERVICE_ENABLED, false)) {
-            Intent restartIntent = new Intent(getApplicationContext(), ZuzuForegroundService.class);
-            restartIntent.putExtra(KEY_WAKE_WORD, prefs.getString(KEY_WAKE_WORD, "Wake up Zuzu"));
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                getApplicationContext().startForegroundService(restartIntent);
-            } else {
-                getApplicationContext().startService(restartIntent);
+        if (Build.VERSION.SDK_INT < 34
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED) {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            if (prefs.getBoolean(KEY_SERVICE_ENABLED, false)) {
+                Intent restartIntent = new Intent(getApplicationContext(), ZuzuForegroundService.class);
+                restartIntent.putExtra(KEY_WAKE_WORD, prefs.getString(KEY_WAKE_WORD, "Wake up Zuzu"));
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        getApplicationContext().startForegroundService(restartIntent);
+                    } else {
+                        getApplicationContext().startService(restartIntent);
+                    }
+                } catch (Exception ignored) {}
             }
         }
         super.onTaskRemoved(rootIntent);
