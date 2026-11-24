@@ -1,7 +1,28 @@
-export type PermissionStatusState = 'granted' | 'prompt' | 'denied' | 'system_required' | 'unsupported';
-export type MicrophonePermissionState = 'granted' | 'prompt' | 'denied' | 'unsupported';
+export type PermissionStatusState =
+  | 'granted'
+  | 'prompt'
+  | 'denied'
+  | 'permanently_denied'
+  | 'system_required'
+  | 'unsupported';
 
-export type PermissionCategoryId = 'all' | 'audio' | 'system' | 'device';
+export type MicrophonePermissionState =
+  | 'granted'
+  | 'prompt'
+  | 'denied'
+  | 'permanently_denied'
+  | 'unsupported';
+
+export type PermissionCategoryId =
+  | 'all'
+  | 'microphone'
+  | 'notifications'
+  | 'location'
+  | 'camera'
+  | 'files_media'
+  | 'background_services'
+  | 'alarms_reminders';
+
 export type PermissionKind = 'runtime' | 'special' | 'manifest';
 
 export interface PermissionDefinition {
@@ -15,12 +36,24 @@ export interface PermissionDefinition {
   androidSecurityNote: string;
   isSpecialSystemSetting: boolean;
   settingsAction?: string;
+  androidOnly?: boolean;
 }
 
 export interface PermissionStateItem extends PermissionDefinition {
   status: PermissionStatusState;
   isSupported: boolean;
 }
+
+export const PERMISSION_CATEGORY_TABS: Array<{ id: PermissionCategoryId; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'microphone', label: 'Microphone' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'location', label: 'Location' },
+  { id: 'camera', label: 'Camera' },
+  { id: 'files_media', label: 'Files & Media' },
+  { id: 'background_services', label: 'Background Services' },
+  { id: 'alarms_reminders', label: 'Alarms & Reminders' }
+];
 
 const STORAGE_KEY_PREFIX = 'zuzu_perm_status_';
 const MIC_STORAGE_KEY = 'zuzu_mic_permission_status';
@@ -35,331 +68,211 @@ export function getNativeZuzuPlugin(): any | null {
 }
 
 /**
- * Complete 30 Android Permissions for Zuzu AI Assistant
+ * Minimal Android Permissions — strictly matching genuinely implemented Zuzu AI features.
+ * Unused permissions (Contacts, Phone Calls, SMS, Bluetooth, Overlays, Write Settings, Query All Packages, Install Packages)
+ * have been completely removed.
  */
 export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
-  // ---- Audio, Voice & Bluetooth (6) ----
+  // ---- Microphone ----
   {
     id: 'microphone',
     name: 'Microphone (Record Audio)',
     androidManifestName: 'android.permission.RECORD_AUDIO',
-    category: 'audio',
+    category: 'microphone',
     permissionType: 'runtime',
     nativeAlias: 'microphone',
-    whyNeeded: 'Captures live English & Bengali voice commands, Wake Word, and custom whistle/snap audio triggers.',
-    androidSecurityNote: 'Android runtime dangerous permission.',
+    whyNeeded: 'Captures live English & Bengali voice commands, Wake Word detection, and acoustic triggers.',
+    androidSecurityNote: 'Requested on demand when tapping the Voice Orb or enabling Wake Word.',
     isSpecialSystemSetting: false
   },
   {
     id: 'modify_audio',
-    name: 'Modify Audio Settings',
+    name: 'Audio Output Routing',
     androidManifestName: 'android.permission.MODIFY_AUDIO_SETTINGS',
-    category: 'audio',
+    category: 'microphone',
     permissionType: 'manifest',
-    whyNeeded: 'Routes voice playback cleanly between speakerphone, earpiece, and wired/Bluetooth headsets.',
-    androidSecurityNote: 'Automatically granted via AndroidManifest.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'bluetooth',
-    name: 'Bluetooth Audio Access',
-    androidManifestName: 'android.permission.BLUETOOTH',
-    category: 'audio',
-    permissionType: 'manifest',
-    whyNeeded: 'Streams Zuzu AI voice output and hands-free mic input over paired Bluetooth audio devices.',
-    androidSecurityNote: 'Manifest permission for legacy Bluetooth stack.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'bluetooth_admin',
-    name: 'Bluetooth Device Admin',
-    androidManifestName: 'android.permission.BLUETOOTH_ADMIN',
-    category: 'audio',
-    permissionType: 'manifest',
-    whyNeeded: 'Enables toggling and managing Bluetooth audio profile connections.',
-    androidSecurityNote: 'Manifest permission for Bluetooth headset routing.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'bluetooth_connect',
-    name: 'Bluetooth Connect (Android 12+)',
-    androidManifestName: 'android.permission.BLUETOOTH_CONNECT',
-    category: 'audio',
-    permissionType: 'runtime',
-    nativeAlias: 'bluetooth',
-    whyNeeded: 'Required on Android 12+ to communicate with paired Bluetooth earbuds and car kits.',
-    androidSecurityNote: 'Android 12+ runtime Nearby Devices permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'bluetooth_scan',
-    name: 'Bluetooth Scan (Android 12+)',
-    androidManifestName: 'android.permission.BLUETOOTH_SCAN',
-    category: 'audio',
-    permissionType: 'runtime',
-    nativeAlias: 'bluetooth',
-    whyNeeded: 'Discovers nearby Bluetooth headsets and smart accessories for voice routing.',
-    androidSecurityNote: 'Android 12+ runtime Nearby Devices permission.',
-    isSpecialSystemSetting: false
+    whyNeeded: 'Routes Zuzu AI spoken audio cleanly across device speaker, earpiece, and wired/system headsets.',
+    androidSecurityNote: 'Normal manifest permission.',
+    isSpecialSystemSetting: false,
+    androidOnly: true
   },
 
-  // ---- Network, Background Services & System Controls (16) ----
-  {
-    id: 'internet',
-    name: 'Full Internet Access',
-    androidManifestName: 'android.permission.INTERNET',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Connects to Google Gemini voice & text services and Firebase ZU-ID Cloud Sync.',
-    androidSecurityNote: 'Standard Android network access.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'access_network',
-    name: 'View Network Connections',
-    androidManifestName: 'android.permission.ACCESS_NETWORK_STATE',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Detects online/offline connectivity transitions cleanly before cloud sync or AI requests.',
-    androidSecurityNote: 'Automatically granted via AndroidManifest.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'access_wifi',
-    name: 'View Wi-Fi Connections',
-    androidManifestName: 'android.permission.ACCESS_WIFI_STATE',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Optimizes OTA delta syncs and high-quality neural audio streaming on Wi-Fi.',
-    androidSecurityNote: 'Automatically granted via AndroidManifest.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'foreground_service',
-    name: 'Run Foreground Service',
-    androidManifestName: 'android.permission.FOREGROUND_SERVICE',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Keeps the silent Zuzu AI Wake-Word listener reliable in the background.',
-    androidSecurityNote: 'Android 9+ foreground execution permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'fg_microphone',
-    name: 'Foreground Microphone Service',
-    androidManifestName: 'android.permission.FOREGROUND_SERVICE_MICROPHONE',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Required by Android 14+ to run Always-On Wake Word and whistle/snap triggers silently.',
-    androidSecurityNote: 'Android 14+ typed foreground service permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'fg_media',
-    name: 'Foreground Media Playback',
-    androidManifestName: 'android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Ensures uninterrupted neural voice responses and audio playback when screen is dimmed.',
-    androidSecurityNote: 'Android 14+ typed foreground service permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'wake_lock',
-    name: 'Prevent Device Sleep (WakeLock)',
-    androidManifestName: 'android.permission.WAKE_LOCK',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Prevents Android CPU doze from cutting off live voice responses or background wake listening.',
-    androidSecurityNote: 'Lightweight partial wakelock via PowerManager.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'boot_completed',
-    name: 'Run at Device Startup',
-    androidManifestName: 'android.permission.RECEIVE_BOOT_COMPLETED',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Restores the silent background Wake Word listener automatically after phone reboot.',
-    androidSecurityNote: 'Standard boot receiver permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'battery_opt',
-    name: 'Ignore Battery Optimizations',
-    androidManifestName: 'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
-    category: 'system',
-    permissionType: 'special',
-    whyNeeded: 'Stops Android OEM battery savers from killing Zuzu AI background wake listening.',
-    androidSecurityNote: 'Special Android system battery exemption.',
-    isSpecialSystemSetting: true,
-    settingsAction: 'android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS'
-  },
+  // ---- Notifications ----
   {
     id: 'notifications',
-    name: 'Post Notifications (Android 13+)',
+    name: 'Notifications (Android 13+)',
     androidManifestName: 'android.permission.POST_NOTIFICATIONS',
-    category: 'system',
+    category: 'notifications',
     permissionType: 'runtime',
     nativeAlias: 'notifications',
-    whyNeeded: 'Required by Android 13+ to anchor the 100% silent foreground service notification.',
-    androidSecurityNote: 'Silent low-priority channel with zero sound or vibration.',
+    whyNeeded: 'Delivers scheduled reminder alerts and anchors the silent Wake Word foreground notification.',
+    androidSecurityNote: 'Requested when creating reminders or enabling background service.',
     isSpecialSystemSetting: false
   },
   {
     id: 'vibrate',
-    name: 'Haptic Vibration Feedback',
+    name: 'Haptic Feedback',
     androidManifestName: 'android.permission.VIBRATE',
-    category: 'system',
+    category: 'notifications',
     permissionType: 'manifest',
-    whyNeeded: 'Provides subtle tactile haptics when tapping the Voice Orb or detecting a trigger.',
-    androidSecurityNote: 'Standard Android manifest permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'system_alert_window',
-    name: 'Display Over Other Apps',
-    androidManifestName: 'android.permission.SYSTEM_ALERT_WINDOW',
-    category: 'system',
-    permissionType: 'special',
-    whyNeeded: 'Allows Zuzu AI floating assistive overlays and screen assistant views across apps.',
-    androidSecurityNote: 'Special Android overlay permission.',
-    isSpecialSystemSetting: true,
-    settingsAction: 'android.settings.action.MANAGE_OVERLAY_PERMISSION'
-  },
-  {
-    id: 'write_settings',
-    name: 'Modify System Settings',
-    androidManifestName: 'android.permission.WRITE_SETTINGS',
-    category: 'system',
-    permissionType: 'special',
-    whyNeeded: 'Supports voice-controlled system brightness, volume, and quick device adjustments.',
-    androidSecurityNote: 'Special Android system write permission.',
-    isSpecialSystemSetting: true,
-    settingsAction: 'android.settings.action.MANAGE_WRITE_SETTINGS'
-  },
-  {
-    id: 'expand_status_bar',
-    name: 'Expand/Collapse Status Bar',
-    androidManifestName: 'android.permission.EXPAND_STATUS_BAR',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Supports voice commands that open notifications or quick settings shade.',
-    androidSecurityNote: 'Standard Android manifest permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'query_all_packages',
-    name: 'Query Installed Apps',
-    androidManifestName: 'android.permission.QUERY_ALL_PACKAGES',
-    category: 'system',
-    permissionType: 'manifest',
-    whyNeeded: 'Enables Zuzu AI to locate and launch installed Android apps via voice command.',
-    androidSecurityNote: 'Android 11+ package visibility permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'request_install_packages',
-    name: 'Request Package Installs',
-    androidManifestName: 'android.permission.REQUEST_INSTALL_PACKAGES',
-    category: 'system',
-    permissionType: 'special',
-    whyNeeded: 'Supports package install intent handling when updating companion assistant builds.',
-    androidSecurityNote: 'Special Android install-packages permission.',
-    isSpecialSystemSetting: true,
-    settingsAction: 'android.settings.MANAGE_UNKNOWN_APP_SOURCES'
+    whyNeeded: 'Provides subtle tactile haptics when tapping the Voice Orb or firing reminders.',
+    androidSecurityNote: 'Normal manifest permission.',
+    isSpecialSystemSetting: false,
+    androidOnly: true
   },
 
-  // ---- Location, Calls, Contacts, Storage & Camera (8) ----
+  // ---- Location ----
   {
     id: 'fine_location',
     name: 'Precise GPS Location',
     androidManifestName: 'android.permission.ACCESS_FINE_LOCATION',
-    category: 'device',
+    category: 'location',
     permissionType: 'runtime',
     nativeAlias: 'location',
-    whyNeeded: 'Provides accurate real-time local weather forecasts and location-aware greetings.',
-    androidSecurityNote: 'Android runtime dangerous permission.',
+    whyNeeded: 'Fetches accurate live local weather forecasts on the Dashboard Weather Card.',
+    androidSecurityNote: 'Requested only when you enable or refresh live GPS weather.',
     isSpecialSystemSetting: false
   },
   {
     id: 'coarse_location',
     name: 'Approximate Location',
     androidManifestName: 'android.permission.ACCESS_COARSE_LOCATION',
-    category: 'device',
+    category: 'location',
     permissionType: 'runtime',
     nativeAlias: 'location',
-    whyNeeded: 'Provides city-level regional weather and time-zone awareness with low battery use.',
-    androidSecurityNote: 'Android runtime dangerous permission.',
+    whyNeeded: 'Provides city-level weather coordinates with minimal battery impact.',
+    androidSecurityNote: 'Requested alongside GPS weather access.',
     isSpecialSystemSetting: false
   },
-  {
-    id: 'call_phone',
-    name: 'Direct Phone Calls',
-    androidManifestName: 'android.permission.CALL_PHONE',
-    category: 'device',
-    permissionType: 'runtime',
-    nativeAlias: 'phone',
-    whyNeeded: 'Enables hands-free voice calling commands when requested by the user.',
-    androidSecurityNote: 'Android runtime dangerous permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'read_contacts',
-    name: 'Read Contacts',
-    androidManifestName: 'android.permission.READ_CONTACTS',
-    category: 'device',
-    permissionType: 'runtime',
-    nativeAlias: 'contacts',
-    whyNeeded: 'Matches spoken contact names for voice calls and messaging shortcuts.',
-    androidSecurityNote: 'Android runtime dangerous permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'write_contacts',
-    name: 'Write Contacts',
-    androidManifestName: 'android.permission.WRITE_CONTACTS',
-    category: 'device',
-    permissionType: 'runtime',
-    nativeAlias: 'contacts',
-    whyNeeded: 'Allows saving new contact entries when instructed via assistant voice/chat.',
-    androidSecurityNote: 'Android runtime dangerous permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'read_storage',
-    name: 'Read External Storage',
-    androidManifestName: 'android.permission.READ_EXTERNAL_STORAGE',
-    category: 'device',
-    permissionType: 'runtime',
-    nativeAlias: 'storage',
-    whyNeeded: 'Reads screenshots, images, and local documents selected for AI analysis or captions.',
-    androidSecurityNote: 'Android runtime storage permission.',
-    isSpecialSystemSetting: false
-  },
-  {
-    id: 'write_storage',
-    name: 'Write External Storage',
-    androidManifestName: 'android.permission.WRITE_EXTERNAL_STORAGE',
-    category: 'device',
-    permissionType: 'runtime',
-    nativeAlias: 'storage',
-    whyNeeded: 'Saves AI-generated artwork and exported Zuzu AI data backups to device storage.',
-    androidSecurityNote: 'Android runtime storage permission.',
-    isSpecialSystemSetting: false
-  },
+
+  // ---- Camera ----
   {
     id: 'camera',
-    name: 'Camera Access (Vision)',
+    name: 'Camera Access',
     androidManifestName: 'android.permission.CAMERA',
-    category: 'device',
+    category: 'camera',
     permissionType: 'runtime',
     nativeAlias: 'camera',
-    whyNeeded: 'Optional visual capture for multimodal Google Gemini vision analysis and captioning.',
-    androidSecurityNote: 'Android runtime dangerous permission (used only when opened).',
+    whyNeeded: 'Supports camera video capture requests and voice "Open Camera" actions.',
+    androidSecurityNote: 'Requested only when camera capture is triggered.',
     isSpecialSystemSetting: false
+  },
+
+  // ---- Files & Media ----
+  {
+    id: 'media_images',
+    name: 'Photos & Media Images',
+    androidManifestName: 'android.permission.READ_MEDIA_IMAGES',
+    category: 'files_media',
+    permissionType: 'runtime',
+    nativeAlias: 'media_images',
+    whyNeeded: 'Saves AI-generated artwork to Pictures/ZuzuAI and reads images selected for analysis.',
+    androidSecurityNote: 'Uses scoped READ_MEDIA_IMAGES on Android 13+ and maxSdkVersion=32 legacy read on older Android.',
+    isSpecialSystemSetting: false,
+    androidOnly: true
+  },
+
+  // ---- Background Services & Network ----
+  {
+    id: 'internet',
+    name: 'Internet Access',
+    androidManifestName: 'android.permission.INTERNET',
+    category: 'background_services',
+    permissionType: 'manifest',
+    whyNeeded: 'Connects to Google Gemini AI, Google Search Grounding, Open-Meteo Weather, and Firebase Sync.',
+    androidSecurityNote: 'Normal manifest permission.',
+    isSpecialSystemSetting: false
+  },
+  {
+    id: 'access_network',
+    name: 'Network Connectivity State',
+    androidManifestName: 'android.permission.ACCESS_NETWORK_STATE',
+    category: 'background_services',
+    permissionType: 'manifest',
+    whyNeeded: 'Checks online status before running AI requests or live Google Search.',
+    androidSecurityNote: 'Normal manifest permission.',
+    isSpecialSystemSetting: false
+  },
+  {
+    id: 'foreground_service',
+    name: 'Foreground Service Execution',
+    androidManifestName: 'android.permission.FOREGROUND_SERVICE',
+    category: 'background_services',
+    permissionType: 'manifest',
+    whyNeeded: 'Allows opt-in Always-On Wake Word monitoring to remain active in the background.',
+    androidSecurityNote: 'Normal manifest permission for Android 9+.',
+    isSpecialSystemSetting: false,
+    androidOnly: true
+  },
+  {
+    id: 'fg_microphone',
+    name: 'Foreground Microphone Type',
+    androidManifestName: 'android.permission.FOREGROUND_SERVICE_MICROPHONE',
+    category: 'background_services',
+    permissionType: 'manifest',
+    whyNeeded: 'Required by Android 14+ when Wake Word foreground service is enabled.',
+    androidSecurityNote: 'Android 14+ typed FGS manifest permission.',
+    isSpecialSystemSetting: false,
+    androidOnly: true
+  },
+  {
+    id: 'wake_lock',
+    name: 'CPU WakeLock (Background Wake)',
+    androidManifestName: 'android.permission.WAKE_LOCK',
+    category: 'background_services',
+    permissionType: 'manifest',
+    whyNeeded: 'Keeps background Wake Word audio processing uninterrupted when enabled.',
+    androidSecurityNote: 'Lightweight partial wakelock via PowerManager.',
+    isSpecialSystemSetting: false,
+    androidOnly: true
+  },
+  {
+    id: 'boot_completed',
+    name: 'Restore Alarms After Reboot',
+    androidManifestName: 'android.permission.RECEIVE_BOOT_COMPLETED',
+    category: 'background_services',
+    permissionType: 'manifest',
+    whyNeeded: 'Re-schedules saved reminders and background service automatically after phone restart.',
+    androidSecurityNote: 'Broadcast receiver restore on BOOT_COMPLETED.',
+    isSpecialSystemSetting: false,
+    androidOnly: true
+  },
+  {
+    id: 'battery_opt',
+    name: 'Battery Optimization Exemption',
+    androidManifestName: 'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
+    category: 'background_services',
+    permissionType: 'special',
+    whyNeeded: 'Prevents Android OEM battery savers from stopping scheduled reminders or background wake listening.',
+    androidSecurityNote: 'Optional special system setting.',
+    isSpecialSystemSetting: true,
+    settingsAction: 'android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS',
+    androidOnly: true
+  },
+
+  // ---- Alarms & Reminders ----
+  {
+    id: 'exact_alarm',
+    name: 'Exact Alarms & Reminders',
+    androidManifestName: 'android.permission.SCHEDULE_EXACT_ALARM',
+    category: 'alarms_reminders',
+    permissionType: 'special',
+    whyNeeded: 'Fires custom, recurring, and preset reminders on Android AlarmManager at the exact scheduled minute.',
+    androidSecurityNote: 'Controlled via Android Alarms & Reminders system setting on Android 12+.',
+    isSpecialSystemSetting: true,
+    settingsAction: 'android.settings.REQUEST_SCHEDULE_EXACT_ALARM',
+    androidOnly: true
   }
 ];
+
+function mapNativeState(raw: unknown): PermissionStatusState {
+  if (raw === 'granted') return 'granted';
+  if (raw === 'permanently_denied') return 'permanently_denied';
+  if (raw === 'denied') return 'denied';
+  if (raw === 'system_required') return 'system_required';
+  if (raw === 'unsupported') return 'unsupported';
+  return 'prompt';
+}
 
 export interface PermissionCheckResult {
   state: MicrophonePermissionState;
@@ -367,30 +280,39 @@ export interface PermissionCheckResult {
   canRequest: boolean;
 }
 
-export async function checkMicrophonePermission(): Promise<PermissionCheckResult> {
+export async function checkMicrophonePermission(): Promise<MicrophonePermissionState> {
   if (typeof window === 'undefined') {
-    return { state: 'unsupported', isSupported: false, canRequest: false };
+    return 'unsupported';
   }
 
   const nativePlugin = getNativeZuzuPlugin();
   if (nativePlugin?.checkAllNativePermissions) {
     try {
       const nativeStatus = await nativePlugin.checkAllNativePermissions();
-      if (nativeStatus?.microphone === 'granted') {
-        localStorage.setItem(MIC_STORAGE_KEY, 'granted');
-        localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, 'granted');
-        return { state: 'granted', isSupported: true, canRequest: false };
-      }
-      const mapped = nativeStatus?.microphone === 'denied' ? 'denied' : 'prompt';
+      const raw = nativeStatus?.microphone;
+      const mapped: MicrophonePermissionState =
+        raw === 'granted'
+          ? 'granted'
+          : raw === 'permanently_denied'
+          ? 'permanently_denied'
+          : raw === 'denied'
+          ? 'denied'
+          : 'prompt';
       localStorage.setItem(MIC_STORAGE_KEY, mapped);
       localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, mapped);
-      return { state: mapped, isSupported: true, canRequest: true };
+      return mapped;
     } catch {}
   }
 
-  const cached =
-    (localStorage.getItem(MIC_STORAGE_KEY) as MicrophonePermissionState | null) ||
-    (localStorage.getItem(`${STORAGE_KEY_PREFIX}microphone`) as MicrophonePermissionState | null);
+  const hasWebSpeechOrMic = Boolean(
+    navigator?.mediaDevices?.getUserMedia ||
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition
+  );
+
+  if (!hasWebSpeechOrMic) {
+    return 'unsupported';
+  }
 
   if (navigator.permissions && typeof navigator.permissions.query === 'function') {
     try {
@@ -398,35 +320,25 @@ export async function checkMicrophonePermission(): Promise<PermissionCheckResult
       if (status.state === 'granted') {
         localStorage.setItem(MIC_STORAGE_KEY, 'granted');
         localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, 'granted');
-        return { state: 'granted', isSupported: true, canRequest: false };
+        return 'granted';
       }
       if (status.state === 'denied') {
-        localStorage.setItem(MIC_STORAGE_KEY, 'denied');
-        localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, 'denied');
-        return { state: 'denied', isSupported: true, canRequest: true };
+        localStorage.setItem(MIC_STORAGE_KEY, 'permanently_denied');
+        localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, 'permanently_denied');
+        return 'permanently_denied';
       }
+      // Browser reports 'prompt' — clear stale 'granted' cache if previously revoked
+      localStorage.setItem(MIC_STORAGE_KEY, 'prompt');
+      localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, 'prompt');
+      return 'prompt';
     } catch {}
   }
 
-  if (cached === 'granted') {
-    return { state: 'granted', isSupported: true, canRequest: false };
+  const cached = localStorage.getItem(MIC_STORAGE_KEY) as MicrophonePermissionState | null;
+  if (cached === 'granted' || cached === 'denied' || cached === 'permanently_denied') {
+    return cached;
   }
-
-  const hasWebSpeechOrMic = Boolean(
-    navigator?.mediaDevices ||
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition
-  );
-
-  if (!hasWebSpeechOrMic) {
-    return { state: 'unsupported', isSupported: false, canRequest: false };
-  }
-
-  return {
-    state: cached || 'prompt',
-    isSupported: true,
-    canRequest: true
-  };
+  return 'prompt';
 }
 
 export interface PermissionRequestResult {
@@ -449,21 +361,32 @@ export async function requestMicrophonePermission(): Promise<PermissionRequestRe
   if (nativePlugin?.requestCorePermissions) {
     try {
       const nativeResult = await nativePlugin.requestCorePermissions({ alias: 'microphone' });
-      const resolved = nativeResult?.microphone === 'granted' ? 'granted' : 'denied';
+      const raw = nativeResult?.microphone;
+      const resolved: MicrophonePermissionState =
+        raw === 'granted'
+          ? 'granted'
+          : raw === 'permanently_denied'
+          ? 'permanently_denied'
+          : raw === 'denied'
+          ? 'denied'
+          : 'denied';
       localStorage.setItem(MIC_STORAGE_KEY, resolved);
       localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, resolved);
 
       if (resolved === 'granted') {
         return { success: true, state: 'granted' };
       }
+      const isPerm = resolved === 'permanently_denied';
       return {
         success: false,
-        state: 'denied',
-        isPermanentDenied: true,
-        error: 'Microphone permission denied in Android settings. Tap Open App Settings to enable Microphone.'
+        state: resolved,
+        isPermanentDenied: isPerm,
+        error: isPerm
+          ? 'Microphone permission is blocked in Android settings. Open App Settings -> Permissions -> Microphone to allow.'
+          : 'Microphone permission was declined. Please allow Microphone access to use Voice Assistant.'
       };
     } catch (err) {
-      console.warn('[Permissions] Native mic request fallback:', err);
+      console.warn('[Permissions] Native mic request notice:', err);
     }
   }
 
@@ -499,16 +422,31 @@ export async function requestMicrophonePermission(): Promise<PermissionRequestRe
     };
   } catch (err: any) {
     const errorName = err?.name || '';
-    const isDenied = errorName === 'NotAllowedError' || errorName === 'PermissionDeniedError';
+    const isNotAllowed = errorName === 'NotAllowedError' || errorName === 'PermissionDeniedError';
 
-    localStorage.setItem(MIC_STORAGE_KEY, 'denied');
-    localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, 'denied');
+    let finalState: MicrophonePermissionState = 'denied';
+    if (isNotAllowed && navigator.permissions?.query) {
+      try {
+        const perm = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        if (perm.state === 'denied') {
+          finalState = 'permanently_denied';
+        }
+      } catch {}
+    } else if (isNotAllowed) {
+      finalState = 'permanently_denied';
+    }
+
+    localStorage.setItem(MIC_STORAGE_KEY, finalState);
+    localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, finalState);
 
     return {
       success: false,
-      state: 'denied',
-      isPermanentDenied: isDenied,
-      error: err?.message || 'Microphone permission request was denied.'
+      state: finalState,
+      isPermanentDenied: finalState === 'permanently_denied',
+      error:
+        finalState === 'permanently_denied'
+          ? 'Microphone access is blocked in browser/site settings. Enable Microphone and tap Re-check.'
+          : err?.message || 'Microphone permission request was denied.'
     };
   }
 }
@@ -522,14 +460,17 @@ export async function requestNotificationPermission(): Promise<{
   if (nativePlugin?.requestCorePermissions) {
     try {
       const nativeResult = await nativePlugin.requestCorePermissions({ alias: 'notifications' });
-      const st = nativeResult?.notifications === 'granted' ? 'granted' : 'denied';
+      const st = mapNativeState(nativeResult?.notifications);
       localStorage.setItem(`${STORAGE_KEY_PREFIX}notifications`, st);
       return {
         success: st === 'granted',
         status: st,
-        message: st === 'granted'
-          ? 'Notifications enabled cleanly.'
-          : 'Notification access declined. Enable in App Settings if desired.'
+        message:
+          st === 'granted'
+            ? 'Notifications enabled cleanly.'
+            : st === 'permanently_denied'
+            ? 'Notifications blocked in Android App Settings. Open Settings to enable.'
+            : 'Notification access declined.'
       };
     } catch {}
   }
@@ -540,31 +481,45 @@ export async function requestNotificationPermission(): Promise<{
         localStorage.setItem(`${STORAGE_KEY_PREFIX}notifications`, 'granted');
         return { success: true, status: 'granted', message: 'Notifications already enabled.' };
       }
+      if (Notification.permission === 'denied') {
+        localStorage.setItem(`${STORAGE_KEY_PREFIX}notifications`, 'permanently_denied');
+        return {
+          success: false,
+          status: 'permanently_denied',
+          message: 'Notifications are blocked in browser site settings.'
+        };
+      }
       const perm = await Notification.requestPermission();
-      const mapped: PermissionStatusState = perm === 'granted' ? 'granted' : 'denied';
+      const mapped: PermissionStatusState =
+        perm === 'granted' ? 'granted' : perm === 'denied' ? 'permanently_denied' : 'prompt';
       localStorage.setItem(`${STORAGE_KEY_PREFIX}notifications`, mapped);
       return {
         success: perm === 'granted',
         status: mapped,
-        message: perm === 'granted' ? 'Notifications enabled.' : 'Notification permission declined.'
+        message:
+          perm === 'granted'
+            ? 'Notifications enabled.'
+            : mapped === 'permanently_denied'
+            ? 'Notifications blocked in settings.'
+            : 'Notification permission dismissed.'
       };
     } catch (err: any) {
       return { success: false, status: 'denied', message: err?.message || 'Notification request failed.' };
     }
   }
 
-  localStorage.setItem(`${STORAGE_KEY_PREFIX}notifications`, 'granted');
-  return { success: true, status: 'granted', message: 'Notifications active.' };
+  return { success: false, status: 'unsupported', message: 'Notifications are unsupported in this environment.' };
 }
 
 /**
- * Checks all 30 Android assistant permissions cleanly
+ * Checks implemented permissions truthfully via Android Native Bridge or real Browser Permissions API.
+ * Never fabricates 'granted' for unavailable or ungranted permissions.
  */
 export async function checkAllPermissions(): Promise<Record<string, PermissionStatusState>> {
   const results: Record<string, PermissionStatusState> = {};
 
   const nativePlugin = getNativeZuzuPlugin();
-  let nativeMap: Record<string, PermissionStatusState> | null = null;
+  let nativeMap: Record<string, unknown> | null = null;
   if (nativePlugin?.checkAllNativePermissions) {
     try {
       nativeMap = await nativePlugin.checkAllNativePermissions();
@@ -574,137 +529,201 @@ export async function checkAllPermissions(): Promise<Record<string, PermissionSt
   }
 
   for (const def of PERMISSION_DEFINITIONS) {
-    if (nativeMap && nativeMap[def.id]) {
-      results[def.id] = nativeMap[def.id];
-      localStorage.setItem(`${STORAGE_KEY_PREFIX}${def.id}`, nativeMap[def.id]);
+    if (nativeMap && nativeMap[def.id] !== undefined) {
+      const mapped = mapNativeState(nativeMap[def.id]);
+      results[def.id] = mapped;
+      localStorage.setItem(`${STORAGE_KEY_PREFIX}${def.id}`, mapped);
       if (def.id === 'microphone') {
-        localStorage.setItem(MIC_STORAGE_KEY, nativeMap[def.id]);
+        localStorage.setItem(MIC_STORAGE_KEY, mapped);
       }
       continue;
     }
 
-    if (def.permissionType === 'manifest') {
-      results[def.id] = 'granted';
+    // Browser / Web fallback checks (no fake 'granted' values)
+    if (def.androidOnly) {
+      results[def.id] = 'unsupported';
       continue;
     }
 
-    const cached = localStorage.getItem(`${STORAGE_KEY_PREFIX}${def.id}`) as PermissionStatusState | null;
-
     if (def.id === 'microphone') {
-      const micRes = await checkMicrophonePermission();
-      results[def.id] = micRes.state as PermissionStatusState;
+      results[def.id] = await checkMicrophonePermission();
       continue;
     }
 
     if (def.id === 'notifications') {
       if (typeof window !== 'undefined' && 'Notification' in window) {
-        results[def.id] = Notification.permission === 'granted'
-          ? 'granted'
-          : Notification.permission === 'denied'
-          ? 'denied'
-          : cached || 'prompt';
+        results[def.id] =
+          Notification.permission === 'granted'
+            ? 'granted'
+            : Notification.permission === 'denied'
+            ? 'permanently_denied'
+            : 'prompt';
       } else {
-        results[def.id] = cached || 'prompt';
+        results[def.id] = 'unsupported';
       }
       continue;
     }
 
-    if ((def.id === 'fine_location' || def.id === 'coarse_location') && navigator.geolocation) {
+    if (def.id === 'fine_location' || def.id === 'coarse_location') {
+      if (typeof navigator === 'undefined' || !navigator.geolocation) {
+        results[def.id] = 'unsupported';
+        continue;
+      }
       if (navigator.permissions?.query) {
         try {
           const geoStatus = await navigator.permissions.query({ name: 'geolocation' as PermissionName });
-          results[def.id] = geoStatus.state === 'granted' ? 'granted' : geoStatus.state === 'denied' ? 'denied' : cached || 'prompt';
+          results[def.id] =
+            geoStatus.state === 'granted'
+              ? 'granted'
+              : geoStatus.state === 'denied'
+              ? 'permanently_denied'
+              : 'prompt';
           continue;
         } catch {}
       }
-    }
-
-    if (def.id === 'camera' && navigator.permissions?.query) {
-      try {
-        const camStatus = await navigator.permissions.query({ name: 'camera' as PermissionName });
-        results[def.id] = camStatus.state === 'granted' ? 'granted' : camStatus.state === 'denied' ? 'denied' : cached || 'prompt';
-        continue;
-      } catch {}
-    }
-
-    if (def.isSpecialSystemSetting) {
-      results[def.id] = cached || 'system_required';
+      const cached = localStorage.getItem(`${STORAGE_KEY_PREFIX}${def.id}`) as PermissionStatusState | null;
+      results[def.id] = cached || 'prompt';
       continue;
     }
 
-    results[def.id] = cached || 'prompt';
+    if (def.id === 'camera') {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+        results[def.id] = 'unsupported';
+        continue;
+      }
+      if (navigator.permissions?.query) {
+        try {
+          const camStatus = await navigator.permissions.query({ name: 'camera' as PermissionName });
+          results[def.id] =
+            camStatus.state === 'granted'
+              ? 'granted'
+              : camStatus.state === 'denied'
+              ? 'permanently_denied'
+              : 'prompt';
+          continue;
+        } catch {}
+      }
+      results[def.id] = 'prompt';
+      continue;
+    }
+
+    if (def.id === 'internet' || def.id === 'access_network') {
+      results[def.id] = typeof navigator !== 'undefined' && navigator.onLine ? 'granted' : 'prompt';
+      continue;
+    }
+
+    results[def.id] = 'unsupported';
   }
 
   return results;
 }
 
 /**
- * Requests any of the 30 permissions smoothly via native Android bridge or browser APIs
+ * Requests or opens settings for an individual permission cleanly on demand.
  */
 export async function handlePermissionAction(id: string): Promise<{
   success: boolean;
   status: PermissionStatusState;
   message?: string;
 }> {
-  const def = PERMISSION_DEFINITIONS.find(p => p.id === id);
+  const def = PERMISSION_DEFINITIONS.find((p) => p.id === id);
   if (!def) return { success: false, status: 'unsupported' };
 
+  const nativePlugin = getNativeZuzuPlugin();
+
   if (def.permissionType === 'manifest') {
-    localStorage.setItem(`${STORAGE_KEY_PREFIX}${id}`, 'granted');
+    if (!nativePlugin && def.androidOnly) {
+      return {
+        success: false,
+        status: 'unsupported',
+        message: `${def.name} applies only inside the Android APK build.`
+      };
+    }
+    const snap = await checkAllPermissions();
+    const st = snap[id] || (nativePlugin ? 'granted' : 'unsupported');
     return {
-      success: true,
-      status: 'granted',
-      message: `${def.name} (${def.androidManifestName}) is pre-declared and active in AndroidManifest.xml.`
+      success: st === 'granted',
+      status: st,
+      message: `${def.name} (${def.androidManifestName}) status: ${st.toUpperCase()}.`
     };
   }
 
   if (def.isSpecialSystemSetting) {
-    const nativePlugin = getNativeZuzuPlugin();
+    if (id === 'exact_alarm' && nativePlugin?.openExactAlarmSettings) {
+      openExactAlarmSettings();
+      return {
+        success: true,
+        status: 'system_required',
+        message: 'Opened Android Alarms & Reminders settings. Toggle "Allow setting alarms and reminders".'
+      };
+    }
     if (nativePlugin?.openSystemSettings) {
       openAndroidSettings(def.settingsAction);
       return {
         success: true,
         status: 'system_required',
-        message: `Opened Android system settings for ${def.name}. Toggle allow to enable.`
+        message: `Opened Android system settings for ${def.name}.`
       };
     }
-    localStorage.setItem(`${STORAGE_KEY_PREFIX}${id}`, 'granted');
     return {
-      success: true,
-      status: 'granted',
-      message: `${def.name} verified for WebView mode. On Android APK, toggle this in Android System Settings.`
+      success: false,
+      status: 'unsupported',
+      message: `${def.name} is an Android system setting available inside the Android APK.`
     };
   }
 
   if (id === 'microphone') {
     const current = await checkMicrophonePermission();
-    if (current.state === 'granted') {
+    if (current === 'granted') {
       return { success: true, status: 'granted', message: 'Microphone access already active.' };
+    }
+    if (current === 'permanently_denied') {
+      openAndroidAppSettingsGuide();
+      return {
+        success: false,
+        status: 'permanently_denied',
+        message: 'Microphone is blocked in settings. Opened App Settings — enable Microphone and tap Re-check.'
+      };
     }
     const res = await requestMicrophonePermission();
     return {
       success: res.success,
-      status: res.state as PermissionStatusState,
+      status: res.state,
       message: res.success ? 'Microphone access granted.' : res.error
     };
   }
 
   if (id === 'notifications') {
-    return requestNotificationPermission();
+    const res = await requestNotificationPermission();
+    if (res.status === 'permanently_denied' && nativePlugin) {
+      openAndroidSettings('android.settings.APP_NOTIFICATION_SETTINGS');
+    }
+    return res;
   }
 
-  const nativePlugin = getNativeZuzuPlugin();
   if (nativePlugin?.requestCorePermissions && def.nativeAlias) {
     try {
+      const snap = await nativePlugin.checkAllNativePermissions?.();
+      if (snap && snap[def.id] === 'permanently_denied') {
+        openAndroidAppSettingsGuide();
+        return {
+          success: false,
+          status: 'permanently_denied',
+          message: `${def.name} is permanently denied. Opened App Settings — enable it under Permissions.`
+        };
+      }
       const nativeResult = await nativePlugin.requestCorePermissions({ alias: def.nativeAlias });
-      const resolved: PermissionStatusState = nativeResult?.[def.id] === 'granted' ? 'granted' : 'denied';
+      const resolved = mapNativeState(nativeResult?.[def.id]);
       localStorage.setItem(`${STORAGE_KEY_PREFIX}${def.id}`, resolved);
       return {
         success: resolved === 'granted',
         status: resolved,
-        message: resolved === 'granted'
-          ? `${def.name} granted cleanly.`
-          : `${def.name} declined. Tap App Settings to enable anytime.`
+        message:
+          resolved === 'granted'
+            ? `${def.name} granted cleanly.`
+            : resolved === 'permanently_denied'
+            ? `${def.name} blocked permanently. Open App Settings -> Permissions to enable.`
+            : `${def.name} declined. You can enable it whenever you use this feature.`
       };
     } catch (err: any) {
       return {
@@ -720,12 +739,19 @@ export async function handlePermissionAction(id: string): Promise<{
     return new Promise((resolve) => {
       navigator.geolocation.getCurrentPosition(
         () => {
-          localStorage.setItem(`${STORAGE_KEY_PREFIX}${id}`, 'granted');
+          localStorage.setItem(`${STORAGE_KEY_PREFIX}fine_location`, 'granted');
+          localStorage.setItem(`${STORAGE_KEY_PREFIX}coarse_location`, 'granted');
           resolve({ success: true, status: 'granted', message: `${def.name} granted.` });
         },
         (err) => {
-          localStorage.setItem(`${STORAGE_KEY_PREFIX}${id}`, 'denied');
-          resolve({ success: false, status: 'denied', message: err.message || 'Location permission declined.' });
+          const permDenied = err.code === 1;
+          const st: PermissionStatusState = permDenied ? 'permanently_denied' : 'denied';
+          localStorage.setItem(`${STORAGE_KEY_PREFIX}${id}`, st);
+          resolve({
+            success: false,
+            status: st,
+            message: permDenied ? 'Location access blocked in browser settings.' : err.message || 'Location request failed.'
+          });
         },
         { timeout: 8000 }
       );
@@ -735,50 +761,29 @@ export async function handlePermissionAction(id: string): Promise<{
   if (id === 'camera' && typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      stream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+      stream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {}
+      });
       localStorage.setItem(`${STORAGE_KEY_PREFIX}camera`, 'granted');
       return { success: true, status: 'granted', message: 'Camera access granted.' };
     } catch (err: any) {
-      localStorage.setItem(`${STORAGE_KEY_PREFIX}camera`, 'denied');
-      return { success: false, status: 'denied', message: err?.message || 'Camera permission declined.' };
+      const isPerm = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError';
+      const st: PermissionStatusState = isPerm ? 'permanently_denied' : 'denied';
+      localStorage.setItem(`${STORAGE_KEY_PREFIX}camera`, st);
+      return {
+        success: false,
+        status: st,
+        message: isPerm ? 'Camera permission denied in browser settings.' : err?.message || 'Camera request failed.'
+      };
     }
   }
 
-  localStorage.setItem(`${STORAGE_KEY_PREFIX}${id}`, 'granted');
   return {
-    success: true,
-    status: 'granted',
-    message: `${def.name} (${def.androidManifestName}) registered for Android APK runtime.`
-  };
-}
-
-/**
- * Requests all runtime permissions in a single guided pass on native Android or web fallbacks
- */
-export async function requestAllRuntimePermissions(): Promise<{
-  statuses: Record<string, PermissionStatusState>;
-  message: string;
-}> {
-  const nativePlugin = getNativeZuzuPlugin();
-  if (nativePlugin?.requestCorePermissions) {
-    try {
-      const result = await nativePlugin.requestCorePermissions({ alias: 'all' });
-      const refreshed = await checkAllPermissions();
-      const grantedCount = Object.values(refreshed).filter(v => v === 'granted').length;
-      return {
-        statuses: result ? { ...refreshed, ...result } : refreshed,
-        message: `Permissions updated: ${grantedCount} of ${PERMISSION_DEFINITIONS.length} active.`
-      };
-    } catch {}
-  }
-
-  await requestMicrophonePermission().catch(() => {});
-  await requestNotificationPermission().catch(() => {});
-  const refreshed = await checkAllPermissions();
-  const grantedCount = Object.values(refreshed).filter(v => v === 'granted').length;
-  return {
-    statuses: refreshed,
-    message: `Permissions synced: ${grantedCount} of ${PERMISSION_DEFINITIONS.length} active.`
+    success: false,
+    status: 'unsupported',
+    message: `${def.name} requires Android APK runtime.`
   };
 }
 
@@ -803,6 +808,40 @@ export function openAndroidAppSettingsGuide(): void {
   openAndroidSettings('android.settings.APPLICATION_DETAILS_SETTINGS');
 }
 
+/**
+ * Checks location permission silently without triggering an OS permission dialog.
+ */
+export async function checkLocationPermissionSilent(): Promise<PermissionStatusState> {
+  if (typeof window === 'undefined') return 'unsupported';
+  const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin?.checkAllNativePermissions) {
+    try {
+      const snap = await nativePlugin.checkAllNativePermissions();
+      if (snap?.fine_location === 'granted' || snap?.coarse_location === 'granted') {
+        return 'granted';
+      }
+      if (snap?.fine_location === 'permanently_denied' && snap?.coarse_location === 'permanently_denied') {
+        return 'permanently_denied';
+      }
+      return 'prompt';
+    } catch {}
+  }
+
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    return 'unsupported';
+  }
+  if (navigator.permissions?.query) {
+    try {
+      const geo = await navigator.permissions.query({ name: 'geolocation' as PermissionName });
+      if (geo.state === 'granted') return 'granted';
+      if (geo.state === 'denied') return 'permanently_denied';
+      return 'prompt';
+    } catch {}
+  }
+  const cached = localStorage.getItem(`${STORAGE_KEY_PREFIX}fine_location`) as PermissionStatusState | null;
+  return cached === 'granted' ? 'granted' : 'prompt';
+}
+
 export async function checkAndRequestLocationPermission(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   const nativePlugin = getNativeZuzuPlugin();
@@ -816,7 +855,7 @@ export async function checkAndRequestLocationPermission(): Promise<boolean> {
       if (nativePlugin.requestCorePermissions) {
         const requested = await nativePlugin.requestCorePermissions({ alias: 'location' });
         const granted = requested?.fine_location === 'granted' || requested?.coarse_location === 'granted';
-        localStorage.setItem(`${STORAGE_KEY_PREFIX}fine_location`, granted ? 'granted' : 'denied');
+        localStorage.setItem(`${STORAGE_KEY_PREFIX}fine_location`, granted ? 'granted' : mapNativeState(requested?.fine_location));
         return granted;
       }
     } catch {}
@@ -848,4 +887,5 @@ export function openExactAlarmSettings(): void {
     nativePlugin.openExactAlarmSettings().catch(() => {});
   }
 }
+
 

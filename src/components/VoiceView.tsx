@@ -28,7 +28,7 @@ import {
 } from '../utils/intentDetector';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
 import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
-import { checkMicrophonePermission, getNativeZuzuPlugin } from '../utils/permission';
+import { checkMicrophonePermission, getNativeZuzuPlugin, MicrophonePermissionState, openAndroidAppSettingsGuide } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import { executeConfirmedMessageIntent } from './NotesRemindersModal';
 import { streamUnifiedAiChat } from '../utils/apiConfig';
@@ -59,11 +59,13 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hasError, setHasError] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [statusMessage, setStatusMessage] = useState('Tap microphone to start voice session');
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [lastSources, setLastSources] = useState<SearchSourceItem[]>([]);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
+  const [micModalState, setMicModalState] = useState<MicrophonePermissionState>('prompt');
   const [pendingMessageDraft, setPendingMessageDraft] = useState<{
     recipient: string;
     text: string;
@@ -79,6 +81,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   const settingsRef = useRef(settings);
   const sessionRef = useRef(currentSession);
   const isCancelledRef = useRef(false);
+  const isStartingRef = useRef(false);
   const handleUserVoiceInputRef = useRef<(spokenText: string) => void>(() => {});
   const ensurePermissionAndStartRef = useRef<() => void>(() => {});
   const toggleOrbStateRef = useRef<() => void>(() => {});
@@ -150,6 +153,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
   // Start Speech Recognition via unified native Android + Web Speech + Cloud Transcription fallback
   const startListening = async () => {
+    setHasError(false);
     setErrorNotice(null);
     isCancelledRef.current = false;
     suppressContinuousOnceRef.current = false;
@@ -169,10 +173,12 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
     const latestSettings = settingsRef.current;
     try {
+      setStatusMessage('Preparing microphone...');
       setMicBusyForActiveSession(true);
       const controller = await startVoiceCapture({
         language: latestSettings.recognitionLanguage || 'auto',
         onStart: () => {
+          setHasError(false);
           setIsListening(true);
           setTranscript('');
           setStatusMessage('Listening to your voice...');
@@ -198,19 +204,28 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             setStatusMessage('No speech detected. Tap orb to speak again.');
           }
         },
-        onPermissionDenied: () => {
+        onPermissionDenied: async () => {
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
           setIsListening(false);
+          setHasError(true);
+          try {
+            const latestPerm = await checkMicrophonePermission();
+            setMicModalState(latestPerm === 'granted' ? 'denied' : latestPerm);
+          } catch {
+            setMicModalState('denied');
+          }
           setShowPermissionModal(true);
+          setStatusMessage('Microphone permission required');
           setErrorNotice('Microphone permission is required for voice conversation.');
         },
         onError: (msg) => {
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
           setIsListening(false);
+          setHasError(true);
           setErrorNotice(msg);
-          setStatusMessage('Tap microphone to try again');
+          setStatusMessage('Error • Tap orb to retry');
         }
       });
 
@@ -218,21 +233,32 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     } catch (err: any) {
       setMicBusyForActiveSession(false);
       setIsListening(false);
+      setHasError(true);
       setErrorNotice(err?.message || 'Microphone activation failed');
+      setStatusMessage('Error • Tap orb to retry');
     }
   };
 
   // Verify microphone permission and immediately open microphone listening
   const ensurePermissionAndStart = async () => {
+    if (isStartingRef.current) return;
+    isStartingRef.current = true;
     try {
-      const perm = await checkMicrophonePermission();
-      if (perm.state !== 'granted') {
-        setShowPermissionModal(true);
-        return;
-      }
-    } catch {}
+      setHasError(false);
+      setErrorNotice(null);
+      try {
+        const permState = await checkMicrophonePermission();
+        if (permState !== 'granted') {
+          setMicModalState(permState);
+          setShowPermissionModal(true);
+          return;
+        }
+      } catch {}
 
-    await startListening();
+      await startListening();
+    } finally {
+      isStartingRef.current = false;
+    }
   };
 
   // Listen for wake-word auto-start and orb toggle events
@@ -295,6 +321,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     stopSpeaking();
     setIsSpeaking(false);
     setIsProcessing(false);
+    setHasError(false);
+    setErrorNotice(null);
     setStatusMessage('Voice interaction cancelled.');
     playHapticSound('listen_stop');
   };
@@ -364,6 +392,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   const handleUserVoiceInput = async (spokenText: string) => {
     if (!spokenText.trim()) return;
 
+    setHasError(false);
+    setErrorNotice(null);
     setIsProcessing(true);
     setStatusMessage('Processing speech intent...');
     setLastSources([]);
@@ -575,8 +605,9 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
       if (aiResult.isError) {
         setIsProcessing(false);
+        setHasError(true);
         setErrorNotice(aiResult.reply);
-        setStatusMessage('Gemini API error');
+        setStatusMessage('Gemini API error • Tap orb to retry');
         if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
           onRequestApiKeyModal('Voice Studio');
         }
@@ -606,7 +637,9 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         return;
       }
       setIsProcessing(false);
+      setHasError(true);
       setErrorNotice(err?.message || 'Failed to get AI voice response.');
+      setStatusMessage('Error • Tap orb to retry');
     } finally {
       aiAbortControllerRef.current = null;
     }
@@ -649,7 +682,15 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     }
   };
 
-  const currentOrbState: OrbState = isSpeaking ? 'speaking' : isProcessing ? 'thinking' : isListening ? 'listening' : 'idle';
+  const currentOrbState: OrbState = isSpeaking
+    ? 'speaking'
+    : isProcessing
+    ? 'thinking'
+    : isListening
+    ? 'listening'
+    : hasError
+    ? 'error'
+    : 'idle';
 
   return (
     <div className="flex-1 flex flex-col h-full bg-gradient-to-b from-[#eef0fc] via-[#f5f3ff] to-[#faf8ff] text-slate-800 relative overflow-hidden select-none">
@@ -726,7 +767,11 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             }
           />
 
-          <div className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/80 border border-white shadow-sm text-xs font-semibold text-slate-700">
+          <div className={`mt-3 inline-flex items-center gap-2 px-4 py-1.5 rounded-full border shadow-sm text-xs font-semibold ${
+            currentOrbState === 'error'
+              ? 'bg-rose-50 border-rose-200 text-rose-800'
+              : 'bg-white/80 border-white text-slate-700'
+          }`}>
             <span
               className={`w-2 h-2 rounded-full ${
                 isListening
@@ -735,6 +780,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
                   ? 'bg-purple-600 animate-pulse'
                   : isProcessing
                   ? 'bg-amber-500 animate-spin'
+                  : hasError
+                  ? 'bg-rose-500 animate-pulse'
                   : 'bg-slate-400'
               }`}
             />
@@ -745,6 +792,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
                 ? 'SPEAKING... • TAP TO INTERRUPT'
                 : isProcessing
                 ? 'THINKING...'
+                : hasError
+                ? 'ERROR • TAP ORB TO RETRY'
                 : 'ZUZU AI ACTIVE • TAP ORB TO SPEAK'}
             </span>
           </div>
@@ -835,9 +884,29 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         )}
 
         {errorNotice && (
-          <div className="mt-3 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs flex items-center gap-2 max-w-sm">
-            <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-500" />
-            <span>{errorNotice}</span>
+          <div className="mt-3 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs space-y-2 max-w-sm w-full">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-500 mt-0.5" />
+              <span className="flex-1 leading-snug">{errorNotice}</span>
+            </div>
+            <div className="flex items-center gap-2 justify-end">
+              {(/permission|denied|blocked/i.test(errorNotice) || micModalState === 'permanently_denied') && (
+                <button
+                  type="button"
+                  onClick={() => openAndroidAppSettingsGuide()}
+                  className="px-2.5 py-1 rounded-lg bg-white border border-rose-200 text-rose-700 text-[11px] font-bold hover:bg-rose-100 transition-colors"
+                >
+                  Open App Settings
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => ensurePermissionAndStart()}
+                className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold transition-colors"
+              >
+                Retry Voice
+              </button>
+            </div>
           </div>
         )}
 
@@ -900,6 +969,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       {/* Android Microphone Permission Modal */}
       <MicrophonePermissionModal
         isOpen={showPermissionModal}
+        initialState={micModalState}
         onClose={() => setShowPermissionModal(false)}
         onPermissionGranted={() => {
           setShowPermissionModal(false);

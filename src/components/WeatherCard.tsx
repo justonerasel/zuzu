@@ -13,7 +13,7 @@ import {
   AlertCircle,
   Navigation
 } from 'lucide-react';
-import { checkAndRequestLocationPermission } from '../utils/permission';
+import { checkAndRequestLocationPermission, checkLocationPermissionSilent } from '../utils/permission';
 
 interface WeatherData {
   city: string;
@@ -215,21 +215,32 @@ export const WeatherCard: React.FC = () => {
     );
   };
 
-  // On initial mount, acquire device GPS location immediately
+  // On initial mount, restore cache or fetch live GPS only if location permission is already granted (no startup prompt)
   useEffect(() => {
-    // Attempt cached restore first for instant UI responsiveness
-    try {
-      const cached = localStorage.getItem(STORAGE_LAST_GPS_KEY);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed.lat && parsed.lon && Date.now() - (parsed.timestamp || 0) < 1800000) {
-          fetchWeatherForGPS(parsed.lat, parsed.lon, parsed.city || 'Current Location');
-          return;
+    let active = true;
+    (async () => {
+      try {
+        const cached = localStorage.getItem(STORAGE_LAST_GPS_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed.lat && parsed.lon && Date.now() - (parsed.timestamp || 0) < 1800000) {
+            fetchWeatherForGPS(parsed.lat, parsed.lon, parsed.city || 'Current Location');
+            return;
+          }
         }
-      }
-    } catch {}
+      } catch {}
 
-    acquireGPSWeather();
+      const silentState = await checkLocationPermissionSilent();
+      if (!active) return;
+      if (silentState === 'granted') {
+        acquireGPSWeather();
+      } else {
+        setIsLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const renderWeatherIcon = () => {
@@ -355,7 +366,20 @@ export const WeatherCard: React.FC = () => {
           <RefreshCw className="w-4 h-4 animate-spin text-purple-600" />
           <span>Acquiring live device GPS location...</span>
         </div>
-      ) : null}
+      ) : (
+        <div className="py-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs text-slate-600">
+            <MapPin className="w-4 h-4 text-purple-600 flex-shrink-0" />
+            <span>Enable location to show live local weather</span>
+          </div>
+          <button
+            onClick={acquireGPSWeather}
+            className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-bold flex-shrink-0 transition-colors"
+          >
+            Enable GPS
+          </button>
+        </div>
+      )}
 
       {/* Permission or Connection Notice if error occurred */}
       {errorNotice && (

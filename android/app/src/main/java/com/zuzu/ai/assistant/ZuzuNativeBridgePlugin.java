@@ -7,6 +7,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -31,6 +32,7 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.util.Base64;
 
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
@@ -73,14 +75,15 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Capacitor Native Bridge for Zuzu AI.
  * Provides:
  * - Silent Android Foreground Service control
- * - Essential runtime permissions
+ * - Minimal, strictly justified runtime & system permissions
  * - Lightweight AudioRecord custom trigger monitor (Mouth Whistle & Finger Snap)
- * - Native Android SpeechRecognizer (Bangla bn-BD & English en-US)
+ * - Native Android SpeechRecognizer (Bangla bn-BD & English en-US) with session-ID isolation
  * - Native Android TextToSpeech with queued cold-start & main-thread event safety
  * - Native app launcher, external URL opener, system settings, camera, media save/share, and reminder notifications
  */
@@ -89,11 +92,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
         permissions = {
                 @Permission(strings = { Manifest.permission.RECORD_AUDIO }, alias = "microphone"),
                 @Permission(strings = { Manifest.permission.POST_NOTIFICATIONS }, alias = "notifications"),
-                @Permission(strings = { Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN }, alias = "bluetooth"),
                 @Permission(strings = { Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION }, alias = "location"),
-                @Permission(strings = { Manifest.permission.CALL_PHONE }, alias = "phone"),
-                @Permission(strings = { Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS }, alias = "contacts"),
-                @Permission(strings = { Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE }, alias = "storage"),
+                @Permission(strings = { Manifest.permission.READ_MEDIA_IMAGES }, alias = "media_images"),
+                @Permission(strings = { Manifest.permission.READ_EXTERNAL_STORAGE }, alias = "storage"),
                 @Permission(strings = { Manifest.permission.CAMERA }, alias = "camera")
         }
 )
@@ -115,6 +116,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     private SpeechRecognizer speechRecognizer;
     private final Queue<String> pendingSpeechLocales = new ArrayDeque<>();
     private final AtomicBoolean isSpeechSessionActive = new AtomicBoolean(false);
+    private final AtomicLong speechSessionCounter = new AtomicLong(0L);
 
     private final AtomicBoolean isNativeAudioCaptureActive = new AtomicBoolean(false);
     private Thread nativeAudioCaptureThread;
@@ -477,32 +479,43 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         call.resolve(buildPermissionSnapshot());
     }
 
+    private static final String PREFS_ASKED_PERMS = "zuzu_asked_perms_v1";
+
+    private void markPermRequested(Context ctx, String permission) {
+        if (ctx == null || permission == null) return;
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS_ASKED_PERMS, Context.MODE_PRIVATE);
+        prefs.edit().putBoolean(permission, true).apply();
+    }
+
+    private String resolveRuntimeState(Context ctx, String permission) {
+        if (hasPerm(ctx, permission)) {
+            return "granted";
+        }
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS_ASKED_PERMS, Context.MODE_PRIVATE);
+        boolean askedBefore = prefs.getBoolean(permission, false);
+        if (askedBefore && getActivity() != null && !ActivityCompat.shouldShowRequestPermissionRationale(getActivity(), permission)) {
+            return "permanently_denied";
+        }
+        return "prompt";
+    }
+
     private JSObject buildPermissionSnapshot() {
         Context ctx = getContext();
         JSObject res = new JSObject();
 
-        res.put("microphone", hasPerm(ctx, Manifest.permission.RECORD_AUDIO) ? "granted" : "prompt");
-        res.put("modify_audio", "granted");
+        // Microphone & Audio Routing
+        res.put("microphone", resolveRuntimeState(ctx, Manifest.permission.RECORD_AUDIO));
+        res.put("modify_audio", hasPerm(ctx, Manifest.permission.MODIFY_AUDIO_SETTINGS) ? "granted" : "prompt");
 
-        res.put("bluetooth", "granted");
-        res.put("bluetooth_admin", "granted");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            res.put("bluetooth_connect", hasPerm(ctx, Manifest.permission.BLUETOOTH_CONNECT) ? "granted" : "prompt");
-            res.put("bluetooth_scan", hasPerm(ctx, Manifest.permission.BLUETOOTH_SCAN) ? "granted" : "prompt");
-        } else {
-            res.put("bluetooth_connect", "granted");
-            res.put("bluetooth_scan", "granted");
-        }
-
-        res.put("internet", "granted");
-        res.put("access_network", "granted");
-        res.put("access_wifi", "granted");
+        // Network & Background Service (Manifest-level capabilities)
+        res.put("internet", hasPerm(ctx, Manifest.permission.INTERNET) ? "granted" : "denied");
+        res.put("access_network", hasPerm(ctx, Manifest.permission.ACCESS_NETWORK_STATE) ? "granted" : "denied");
         res.put("foreground_service", "granted");
         res.put("fg_microphone", "granted");
-        res.put("fg_media", "granted");
-        res.put("wake_lock", "granted");
-        res.put("boot_completed", "granted");
+        res.put("wake_lock", hasPerm(ctx, Manifest.permission.WAKE_LOCK) ? "granted" : "denied");
+        res.put("boot_completed", hasPerm(ctx, Manifest.permission.RECEIVE_BOOT_COMPLETED) ? "granted" : "denied");
 
+        // Battery Optimization Exemption (Real OS PowerManager check)
         boolean ignoringBattery = true;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
@@ -510,52 +523,36 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         }
         res.put("battery_opt", ignoringBattery ? "granted" : "system_required");
 
+        // Notifications (Android 13+ runtime permission; pre-13 system notification channel status)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            res.put("notifications", hasPerm(ctx, Manifest.permission.POST_NOTIFICATIONS) ? "granted" : "prompt");
+            res.put("notifications", resolveRuntimeState(ctx, Manifest.permission.POST_NOTIFICATIONS));
         } else {
-            res.put("notifications", NotificationManagerCompat.from(ctx).areNotificationsEnabled() ? "granted" : "prompt");
+            res.put("notifications", NotificationManagerCompat.from(ctx).areNotificationsEnabled() ? "granted" : "permanently_denied");
         }
-        res.put("vibrate", "granted");
+        res.put("vibrate", hasPerm(ctx, Manifest.permission.VIBRATE) ? "granted" : "denied");
 
-        boolean canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(ctx);
-        res.put("system_alert_window", canOverlay ? "granted" : "system_required");
+        // Alarms & Reminders
+        res.put("exact_alarm", ZuzuReminderReceiver.canScheduleExact(ctx) ? "granted" : "system_required");
 
-        boolean canWriteSettings = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(ctx);
-        res.put("write_settings", canWriteSettings ? "granted" : "system_required");
+        // Location (Real live GPS weather)
+        res.put("fine_location", resolveRuntimeState(ctx, Manifest.permission.ACCESS_FINE_LOCATION));
+        res.put("coarse_location", resolveRuntimeState(ctx, Manifest.permission.ACCESS_COARSE_LOCATION));
 
-        res.put("expand_status_bar", "granted");
-        res.put("query_all_packages", "granted");
+        // Camera (Assistant & WebView video capture)
+        res.put("camera", resolveRuntimeState(ctx, Manifest.permission.CAMERA));
 
-        boolean canInstall = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            canInstall = ctx.getPackageManager().canRequestPackageInstalls();
-        }
-        res.put("request_install_packages", canInstall ? "granted" : "system_required");
-
-        res.put("fine_location", hasPerm(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ? "granted" : "prompt");
-        res.put("coarse_location", hasPerm(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ? "granted" : "prompt");
-        res.put("call_phone", hasPerm(ctx, Manifest.permission.CALL_PHONE) ? "granted" : "prompt");
-        res.put("read_contacts", hasPerm(ctx, Manifest.permission.READ_CONTACTS) ? "granted" : "prompt");
-        res.put("write_contacts", hasPerm(ctx, Manifest.permission.WRITE_CONTACTS) ? "granted" : "prompt");
-
+        // Files & Media (Android 13+ READ_MEDIA_IMAGES vs Android <=12 READ_EXTERNAL_STORAGE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            res.put("read_storage", "granted");
-            res.put("write_storage", "granted");
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            res.put("read_storage", hasPerm(ctx, Manifest.permission.READ_EXTERNAL_STORAGE) ? "granted" : "prompt");
-            res.put("write_storage", "granted");
+            res.put("media_images", resolveRuntimeState(ctx, Manifest.permission.READ_MEDIA_IMAGES));
         } else {
-            res.put("read_storage", hasPerm(ctx, Manifest.permission.READ_EXTERNAL_STORAGE) ? "granted" : "prompt");
-            res.put("write_storage", hasPerm(ctx, Manifest.permission.WRITE_EXTERNAL_STORAGE) ? "granted" : "prompt");
+            res.put("media_images", resolveRuntimeState(ctx, Manifest.permission.READ_EXTERNAL_STORAGE));
         }
-
-        res.put("camera", hasPerm(ctx, Manifest.permission.CAMERA) ? "granted" : "prompt");
         return res;
     }
 
     @PluginMethod
     public void requestCorePermissions(PluginCall call) {
-        String alias = call.getString("alias", "all");
+        String alias = call.getString("alias", "");
         Context ctx = getContext();
 
         if ("microphone".equals(alias)) {
@@ -563,6 +560,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                 call.resolve(buildPermissionSnapshot());
                 return;
             }
+            markPermRequested(ctx, Manifest.permission.RECORD_AUDIO);
             requestPermissionForAlias("microphone", call, "permCallback");
         } else if ("notifications".equals(alias)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -570,82 +568,46 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                     call.resolve(buildPermissionSnapshot());
                     return;
                 }
+                markPermRequested(ctx, Manifest.permission.POST_NOTIFICATIONS);
                 requestPermissionForAlias("notifications", call, "permCallback");
-            } else {
-                call.resolve(buildPermissionSnapshot());
-            }
-        } else if ("bluetooth".equals(alias)) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (hasPerm(ctx, Manifest.permission.BLUETOOTH_CONNECT)
-                        && hasPerm(ctx, Manifest.permission.BLUETOOTH_SCAN)) {
-                    call.resolve(buildPermissionSnapshot());
-                    return;
-                }
-                requestPermissionForAlias("bluetooth", call, "permCallback");
             } else {
                 call.resolve(buildPermissionSnapshot());
             }
         } else if ("location".equals(alias)) {
             if (hasPerm(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
-                    && hasPerm(ctx, Manifest.permission.ACCESS_COARSE_LOCATION)) {
+                    || hasPerm(ctx, Manifest.permission.ACCESS_COARSE_LOCATION)) {
                 call.resolve(buildPermissionSnapshot());
                 return;
             }
+            markPermRequested(ctx, Manifest.permission.ACCESS_FINE_LOCATION);
+            markPermRequested(ctx, Manifest.permission.ACCESS_COARSE_LOCATION);
             requestPermissionForAlias("location", call, "permCallback");
-        } else if ("phone".equals(alias)) {
-            if (hasPerm(ctx, Manifest.permission.CALL_PHONE)) {
-                call.resolve(buildPermissionSnapshot());
-                return;
-            }
-            requestPermissionForAlias("phone", call, "permCallback");
-        } else if ("contacts".equals(alias)) {
-            if (hasPerm(ctx, Manifest.permission.READ_CONTACTS)
-                    && hasPerm(ctx, Manifest.permission.WRITE_CONTACTS)) {
-                call.resolve(buildPermissionSnapshot());
-                return;
-            }
-            requestPermissionForAlias("contacts", call, "permCallback");
-        } else if ("storage".equals(alias)) {
+        } else if ("media_images".equals(alias) || "storage".equals(alias)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                call.resolve(buildPermissionSnapshot());
-                return;
+                if (hasPerm(ctx, Manifest.permission.READ_MEDIA_IMAGES)) {
+                    call.resolve(buildPermissionSnapshot());
+                    return;
+                }
+                markPermRequested(ctx, Manifest.permission.READ_MEDIA_IMAGES);
+                requestPermissionForAlias("media_images", call, "permCallback");
+            } else {
+                if (hasPerm(ctx, Manifest.permission.READ_EXTERNAL_STORAGE)) {
+                    call.resolve(buildPermissionSnapshot());
+                    return;
+                }
+                markPermRequested(ctx, Manifest.permission.READ_EXTERNAL_STORAGE);
+                requestPermissionForAlias("storage", call, "permCallback");
             }
-            requestPermissionForAlias("storage", call, "permCallback");
         } else if ("camera".equals(alias)) {
             if (hasPerm(ctx, Manifest.permission.CAMERA)) {
                 call.resolve(buildPermissionSnapshot());
                 return;
             }
+            markPermRequested(ctx, Manifest.permission.CAMERA);
             requestPermissionForAlias("camera", call, "permCallback");
         } else {
-            List<String> neededAliases = new ArrayList<>();
-            if (!hasPerm(ctx, Manifest.permission.RECORD_AUDIO)) neededAliases.add("microphone");
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                    && !hasPerm(ctx, Manifest.permission.POST_NOTIFICATIONS)) {
-                neededAliases.add("notifications");
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-                    && (!hasPerm(ctx, Manifest.permission.BLUETOOTH_CONNECT)
-                    || !hasPerm(ctx, Manifest.permission.BLUETOOTH_SCAN))) {
-                neededAliases.add("bluetooth");
-            }
-            if (!hasPerm(ctx, Manifest.permission.ACCESS_FINE_LOCATION)) neededAliases.add("location");
-            if (!hasPerm(ctx, Manifest.permission.CALL_PHONE)) neededAliases.add("phone");
-            if (!hasPerm(ctx, Manifest.permission.READ_CONTACTS)
-                    || !hasPerm(ctx, Manifest.permission.WRITE_CONTACTS)) {
-                neededAliases.add("contacts");
-            }
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-                    && !hasPerm(ctx, Manifest.permission.READ_EXTERNAL_STORAGE)) {
-                neededAliases.add("storage");
-            }
-            if (!hasPerm(ctx, Manifest.permission.CAMERA)) neededAliases.add("camera");
-
-            if (neededAliases.isEmpty()) {
-                call.resolve(buildPermissionSnapshot());
-            } else {
-                requestPermissionForAliases(neededAliases.toArray(new String[0]), call, "permCallback");
-            }
+            // Do not bulk-request unrelated permissions at once; return current real status.
+            call.resolve(buildPermissionSnapshot());
         }
     }
 
@@ -705,8 +667,13 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         }
 
         final String langTag = call.getString("language", "en-US");
+        final long sessionId = speechSessionCounter.incrementAndGet();
 
         mainHandler.post(() -> {
+            if (sessionId != speechSessionCounter.get()) {
+                call.reject("Speech session superseded.");
+                return;
+            }
             if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
                 call.reject("Speech recognition service unavailable on this device.", "UNAVAILABLE");
                 return;
@@ -720,14 +687,14 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             if (firstLocale == null || firstLocale.trim().isEmpty()) {
                 firstLocale = "en-US";
             }
-            startSpeechWithLocale(ctx, firstLocale, call);
+            startSpeechWithLocale(ctx, firstLocale, sessionId, call);
         });
     }
 
-    private void startSpeechWithLocale(Context ctx, String resolvedLang, PluginCall initialCall) {
+    private void startSpeechWithLocale(Context ctx, String resolvedLang, long sessionId, PluginCall initialCall) {
         try {
             destroySpeechRecognizerInternal();
-            if (!isSpeechSessionActive.get()) {
+            if (!isSpeechSessionActive.get() || sessionId != speechSessionCounter.get()) {
                 if (initialCall != null) {
                     initialCall.reject("Speech session cancelled.");
                 }
@@ -738,7 +705,12 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             speechRecognizer.setRecognitionListener(new RecognitionListener() {
                 @Override
                 public void onReadyForSpeech(Bundle params) {
-                    mainHandler.post(() -> notifyListeners("nativeSpeechReady", new JSObject()));
+                    if (sessionId != speechSessionCounter.get()) return;
+                    mainHandler.post(() -> {
+                        if (sessionId == speechSessionCounter.get()) {
+                            notifyListeners("nativeSpeechReady", new JSObject());
+                        }
+                    });
                 }
 
                 @Override
@@ -752,18 +724,24 @@ public class ZuzuNativeBridgePlugin extends Plugin {
 
                 @Override
                 public void onEndOfSpeech() {
-                    mainHandler.post(() -> notifyListeners("nativeSpeechEnd", new JSObject()));
+                    if (sessionId != speechSessionCounter.get()) return;
+                    mainHandler.post(() -> {
+                        if (sessionId == speechSessionCounter.get()) {
+                            notifyListeners("nativeSpeechEnd", new JSObject());
+                        }
+                    });
                 }
 
                 @Override
                 public void onError(int error) {
+                    if (sessionId != speechSessionCounter.get()) return;
                     destroySpeechRecognizerInternal();
 
                     boolean isLangErr = (error == 12 || error == 13);
                     if (isLangErr && isSpeechSessionActive.get() && !pendingSpeechLocales.isEmpty()) {
                         String nextLocale = pendingSpeechLocales.poll();
                         if (nextLocale != null && !nextLocale.trim().isEmpty()) {
-                            mainHandler.postDelayed(() -> startSpeechWithLocale(ctx, nextLocale, null), 60);
+                            mainHandler.postDelayed(() -> startSpeechWithLocale(ctx, nextLocale, sessionId, null), 60);
                             return;
                         }
                     }
@@ -779,11 +757,16 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                     err.put("code", error);
                     err.put("message", mapSpeechError(error));
                     err.put("fallbackSuggested", fallbackSuggested);
-                    mainHandler.post(() -> notifyListeners("nativeSpeechError", err));
+                    mainHandler.post(() -> {
+                        if (sessionId == speechSessionCounter.get()) {
+                            notifyListeners("nativeSpeechError", err);
+                        }
+                    });
                 }
 
                 @Override
                 public void onResults(Bundle results) {
+                    if (sessionId != speechSessionCounter.get()) return;
                     isSpeechSessionActive.set(false);
                     pendingSpeechLocales.clear();
                     destroySpeechRecognizerInternal();
@@ -794,11 +777,16 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                     String text = (matches != null && !matches.isEmpty()) ? matches.get(0) : "";
                     JSObject payload = new JSObject();
                     payload.put("text", text != null ? text : "");
-                    mainHandler.post(() -> notifyListeners("nativeSpeechResult", payload));
+                    mainHandler.post(() -> {
+                        if (sessionId == speechSessionCounter.get()) {
+                            notifyListeners("nativeSpeechResult", payload);
+                        }
+                    });
                 }
 
                 @Override
                 public void onPartialResults(Bundle partialResults) {
+                    if (sessionId != speechSessionCounter.get()) return;
                     ArrayList<String> matches = partialResults != null
                             ? partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             : null;
@@ -806,7 +794,11 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                     if (text != null && !text.isEmpty()) {
                         JSObject payload = new JSObject();
                         payload.put("text", text);
-                        mainHandler.post(() -> notifyListeners("nativeSpeechPartial", payload));
+                        mainHandler.post(() -> {
+                            if (sessionId == speechSessionCounter.get()) {
+                                notifyListeners("nativeSpeechPartial", payload);
+                            }
+                        });
                     }
                 }
 
@@ -864,6 +856,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
 
     @PluginMethod
     public void cancelNativeSpeech(PluginCall call) {
+        speechSessionCounter.incrementAndGet();
         mainHandler.post(() -> {
             isSpeechSessionActive.set(false);
             pendingSpeechLocales.clear();
@@ -1580,15 +1573,10 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                 } else {
                     intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
                 }
-            } else if ("android.settings.action.MANAGE_OVERLAY_PERMISSION".equals(action)
-                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse(pkgUri));
-            } else if ("android.settings.action.MANAGE_WRITE_SETTINGS".equals(action)
-                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse(pkgUri));
-            } else if ("android.settings.MANAGE_UNKNOWN_APP_SOURCES".equals(action)
+            } else if ("android.settings.APP_NOTIFICATION_SETTINGS".equals(action)
                     && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse(pkgUri));
+                intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                intent.putExtra(Settings.EXTRA_APP_PACKAGE, ctx.getPackageName());
             } else {
                 intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse(pkgUri));
             }
@@ -1624,8 +1612,8 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             call.resolve(ret);
         } catch (Exception e) {
             JSObject ret = new JSObject();
-            ret.put("versionName", "3.7.0");
-            ret.put("versionCode", 370);
+            ret.put("versionName", "3.8.0");
+            ret.put("versionCode", 380);
             call.resolve(ret);
         }
     }

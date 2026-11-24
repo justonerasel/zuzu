@@ -116,7 +116,7 @@ export const ScreenAssistantModal: React.FC<ScreenAssistantModalProps> = ({
       ctx.fillText('• Weather Module: GPS Live Location', 45, 300);
       ctx.fillText('• Audio Engine: Dual Voice (Kore Melodic)', 45, 340);
       ctx.fillText(`• System Version: v${APP_VERSION} (Android 9.0 - Android 16)`, 45, 380);
-      ctx.fillText('• Permissions: 30 Android System Permissions: Ready', 45, 420);
+      ctx.fillText('• Permissions: Smart Minimal Android Permissions: Ready', 45, 420);
 
       ctx.fillStyle = '#1e293b';
       ctx.fillRect(20, 510, canvas.width - 40, 420);

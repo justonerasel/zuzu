@@ -21,7 +21,7 @@ import { ParticleOrb, OrbState } from './ParticleOrb';
 import { BengaliMarqueeWidget } from './BengaliMarqueeWidget';
 import { WeatherCard } from './WeatherCard';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
-import { checkMicrophonePermission, getNativeZuzuPlugin } from '../utils/permission';
+import { checkMicrophonePermission, getNativeZuzuPlugin, MicrophonePermissionState } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import {
   detectSleepStopIntent,
@@ -71,6 +71,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [lastSources, setLastSources] = useState<SearchSourceItem[]>([]);
   const [isVoiceActive, setIsVoiceActive] = useState<boolean>(false);
   const [showPermissionModal, setShowPermissionModal] = useState<boolean>(false);
+  const [micModalState, setMicModalState] = useState<MicrophonePermissionState>('prompt');
 
   // 3. Quick Action Modals
   const [showScreenModal, setShowScreenModal] = useState<boolean>(false);
@@ -97,6 +98,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const suppressContinuousOnceRef = useRef<boolean>(false);
   const currentSessionRef = useRef<VoiceSession | null>(null);
   const isCancelledRef = useRef<boolean>(false);
+  const isStartingVoiceRef = useRef<boolean>(false);
   const settingsRef = useRef<AppSettings>(settings);
 
   useEffect(() => {
@@ -179,6 +181,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
 
     try {
+      setStatusText('OPENING MIC...');
       setMicBusyForActiveSession(true);
       const controller = await startVoiceCapture({
         language: latestSettings.recognitionLanguage || 'auto',
@@ -205,19 +208,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           setStatusText('ZUZU AI OFF • TAP TO START');
           setIsVoiceActive(false);
         },
-        onPermissionDenied: () => {
+        onPermissionDenied: async () => {
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
+          try {
+            const latestPerm = await checkMicrophonePermission();
+            setMicModalState(latestPerm === 'granted' ? 'denied' : latestPerm);
+          } catch {
+            setMicModalState('denied');
+          }
           setShowPermissionModal(true);
-          setOrbState('idle');
-          setStatusText('ZUZU AI OFF • TAP TO START');
+          setOrbState('error');
+          setStatusText('MICROPHONE NEEDED • TAP TO ENABLE');
           setIsVoiceActive(false);
         },
         onError: (msg) => {
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
-          setOrbState('idle');
-          setStatusText('TAP TO RETRY VOICE');
+          setOrbState('error');
+          setStatusText('ERROR • TAP TO RETRY');
           setLastAiResponse(msg);
           setIsVoiceActive(false);
         }
@@ -226,38 +235,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     } catch (err: any) {
       setMicBusyForActiveSession(false);
       setIsVoiceActive(false);
+      setOrbState('error');
+      setStatusText('ERROR • TAP TO RETRY');
+      setLastAiResponse(err?.message || 'Could not start voice capture. Tap the Orb to retry.');
       console.warn('Recognition start error:', err);
     }
   };
 
   // Immediately verify microphone permission and start listening
   const startVoiceInteraction = async () => {
-    isCancelledRef.current = false;
-    suppressContinuousOnceRef.current = false;
-    setTranscriptText('');
-    setLastAiResponse(null);
-    setLastSources([]);
-    stopSpeaking();
-
-    if (aiAbortControllerRef.current) {
-      aiAbortControllerRef.current.abort();
-      aiAbortControllerRef.current = null;
-    }
-
-    if (captureControllerRef.current) {
-      captureControllerRef.current.cancel();
-      captureControllerRef.current = null;
-    }
+    if (isStartingVoiceRef.current) return;
+    isStartingVoiceRef.current = true;
 
     try {
-      const perm = await checkMicrophonePermission();
-      if (perm.state !== 'granted') {
-        setShowPermissionModal(true);
-        return;
-      }
-    } catch {}
+      isCancelledRef.current = false;
+      suppressContinuousOnceRef.current = false;
+      setTranscriptText('');
+      setLastAiResponse(null);
+      setLastSources([]);
+      stopSpeaking();
 
-    await beginMicCapture();
+      if (aiAbortControllerRef.current) {
+        aiAbortControllerRef.current.abort();
+        aiAbortControllerRef.current = null;
+      }
+
+      if (captureControllerRef.current) {
+        captureControllerRef.current.cancel();
+        captureControllerRef.current = null;
+      }
+
+      try {
+        const permState = await checkMicrophonePermission();
+        if (permState !== 'granted') {
+          setMicModalState(permState);
+          setShowPermissionModal(true);
+          return;
+        }
+      } catch {}
+
+      await beginMicCapture();
+    } finally {
+      isStartingVoiceRef.current = false;
+    }
   };
 
   // Stop / Cancel voice interaction
@@ -454,8 +474,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       if (aiResult.isError) {
         setLastAiResponse(aiResult.reply);
-        setOrbState('idle');
-        setStatusText('GEMINI API ERROR');
+        setOrbState('error');
+        setStatusText('ERROR • TAP TO RETRY');
         setIsVoiceActive(false);
         if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
           onRequestApiKeyModal('Voice Assistant');
@@ -490,8 +510,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (err?.name === 'AbortError' || isCancelledRef.current) {
         return;
       }
-      setOrbState('idle');
-      setStatusText('ZUZU AI OFF • TAP TO START');
+      setOrbState('error');
+      setStatusText('ERROR • TAP TO RETRY');
       setLastAiResponse(err?.message || 'Could not reach Gemini service.');
       setIsVoiceActive(false);
     } finally {
@@ -536,8 +556,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         }
       },
       onError: () => {
-        setOrbState('idle');
-        setStatusText('ZUZU AI OFF • TAP TO START');
+        setOrbState('error');
+        setStatusText('AUDIO ERROR • TAP TO RETRY');
         setIsVoiceActive(false);
       }
     });
@@ -633,6 +653,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 ? 'bg-pink-50 border-pink-300 text-pink-800 shadow-pink-200/50 scale-105'
                 : orbState === 'thinking'
                 ? 'bg-purple-100 border-purple-300 text-purple-800 shadow-purple-200/50 scale-105'
+                : orbState === 'error'
+                ? 'bg-rose-50 border-rose-300 text-rose-800 shadow-rose-200/50'
                 : 'bg-white/80 hover:bg-white border-purple-200/80 text-purple-900 shadow-purple-900/5'
             }`}
           >
@@ -644,6 +666,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   ? 'bg-pink-500 animate-pulse'
                   : orbState === 'thinking'
                   ? 'bg-purple-600 animate-spin'
+                  : orbState === 'error'
+                  ? 'bg-rose-500 animate-pulse'
                   : 'bg-purple-400'
               }`}
             />
@@ -886,6 +910,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       <MicrophonePermissionModal
         isOpen={showPermissionModal}
+        initialState={micModalState}
         onClose={() => setShowPermissionModal(false)}
         onPermissionGranted={() => {
           setShowPermissionModal(false);

@@ -88,7 +88,7 @@ export default function App() {
 
     checkMicrophonePermission()
       .then((perm) => {
-        if (perm.state === 'granted') {
+        if (perm === 'granted') {
           syncBackgroundServicesWithSettings(getAppSettings());
         }
       })

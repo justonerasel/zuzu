@@ -192,18 +192,26 @@ export async function stopZuzuForegroundService(): Promise<void> {
   } catch {}
 }
 
-function stopNativeTriggerMonitor(): void {
+async function stopNativeTriggerMonitorAsync(): Promise<boolean> {
   const nativePlugin = getZuzuNativePlugin();
+  const wasRunning = nativeMonitorRunning;
   if (nativeTriggerHandle) {
     try {
       nativeTriggerHandle.remove();
     } catch {}
     nativeTriggerHandle = null;
   }
-  if (nativeMonitorRunning && nativePlugin?.stopAudioTriggerMonitor) {
-    nativePlugin.stopAudioTriggerMonitor().catch(() => {});
-  }
   nativeMonitorRunning = false;
+  if (wasRunning && nativePlugin?.stopAudioTriggerMonitor) {
+    try {
+      await nativePlugin.stopAudioTriggerMonitor();
+    } catch {}
+  }
+  return wasRunning;
+}
+
+function stopNativeTriggerMonitor(): void {
+  stopNativeTriggerMonitorAsync().catch(() => {});
 }
 
 async function startNativeTriggerMonitor(): Promise<boolean> {
@@ -302,6 +310,39 @@ export function setMicBusyForActiveSession(busy: boolean): void {
     }
   } else if (shouldRunAnyBackgroundMic()) {
     scheduleWakeMonitor(700);
+  }
+}
+
+/**
+ * Awaits clean release of any active background AudioRecord, Web VAD stream,
+ * or wake SpeechRecognizer before opening the active foreground Voice Orb microphone.
+ */
+export async function releaseBackgroundMicForActiveSession(): Promise<void> {
+  const hadActiveMic = Boolean(vadStream || nativeMonitorRunning || nativeWakeActive || wakeRecognition);
+  micBusyInActiveSession = true;
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
+  stopSilentVadGate();
+  const stoppedTrigger = await stopNativeTriggerMonitorAsync();
+  let stoppedWake = false;
+  if (nativeWakeActive) {
+    stoppedWake = true;
+    cleanupNativeWakeListeners();
+    try {
+      await getZuzuNativePlugin()?.cancelNativeSpeech?.();
+    } catch {}
+  }
+  if (wakeRecognition) {
+    stoppedWake = true;
+    try {
+      wakeRecognition.abort();
+    } catch {}
+    wakeRecognition = null;
+  }
+  if (hadActiveMic || stoppedTrigger || stoppedWake) {
+    await new Promise((resolve) => setTimeout(resolve, 65));
   }
 }
 

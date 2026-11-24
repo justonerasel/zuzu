@@ -1,5 +1,6 @@
 import { getNativeZuzuPlugin } from './permission';
 import { transcribeAudioWithGemini } from './apiConfig';
+import { releaseBackgroundMicForActiveSession } from './backgroundService';
 
 export interface VoiceCaptureOptions {
   language: 'auto' | 'en-US' | 'bn-BD';
@@ -15,6 +16,9 @@ export interface VoiceCaptureController {
   stop: () => void;
   cancel: () => void;
 }
+
+let activeCaptureCancelFn: (() => void) | null = null;
+let globalSpeechSeq = 0;
 
 function resolveRecognitionLanguage(lang: 'auto' | 'en-US' | 'bn-BD'): string {
   if (lang === 'bn-BD') return 'bn-BD';
@@ -45,13 +49,22 @@ function blobToBase64(blob: Blob): Promise<string> {
  */
 async function startCloudAudioRecordingFallback(params: {
   language: 'auto' | 'en-US' | 'bn-BD';
+  onListeningStarted?: () => void;
   onPartial?: (text: string) => void;
   onFinish: (text: string) => void;
   onPermissionDenied?: () => void;
   onError?: (message: string) => void;
   isCancelled: () => boolean;
 }): Promise<VoiceCaptureController> {
-  const { language, onPartial, onFinish, onPermissionDenied, onError, isCancelled } = params;
+  const {
+    language,
+    onListeningStarted,
+    onPartial,
+    onFinish,
+    onPermissionDenied,
+    onError,
+    isCancelled
+  } = params;
   const nativePlugin = getNativeZuzuPlugin();
 
   // Path A: Browser / WebView MediaRecorder with AudioContext silence auto-stop
@@ -181,8 +194,9 @@ async function startCloudAudioRecordingFallback(params: {
         }
       } catch {}
 
-      onPartial?.('Listening (Cloud Speech mode)...');
       recorder.start(250);
+      onListeningStarted?.();
+      onPartial?.('Listening (Cloud Speech mode)...');
       maxTimer = setTimeout(() => stopRecording(), 8500);
 
       return {
@@ -242,8 +256,13 @@ async function startCloudAudioRecordingFallback(params: {
     };
 
     try {
-      onPartial?.('Listening (Cloud Speech mode)...');
       await nativePlugin.startNativeAudioCapture();
+      if (isCancelled()) {
+        nativePlugin.stopNativeAudioCapture().catch(() => {});
+        return { stop: () => {}, cancel: () => {} };
+      }
+      onListeningStarted?.();
+      onPartial?.('Listening (Cloud Speech mode)...');
       maxTimer = setTimeout(() => {
         finishNativeCapture();
       }, 6500);
@@ -269,9 +288,11 @@ async function startCloudAudioRecordingFallback(params: {
 
 /**
  * Starts multi-tier Speech-to-Text capture:
- * 1. On Capacitor Android APK: uses native android.speech.SpeechRecognizer with locale fallback chain.
- * 2. Automatic Error 12/13 fallback: switches cleanly to audio capture + Gemini Cloud Transcription.
- * 3. On Web / Desktop Chrome/Edge: uses Web SpeechRecognition or Cloud Transcription fallback.
+ * 1. Releases any active background wake/VAD mic cleanly first.
+ * 2. On Capacitor Android APK: uses native android.speech.SpeechRecognizer with locale fallback chain
+ *    and fires onStart strictly when onReadyForSpeech (nativeSpeechReady) signals mic active.
+ * 3. Automatic Error 12/13 fallback: switches cleanly to audio capture + Gemini Cloud Transcription.
+ * 4. On Web / Desktop Chrome/Edge: uses Web SpeechRecognition or Cloud Transcription fallback.
  */
 export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<VoiceCaptureController> {
   const {
@@ -284,18 +305,37 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
     onError
   } = options;
 
+  // Cancel any prior lingering capture session cleanly before starting a new one
+  if (activeCaptureCancelFn) {
+    try {
+      activeCaptureCancelFn();
+    } catch {}
+    activeCaptureCancelFn = null;
+  }
+
+  const seq = ++globalSpeechSeq;
   const resolvedLang = resolveRecognitionLanguage(language);
   const nativePlugin = getNativeZuzuPlugin();
 
   let cancelled = false;
   let completed = false;
+  let started = false;
   let switchedToFallback = false;
   let latestTranscript = '';
   let fallbackController: VoiceCaptureController | null = null;
 
+  const isStale = () => cancelled || seq !== globalSpeechSeq;
+
+  const notifyStartedOnce = () => {
+    if (started || isStale()) return;
+    started = true;
+    onStart?.();
+  };
+
   const finishOnce = (text: string) => {
-    if (completed || cancelled) return;
+    if (completed || isStale()) return;
     completed = true;
+    if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
     const clean = text.trim();
     if (clean.length > 0) {
       onResult(clean);
@@ -303,6 +343,12 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
       onEmptyEnd?.();
     }
   };
+
+  // Ensure background wake word / trigger AudioRecord is cleanly released before capturing mic
+  await releaseBackgroundMicForActiveSession();
+  if (isStale()) {
+    return { stop: () => {}, cancel: () => {} };
+  }
 
   // 1. Native Android Capacitor SpeechRecognizer path
   if (nativePlugin?.startNativeSpeech) {
@@ -316,11 +362,39 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
       handles.length = 0;
     };
 
+    const controller: VoiceCaptureController = {
+      stop: () => {
+        if (fallbackController) {
+          fallbackController.stop();
+        } else {
+          nativePlugin.stopNativeSpeech?.().catch(() => {});
+        }
+      },
+      cancel: () => {
+        cancelled = true;
+        if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
+        cleanupNativeListeners();
+        if (fallbackController) {
+          fallbackController.cancel();
+        } else {
+          nativePlugin.cancelNativeSpeech?.().catch(() => {});
+        }
+      }
+    };
+    activeCaptureCancelFn = controller.cancel;
+
     try {
       if (nativePlugin.addListener) {
         handles.push(
+          await nativePlugin.addListener('nativeSpeechReady', () => {
+            if (isStale() || switchedToFallback) return;
+            notifyStartedOnce();
+          })
+        );
+        handles.push(
           await nativePlugin.addListener('nativeSpeechPartial', (data: any) => {
-            if (cancelled || switchedToFallback) return;
+            if (isStale() || switchedToFallback) return;
+            notifyStartedOnce();
             const txt = String(data?.text || '');
             if (txt) {
               latestTranscript = txt;
@@ -330,7 +404,7 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
         );
         handles.push(
           await nativePlugin.addListener('nativeSpeechResult', (data: any) => {
-            if (switchedToFallback) return;
+            if (isStale() || switchedToFallback) return;
             cleanupNativeListeners();
             const txt = String(data?.text || latestTranscript || '');
             finishOnce(txt);
@@ -338,9 +412,9 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
         );
         handles.push(
           await nativePlugin.addListener('nativeSpeechEnd', () => {
-            if (switchedToFallback) return;
+            if (isStale() || switchedToFallback) return;
             setTimeout(() => {
-              if (!completed && !cancelled && !switchedToFallback) {
+              if (!completed && !isStale() && !switchedToFallback) {
                 cleanupNativeListeners();
                 finishOnce(latestTranscript);
               }
@@ -350,7 +424,7 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
         handles.push(
           await nativePlugin.addListener('nativeSpeechError', async (err: any) => {
             cleanupNativeListeners();
-            if (cancelled || completed || switchedToFallback) return;
+            if (isStale() || completed || switchedToFallback) return;
             const msg = String(err?.message || 'Speech recognition error');
             const errCode = Number(err?.code || 0);
             const shouldCloudFallback =
@@ -359,8 +433,9 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
               errCode === 13 ||
               /error\s*\(?1[23]\)?|language.*not\s+supported|language.*unavailable/i.test(msg);
 
-            if (/permission/i.test(msg)) {
+            if (/permission/i.test(msg) || errCode === 9) {
               completed = true;
+              if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
               onPermissionDenied?.();
               return;
             }
@@ -372,22 +447,26 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
               switchedToFallback = true;
               fallbackController = await startCloudAudioRecordingFallback({
                 language,
+                onListeningStarted: notifyStartedOnce,
                 onPartial,
                 onFinish: (txText) => finishOnce(txText),
                 onPermissionDenied: () => {
                   completed = true;
+                  if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
                   onPermissionDenied?.();
                 },
                 onError: (fbErr) => {
                   completed = true;
+                  if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
                   onError?.(fbErr);
                 },
-                isCancelled: () => cancelled
+                isCancelled: isStale
               });
               return;
             }
 
             completed = true;
+            if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
             if (msg === 'no-speech' || msg === 'no-match') {
               onEmptyEnd?.();
             } else {
@@ -397,50 +476,38 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
         );
       }
 
-      onStart?.();
       await nativePlugin.startNativeSpeech({ language: resolvedLang });
-
-      return {
-        stop: () => {
-          if (fallbackController) {
-            fallbackController.stop();
-          } else {
-            nativePlugin.stopNativeSpeech?.().catch(() => {});
-          }
-        },
-        cancel: () => {
-          cancelled = true;
-          cleanupNativeListeners();
-          if (fallbackController) {
-            fallbackController.cancel();
-          } else {
-            nativePlugin.cancelNativeSpeech?.().catch(() => {});
-          }
-        }
-      };
+      return controller;
     } catch (nativeErr: any) {
       cleanupNativeListeners();
       const errCode = String(nativeErr?.code || nativeErr?.message || '');
       if (/PERMISSION_DENIED/i.test(errCode)) {
+        if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
         onPermissionDenied?.();
         return { stop: () => {}, cancel: () => {} };
       }
       if (/UNAVAILABLE/i.test(errCode)) {
-        onStart?.();
         fallbackController = await startCloudAudioRecordingFallback({
           language,
+          onListeningStarted: notifyStartedOnce,
           onPartial,
           onFinish: (txText) => finishOnce(txText),
           onPermissionDenied: () => {
             completed = true;
+            if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
             onPermissionDenied?.();
           },
           onError: (fbErr) => {
             completed = true;
+            if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
             onError?.(fbErr);
           },
-          isCancelled: () => cancelled
+          isCancelled: isStale
         });
+        activeCaptureCancelFn = () => {
+          cancelled = true;
+          fallbackController?.cancel();
+        };
         return fallbackController;
       }
       console.warn('[Speech] Native recognizer unavailable, trying Web Speech API:', nativeErr);
@@ -454,23 +521,30 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
 
   if (!SpeechRecognitionClass) {
     if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
-      onStart?.();
       fallbackController = await startCloudAudioRecordingFallback({
         language,
+        onListeningStarted: notifyStartedOnce,
         onPartial,
         onFinish: (txText) => finishOnce(txText),
         onPermissionDenied: () => {
           completed = true;
+          if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
           onPermissionDenied?.();
         },
         onError: (fbErr) => {
           completed = true;
+          if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
           onError?.(fbErr);
         },
-        isCancelled: () => cancelled
+        isCancelled: isStale
       });
+      activeCaptureCancelFn = () => {
+        cancelled = true;
+        fallbackController?.cancel();
+      };
       return fallbackController;
     }
+    if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
     onError?.('Speech recognition is not supported on this device/browser.');
     return { stop: () => {}, cancel: () => {} };
   }
@@ -480,26 +554,53 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
   recognition.interimResults = true;
   recognition.lang = resolvedLang;
 
+  const webController: VoiceCaptureController = {
+    stop: () => {
+      if (fallbackController) {
+        fallbackController.stop();
+        return;
+      }
+      try {
+        recognition.stop();
+      } catch {}
+    },
+    cancel: () => {
+      cancelled = true;
+      if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
+      if (fallbackController) {
+        fallbackController.cancel();
+        return;
+      }
+      try {
+        recognition.abort();
+      } catch {}
+    }
+  };
+  activeCaptureCancelFn = webController.cancel;
+
   recognition.onstart = () => {
-    if (!cancelled) onStart?.();
+    notifyStartedOnce();
   };
 
   recognition.onresult = (event: any) => {
+    if (isStale()) return;
+    notifyStartedOnce();
     let combined = '';
     for (let i = 0; i < event.results.length; i++) {
       combined += event.results[i]?.[0]?.transcript || '';
     }
     latestTranscript = combined;
-    if (!cancelled && combined) {
+    if (combined) {
       onPartial?.(combined);
     }
   };
 
   recognition.onerror = async (event: any) => {
-    if (cancelled || completed || switchedToFallback) return;
+    if (isStale() || completed || switchedToFallback) return;
     const err = event?.error || '';
     if (err === 'not-allowed' || err === 'service-not-allowed') {
       completed = true;
+      if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
       onPermissionDenied?.();
       return;
     }
@@ -507,29 +608,35 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
       finishOnce(latestTranscript);
       return;
     }
-    if (err === 'language-not-supported' || err === 'service-not-allowed') {
+    if (err === 'language-not-supported' || err === 'network') {
       switchedToFallback = true;
       fallbackController = await startCloudAudioRecordingFallback({
         language,
+        onListeningStarted: notifyStartedOnce,
         onPartial,
         onFinish: (txText) => finishOnce(txText),
         onPermissionDenied: () => {
           completed = true;
+          if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
           onPermissionDenied?.();
         },
         onError: (fbErr) => {
           completed = true;
+          if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
           onError?.(fbErr);
         },
-        isCancelled: () => cancelled
+        isCancelled: isStale
       });
       return;
     }
     completed = true;
+    if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
     if (err === 'no-speech' || err === 'aborted') {
       onEmptyEnd?.();
+    } else if (err === 'audio-capture') {
+      onError?.('No active microphone device detected or audio input is busy.');
     } else {
-      onError?.(`Microphone error: ${err}`);
+      onError?.(`Microphone error: ${err || 'recognition failed'}`);
     }
   };
 
@@ -542,28 +649,10 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
   try {
     recognition.start();
   } catch (startErr: any) {
+    if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
     onError?.(startErr?.message || 'Failed to start microphone recognition.');
   }
 
-  return {
-    stop: () => {
-      if (fallbackController) {
-        fallbackController.stop();
-        return;
-      }
-      try {
-        recognition.stop();
-      } catch {}
-    },
-    cancel: () => {
-      cancelled = true;
-      if (fallbackController) {
-        fallbackController.cancel();
-        return;
-      }
-      try {
-        recognition.abort();
-      } catch {}
-    }
-  };
+  return webController;
 }
+

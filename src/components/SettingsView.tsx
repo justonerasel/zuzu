@@ -48,7 +48,9 @@ import {
   VolumeX,
   Moon,
   ClipboardPaste,
-  Square
+  Square,
+  Bell,
+  Clock
 } from 'lucide-react';
 import { 
   AppSettings, 
@@ -93,18 +95,14 @@ import {
   APP_VERSION 
 } from '../utils/apiConfig';
 import { 
+  PERMISSION_CATEGORY_TABS,
   PERMISSION_DEFINITIONS, 
   PermissionCategoryId,
-  PermissionDefinition, 
   PermissionStatusState, 
   checkAllPermissions, 
   handlePermissionAction, 
-  requestAllRuntimePermissions,
   openAndroidSettings,
   openAndroidAppSettingsGuide, 
-  checkMicrophonePermission, 
-  requestMicrophonePermission, 
-  MicrophonePermissionState,
   checkExactAlarmPermission,
   openExactAlarmSettings
 } from '../utils/permission';
@@ -265,9 +263,9 @@ const CATEGORIES: CategoryCardInfo[] = [
   {
     id: 'permissions',
     title: 'Permissions Center',
-    subtitle: 'All 30 Android audio, Bluetooth, network, background & device permissions',
+    subtitle: 'Smart minimal permissions for Voice, Reminders, GPS & Camera',
     icon: ShieldCheck,
-    badge: '30 Permissions',
+    badge: `${PERMISSION_DEFINITIONS.length} Minimal Perms`,
     colorTheme: {
       bg: 'bg-teal-50/70 hover:bg-teal-50',
       border: 'border-teal-200/80',
@@ -407,14 +405,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // Profile image error fallback state
   const [profileImgError, setProfileImgError] = useState(false);
 
-  // Audio & Mic state
-  const [micState, setMicState] = useState<MicrophonePermissionState>('prompt');
-  const [isTestingMic, setIsTestingMic] = useState(false);
-
-  // Permissions Center State (30 Comprehensive Android Permissions)
+  // Smart Minimal Permissions Center State
   const [permissionStatuses, setPermissionStatuses] = useState<Record<string, PermissionStatusState>>({});
   const [isCheckingPermissions, setIsCheckingPermissions] = useState(false);
-  const [isGrantingAllPerms, setIsGrantingAllPerms] = useState(false);
   const [permCategoryFilter, setPermCategoryFilter] = useState<PermissionCategoryId>('all');
   const [permActionLoadingId, setPermActionLoadingId] = useState<string | null>(null);
   const [permNotice, setPermNotice] = useState<string | null>(null);
@@ -527,9 +520,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       const statuses = await checkAllPermissions();
       setPermissionStatuses(statuses);
-      if (statuses.microphone) {
-        setMicState(statuses.microphone as MicrophonePermissionState);
-      }
     } finally {
       setIsCheckingPermissions(false);
     }
@@ -546,9 +536,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       }
       const updated = await checkAllPermissions();
       setPermissionStatuses(updated);
-      if (updated.microphone) {
-        setMicState(updated.microphone as MicrophonePermissionState);
-      }
       if (res.success) {
         playHapticSound('listen_start');
       } else {
@@ -567,22 +554,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const updateCounts = () => {
     setChatCount(getChatMessages().length);
     setVoiceCount(getVoiceSessions().length);
-  };
-
-  const handleRequestMicPermission = async () => {
-    setIsTestingMic(true);
-    playHapticSound('message_sent');
-    try {
-      const res = await requestMicrophonePermission();
-      setMicState(res.state);
-      if (res.success) {
-        playHapticSound('listen_start');
-      } else {
-        playHapticSound('listen_stop');
-      }
-    } finally {
-      setIsTestingMic(false);
-    }
   };
 
   const handlePasteGeminiKey = async () => {
@@ -2200,14 +2171,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       </div>
 
                       {/* Animation State Test Pills */}
-                      <div className="flex items-center gap-1 mt-2 bg-indigo-50/70 p-1 rounded-xl border border-indigo-100">
-                        {(['idle', 'listening', 'thinking', 'speaking'] as OrbState[]).map(st => (
+                      <div className="flex flex-wrap items-center justify-center gap-1 mt-2 bg-indigo-50/70 p-1 rounded-xl border border-indigo-100">
+                        {(['idle', 'listening', 'thinking', 'speaking', 'error'] as OrbState[]).map(st => (
                           <button
                             key={st}
                             onClick={() => setPreviewOrbState(st)}
                             className={`px-2.5 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wider transition-all ${
                               previewOrbState === st
-                                ? 'bg-indigo-600 text-white shadow-xs'
+                                ? st === 'error'
+                                  ? 'bg-rose-600 text-white shadow-xs'
+                                  : 'bg-indigo-600 text-white shadow-xs'
                                 : 'text-indigo-700 hover:bg-indigo-100/60'
                             }`}
                           >
@@ -2506,7 +2479,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             )}
 
             {/* ----------------------------------------------------------- */}
-            {/* 7. PERMISSIONS SUB-PAGE (30 Comprehensive Android Access)   */}
+            {/* 7. SMART MINIMAL ANDROID PERMISSIONS MANAGER                */}
             {/* ----------------------------------------------------------- */}
             {activeCategory === 'permissions' && (() => {
               const grantedCount = PERMISSION_DEFINITIONS.filter(
@@ -2523,49 +2496,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold uppercase tracking-wider text-teal-900 flex items-center gap-1.5">
                         <ShieldCheck className="w-4 h-4 text-teal-600" />
-                        <span>Android Permissions Center</span>
+                        <span>Smart Android Permissions</span>
                       </span>
                       <span className="text-[9px] font-mono font-bold bg-white text-teal-800 px-2 py-0.5 rounded-full border border-teal-200">
                         {grantedCount} / {PERMISSION_DEFINITIONS.length} Active
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-600 leading-relaxed">
-                      Full 30-permission native Android suite covering live audio &amp; Bluetooth routing, network sync, silent foreground wake lock, overlays, GPS weather, calls, contacts, storage, and vision.
+                      Minimal permissions strictly matching active Zuzu AI features. Permissions are requested only when you use Voice Assistant, Notifications, GPS Weather, Camera Vision, Files, Wake Service, or Alarms.
                     </p>
                   </div>
 
-                  {/* Permissions Toolbar: Quick actions */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <button
-                      type="button"
-                      disabled={isGrantingAllPerms}
-                      onClick={async () => {
-                        setIsGrantingAllPerms(true);
-                        setPermNotice(null);
-                        playHapticSound('message_sent');
-                        try {
-                          const res = await requestAllRuntimePermissions();
-                          setPermissionStatuses(res.statuses);
-                          if (res.statuses.microphone) {
-                            setMicState(res.statuses.microphone as MicrophonePermissionState);
-                          }
-                          setPermNotice(res.message);
-                          playHapticSound('listen_start');
-                        } finally {
-                          setIsGrantingAllPerms(false);
-                        }
-                      }}
-                      className="py-2 px-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-[11px] font-bold shadow-xs flex items-center justify-center gap-1 transition-colors"
-                    >
-                      <Sparkles className={`w-3.5 h-3.5 ${isGrantingAllPerms ? 'animate-spin' : ''}`} />
-                      <span>{isGrantingAllPerms ? 'Granting...' : 'Grant Runtime'}</span>
-                    </button>
-
+                  {/* Permissions Toolbar: On-demand re-check + App Settings */}
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={refreshAllPermissions}
                       disabled={isCheckingPermissions}
-                      className="py-2 px-2 rounded-xl bg-white/90 hover:bg-white text-slate-700 text-[11px] font-bold border border-teal-200/80 shadow-xs flex items-center justify-center gap-1 transition-colors"
+                      className="py-2 px-3 rounded-xl bg-white/90 hover:bg-white text-slate-700 text-[11px] font-bold border border-teal-200/80 shadow-xs flex items-center justify-center gap-1.5 transition-colors"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 text-teal-600 ${isCheckingPermissions ? 'animate-spin' : ''}`} />
                       <span>{isCheckingPermissions ? 'Checking...' : 'Re-check All'}</span>
@@ -2574,41 +2522,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <button
                       type="button"
                       onClick={openAndroidAppSettingsGuide}
-                      className="py-2 px-2 rounded-xl bg-teal-100/90 hover:bg-teal-200 text-teal-900 text-[11px] font-bold border border-teal-300 shadow-xs flex items-center justify-center gap-1 transition-colors"
+                      className="py-2 px-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-bold shadow-xs flex items-center justify-center gap-1.5 transition-colors"
                       title="Open Android App Settings directly"
                     >
-                      <ExternalLink className="w-3.5 h-3.5 text-teal-700" />
-                      <span>App Settings</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Open App Settings</span>
                     </button>
                   </div>
 
-                  {/* Category Filter Pills */}
-                  <div className="grid grid-cols-4 gap-1.5 bg-slate-100 p-1 rounded-xl">
-                    {[
-                      { id: 'all' as PermissionCategoryId, label: 'All (30)' },
-                      { id: 'audio' as PermissionCategoryId, label: 'Audio & BT (6)' },
-                      { id: 'system' as PermissionCategoryId, label: 'System (16)' },
-                      { id: 'device' as PermissionCategoryId, label: 'Device (8)' }
-                    ].map(tab => (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => {
-                          setPermCategoryFilter(tab.id);
-                          playHapticSound('switch');
-                        }}
-                        className={`py-1.5 px-1 rounded-lg text-[10px] font-bold transition-all ${
-                          permCategoryFilter === tab.id
-                            ? 'bg-white text-teal-800 shadow-xs'
-                            : 'text-slate-500 hover:text-slate-700'
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
+                  {/* Category Filter Pills (Implemented Features Only) */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                    {PERMISSION_CATEGORY_TABS.map(tab => {
+                      const count =
+                        tab.id === 'all'
+                          ? PERMISSION_DEFINITIONS.length
+                          : PERMISSION_DEFINITIONS.filter(p => p.category === tab.id).length;
+                      const isActive = permCategoryFilter === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => {
+                            setPermCategoryFilter(tab.id);
+                            playHapticSound('switch');
+                          }}
+                          className={`px-2.5 py-1.5 rounded-xl text-[10px] font-bold whitespace-nowrap border transition-all flex-shrink-0 ${
+                            isActive
+                              ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
+                              : 'bg-white/85 text-slate-600 border-slate-200 hover:border-teal-300'
+                          }`}
+                        >
+                          {tab.label} ({count})
+                        </button>
+                      );
+                    })}
                   </div>
 
-                  {/* Status Notice Toast if any action returned message */}
+                  {/* Status Notice Toast */}
                   {permNotice && (
                     <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 text-xs flex items-center justify-between animate-fade-in shadow-xs">
                       <div className="flex items-center gap-2">
@@ -2624,12 +2574,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </div>
                   )}
 
-                  {/* Comprehensive Permission Cards */}
+                  {/* Minimal Feature-Mapped Permission Cards */}
                   <div className="space-y-2">
                     {filteredPerms.map(def => {
-                      const status = permissionStatuses[def.id] || (def.permissionType === 'manifest' ? 'granted' : def.isSpecialSystemSetting ? 'system_required' : 'prompt');
+                      const status = permissionStatuses[def.id] || 'prompt';
                       const isLoading = permActionLoadingId === def.id;
-                      const Icon = def.category === 'audio' ? (def.id === 'microphone' ? Mic : Volume2) : def.category === 'device' ? MapPin : Radio;
+                      const Icon =
+                        def.category === 'microphone'
+                          ? def.id === 'microphone'
+                            ? Mic
+                            : Volume2
+                          : def.category === 'notifications'
+                          ? Bell
+                          : def.category === 'location'
+                          ? MapPin
+                          : def.category === 'camera'
+                          ? Sparkles
+                          : def.category === 'files_media'
+                          ? FileText
+                          : def.category === 'alarms_reminders'
+                          ? Clock
+                          : Radio;
 
                       return (
                         <div
@@ -2654,13 +2619,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           </div>
 
                           <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-                            <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold border ${
-                              status === 'granted'
-                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                : status === 'system_required'
-                                ? 'bg-amber-100 text-amber-800 border-amber-300'
-                                : 'bg-rose-100 text-rose-800 border-rose-300'
-                            }`}>
+                            <span
+                              className={`text-[9px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold border ${
+                                status === 'granted'
+                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                  : status === 'system_required'
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                  : status === 'unsupported'
+                                  ? 'bg-slate-100 text-slate-600 border-slate-300'
+                                  : 'bg-rose-100 text-rose-800 border-rose-300'
+                              }`}
+                            >
                               {status === 'granted' ? (
                                 <>
                                   <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
@@ -2671,6 +2640,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                   <Sliders className="w-2.5 h-2.5 text-amber-700" />
                                   <span>SYSTEM REQ</span>
                                 </>
+                              ) : status === 'permanently_denied' ? (
+                                <>
+                                  <ShieldAlert className="w-2.5 h-2.5 text-rose-600" />
+                                  <span>BLOCKED</span>
+                                </>
+                              ) : status === 'unsupported' ? (
+                                <span>APK ONLY</span>
                               ) : (
                                 <>
                                   <ShieldAlert className="w-2.5 h-2.5 text-rose-600" />
@@ -2680,13 +2656,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             </span>
 
                             <button
+                              type="button"
                               onClick={() => handlePermAction(def.id)}
-                              disabled={isLoading}
+                              disabled={isLoading || status === 'unsupported'}
                               className={`py-1 px-2.5 rounded-xl text-[10px] font-bold flex items-center gap-1 transition-all shadow-xs ${
                                 status === 'granted'
                                   ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200'
                                   : status === 'system_required'
                                   ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                                  : status === 'permanently_denied'
+                                  ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                                  : status === 'unsupported'
+                                  ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
                                   : 'bg-teal-600 hover:bg-teal-700 text-white'
                               }`}
                             >
@@ -2694,6 +2675,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                 <RefreshCw className="w-3 h-3 animate-spin" />
                               ) : status === 'granted' ? (
                                 <Check className="w-3 h-3 text-emerald-600" />
+                              ) : status === 'permanently_denied' ? (
+                                <ExternalLink className="w-3 h-3" />
                               ) : (
                                 <Sparkles className="w-3 h-3" />
                               )}
@@ -2702,9 +2685,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                   ? '...'
                                   : status === 'granted'
                                   ? 'Active ✓'
+                                  : status === 'permanently_denied'
+                                  ? 'Open Settings'
+                                  : status === 'unsupported'
+                                  ? 'Android'
                                   : def.isSpecialSystemSetting
                                   ? 'Configure'
-                                  : 'Grant'}
+                                  : 'Enable'}
                               </span>
                             </button>
                           </div>
@@ -2713,16 +2700,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     })}
                   </div>
 
-                  {/* Transparent Permissions & Assistant Sandbox Card */}
-                  <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-md space-y-2.5 mt-2">
+                  {/* Minimal Security Sandbox Guarantee Card */}
+                  <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-md space-y-2 mt-2">
                     <div className="flex items-center gap-2">
                       <ShieldCheck className="w-4 h-4 text-teal-400" />
                       <span className="text-xs font-bold text-teal-300 uppercase tracking-wide">
-                        Full 30-Permission Assistant Suite
+                        Minimal Permission Architecture
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-300 leading-relaxed">
-                      Every Android capability—from silent background Wake Word and Bluetooth headset routing to GPS weather, hands-free calling, contacts, storage, overlays, and camera vision—is transparently controlled right here on your device.
+                      Zuzu AI requests zero Contacts, Phone Call, SMS, Bluetooth, System Overlay, or App-Inventory permissions. Only verified device capabilities used by active features are included.
                     </p>
                   </div>
                 </div>

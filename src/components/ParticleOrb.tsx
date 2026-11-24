@@ -7,7 +7,7 @@ import {
   OrbParticleDensity 
 } from '../types';
 
-export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
+export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export interface ParticleOrbProps {
   state?: OrbState;
@@ -310,6 +310,10 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
         rotationMult = 1.45;
         waveFreq = 4.0;
         waveAmp = 2.2;
+      } else if (st === 'error') {
+        rotationMult = 0.65;
+        waveFreq = 2.8;
+        waveAmp = 1.75;
       }
 
       time += 0.02 * waveFreq;
@@ -342,7 +346,10 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
         mint: ['rgba(52, 211, 153, 0.35)', 'rgba(16, 185, 129, 0.18)'],
         amber: ['rgba(251, 191, 36, 0.34)', 'rgba(245, 158, 11, 0.18)']
       };
-      const [auraPrimary, auraSecondary] = schemeAura[scheme] || schemeAura.purple;
+      const [auraPrimary, auraSecondary] =
+        st === 'error'
+          ? ['rgba(244, 63, 94, 0.42)', 'rgba(225, 29, 72, 0.24)']
+          : schemeAura[scheme] || schemeAura.purple;
 
       if (curStyle === 'glass_iridescent_wave') {
         const auraGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.2, centerX, centerY, glowR);
@@ -470,7 +477,10 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
           mint: { solid: '#059669', secondary: '#34d399', orbit: '#6ee7b7' },
           amber: { solid: '#d97706', secondary: '#fbbf24', orbit: '#fde68a' }
         };
-        const schemeColors = schemePrimaryMap[scheme] || schemePrimaryMap.purple;
+        const schemeColors =
+          st === 'error'
+            ? { solid: '#e11d48', secondary: '#fb7185', orbit: '#fda4af' }
+            : schemePrimaryMap[scheme] || schemePrimaryMap.purple;
 
         if (curStyle === 'glass_iridescent_wave') {
           if (pt.colorType === 0) {

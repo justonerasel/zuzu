@@ -11,6 +11,7 @@ import {
   mergeSearchSources
 } from './server/realtimeSearch.ts';
 import type { SearchSourceItem } from './src/types/index.ts';
+import { getLatestChangelogRelease, getSortedChangelog } from './src/data/changelog.ts';
 
 dotenv.config();
 
@@ -33,8 +34,9 @@ app.use((req, res, next) => {
   next();
 });
 
-const LATEST_APP_VERSION = '3.7.0';
-const LATEST_VERSION_CODE = 370;
+const latestChangelog = getLatestChangelogRelease();
+const LATEST_APP_VERSION = latestChangelog?.version || '3.8.0';
+const LATEST_VERSION_CODE = latestChangelog?.versionCode || 380;
 const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.7.0';
 
 // Centralized Gemini model configuration (never exposed to users; zero deprecated models)
@@ -352,22 +354,46 @@ app.get('/api/config', (_req, res) => {
   });
 });
 
+// Endpoint: Dynamic Live Changelog & Release History (sorted newest-first)
+app.get('/api/system/updates', (_req, res) => {
+  const history = getSortedChangelog();
+  const latest = history[0];
+  res.json({
+    appName: 'Zuzu AI',
+    currentVersion: `v${latest?.version || LATEST_APP_VERSION}`,
+    currentVersionCode: latest?.versionCode || LATEST_VERSION_CODE,
+    latest,
+    history,
+    totalReleases: history.length
+  });
+});
+
 // Endpoint: System update & In-App OTA checking
 app.get('/api/system/check-update', (req, res) => {
-  const installedVersion = typeof req.query.installedVersion === 'string' ? req.query.installedVersion : LATEST_APP_VERSION;
-  const installedCode = req.query.versionCode ? parseInt(String(req.query.versionCode), 10) : LATEST_VERSION_CODE;
+  const latest = getLatestChangelogRelease();
+  const latestVer = latest?.version || LATEST_APP_VERSION;
+  const latestCode = latest?.versionCode || LATEST_VERSION_CODE;
+  const installedVersion = typeof req.query.installedVersion === 'string' ? req.query.installedVersion : latestVer;
+  const installedCode = req.query.versionCode ? parseInt(String(req.query.versionCode), 10) : latestCode;
   const forceRequiredByMin = compareSemver(installedVersion, MIN_SUPPORTED_VERSION) < 0 || (!Number.isNaN(installedCode) && installedCode < 360);
-  const hasNewerVersion = compareSemver(installedVersion, LATEST_APP_VERSION) < 0 || (!Number.isNaN(installedCode) && installedCode < LATEST_VERSION_CODE);
+  const hasNewerVersion = compareSemver(installedVersion, latestVer) < 0 || (!Number.isNaN(installedCode) && installedCode < latestCode);
   const forceFlag = process.env.ZUZU_FORCE_UPDATE === 'true' || forceRequiredByMin;
+
+  const summaryItems = [
+    ...(latest?.newFeatures || []),
+    ...(latest?.bugFixes || []),
+    ...(latest?.improvements || [])
+  ].slice(0, 5);
 
   res.json({
     appName: 'Zuzu AI',
-    currentVersion: `v${LATEST_APP_VERSION}`,
-    latestVersion: `v${LATEST_APP_VERSION}`,
-    versionCode: LATEST_VERSION_CODE,
+    currentVersion: `v${latestVer}`,
+    latestVersion: `v${latestVer}`,
+    versionCode: latestCode,
     minSupportedVersion: `v${MIN_SUPPORTED_VERSION}`,
-    buildTag: 'Build 370-Production',
-    releaseDate: 'November 2026',
+    buildTag: latest?.buildTag || `Build ${latestCode}-Production`,
+    releaseDate: latest?.date || '2026-11-24',
+    latestTitle: latest?.title || `Zuzu AI v${latestVer}`,
     status: hasNewerVersion ? 'update_available' : 'up_to_date',
     updateRequired: hasNewerVersion,
     forceUpdate: forceFlag,
@@ -376,15 +402,10 @@ app.get('/api/system/check-update', (req, res) => {
     targetCompatibility: 'Android 9.0 (Pie) through Android 16',
     websiteUrl: 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app',
     message: forceFlag
-      ? `OTA update required (v${LATEST_APP_VERSION}). Syncing Zuzu AI unified Google Gemini Voice & Text bundle.`
-      : `Zuzu AI is up to date on v${LATEST_APP_VERSION} (OTA Verified). Unified Gemini Engine & ZU-ID Cloud Sync are active.`,
-    changelogSummary: [
-      'Unified Google Gemini API powering both Text Chat and Voice Conversations',
-      'Low-latency streaming responses and direct prebuilt Gemini neural voices',
-      'Instant microphone activation without repetitive startup greetings',
-      'Custom Username & ZU-ID Account login with Firebase Firestore backup & restore',
-      '30 comprehensive Android permissions, Whisper/Snap triggers & Edge-to-Edge UI'
-    ]
+      ? `OTA update required (v${latestVer}). Syncing Zuzu AI ${latest?.title || 'latest release'}.`
+      : `Zuzu AI is up to date on v${latestVer} (OTA Verified) — ${latest?.title || 'Latest Release'}.`,
+    changelogSummary: summaryItems,
+    latestRelease: latest
   });
 });
 

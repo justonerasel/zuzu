@@ -9,8 +9,8 @@ import { getAppSettings } from './storage';
  */
 
 // Current Application Build Version (Keep synchronized across Gradle, Server, UI & CI)
-export const APP_VERSION = '3.7.0';
-export const APP_VERSION_CODE = 370;
+export const APP_VERSION = '3.8.0';
+export const APP_VERSION_CODE = 380;
 
 // Centralized Gemini Model Configuration (never hardcoded in UI components; zero deprecated models)
 const GEMINI_TEXT_CANDIDATES = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
