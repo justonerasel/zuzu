@@ -15,22 +15,22 @@ export interface RealtimeSearchClassification {
 }
 
 const CONVERSATIONAL_EXCLUSIONS = [
-  /^(?:hi|hello|hey|good morning|good afternoon|good evening|good night|assalamu alaikum|salam|nomoshkar|how are you|who are you|who made you|who created you|who is rasel|what is my name|what's my name|do you remember me|thank you|thanks|ok|okay|bye|goodbye|tell me a joke|tell me a story|sing a song|write a poem)\b[?!.\s]*$/i,
-  /^(?:কেমন আছো|তুমি কে|তোমাকে কে বানিয়েছে|তোমাকে কে বানিয়েছে|তোমাকে কে তৈরি করেছে|আমার নাম কি|আমার নাম কী|হ্যালো|হাই|ধন্যবাদ|ঠিক আছে|একটা জোকস বলো|গল্প শোনাও|কবিতা লেখো|বাই|গুড নাইট)[?!.\s]*$/i
+  /^(?:hi|hello|hey|good morning|good afternoon|good evening|good night|assalamu alaikum|salam|nomoshkar|how are you|how are you doing|how are you now|who are you|who made you|who created you|who is rasel|what is my name|what's my name|do you remember me|thank you|thanks|ok|okay|bye|goodbye|tell me a joke|tell me a story|sing a song|write a poem|what time is it(?: now)?|what is the time(?: now)?)\b[?!.\s]*$/i,
+  /^(?:কেমন আছো|এখন কেমন আছো|তুমি কে|তোমাকে কে বানিয়েছে|তোমাকে কে বানিয়েছে|তোমাকে কে তৈরি করেছে|আমার নাম কি|আমার নাম কী|হ্যালো|হাই|ধন্যবাদ|ঠিক আছে|একটা জোকস বলো|গল্প শোনাও|কবিতা লেখো|বাই|গুড নাইট|এখন কয়টা বাজে|এখন সময় কত)[?!.\s]*$/i
 ];
 
 const NEWS_AND_RECENCY_PATTERNS = [
-  /\b(?:breaking news|latest news|current news|top news|headlines|news update|news updates|news today|world news|bangladesh news|live news|recent news)\b/i,
-  /\b(?:what happened|what is happening|what's happening|any update|any updates|latest update|latest updates|recent update|recent events?|just happened|latest development)\b/i,
-  /\b(?:last \d+\s*(?:min|mins|minute|minutes|hour|hours|hr|hrs)|past \d+\s*(?:min|mins|minute|minutes|hour|hours)|minutes? ago|hours? ago|this hour|right now|at the moment|today's|yesterday's)\b/i,
-  /\b(?:earthquake|cyclone|flood|protest|election|match score|live score|cricket score|football score|gold price|silver price|dollar rate|exchange rate|usd to bdt|stock price|share market|bitcoin price|crypto price|weather forecast|weather today|temperature in|breaking)\b/i,
-  /(?:ব্রেকিং নিউজ|সর্বশেষ খবর|আজকের খবর|তাজা খবর|সাম্প্রতিক খবর|এখনকার খবর|নতুন খবর|লাইভ আপডেট|সাম্প্রতিক ঘটনা|কী ঘটেছে|কি ঘটেছে|কী হচ্ছে|কি হচ্ছে|কী হলো|কি হলো|আজকে কি হলো|গত\s*[০-৯0-9]+\s*(?:মিনিট|ঘণ্টা|ঘন্টা)|ক্রিকেট স্কোর|ফুটবল স্কোর|খেলার খবর|লাইভ স্কোর|আবহাওয়ার খবর|আবহাওয়া|ডলারের দাম|ডলার রেট|সোনার দাম|শেয়ার বাজার|ভূমিকম্প|ঘূর্ণিঝড়|ঘূর্ণিঝড়)/i
+  /\b(?:news|headlines|breaking|latest|update|updates|recent|happening|happened|development|developments)\b/i,
+  /\b(?:today|today's|right now|at the moment|this hour|this morning|tonight|yesterday's|last \d+\s*(?:min|mins|minute|minutes|hour|hours|hr|hrs)|past \d+\s*(?:min|mins|minute|minutes|hour|hours)|minutes? ago|hours? ago)\b/i,
+  /\bnow\b(?:\s+(?:in|on|at|for|about|weather|price|rate|score|match|news|update|happening)|\s*$)/i,
+  /\b(?:earthquake|cyclone|flood|protest|election|match score|live score|cricket score|football score|gold price|silver price|dollar rate|exchange rate|usd to bdt|stock price|share market|bitcoin price|crypto price|weather forecast|temperature in|war|ceasefire|summit|verdict|scandal|incident)\b/i,
+  /(?:ব্রেকিং|খবর|সংবাদ|নিউজ|হেডলাইন|সর্বশেষ|আজকের|আজকে|এখনকার|সাম্প্রতিক|আপডেট|তাজা|কী ঘটেছে|কি ঘটেছে|কী হচ্ছে|কি হচ্ছে|কী হলো|কি হলো|গত\s*[০-৯0-9]+\s*(?:মিনিট|ঘণ্টা|ঘন্টা)|ক্রিকেট|ফুটবল|লাইভ স্কোর|আবহাওয়া|আবহাওয়া|ডলারের দাম|ডলার রেট|সোনার দাম|শেয়ার বাজার|ভূমিকম্প|ঘূর্ণিঝড়|ঘূর্ণিঝড়|নির্বাচন)/i
 ];
 
 const GENERAL_WEB_SEARCH_PATTERNS = [
   /\b(?:google search|search google|search online|search the web|look up|check online|find online|internet search|live status|latest version|release date|schedule today|open today|price in bangladesh|price today|stock market)\b/i,
   /\b(?:who is the current|who is now|current president|current prime minister|current chief adviser|current ceo|who won|latest winner|new law|new policy|recent announcement)\b/i,
-  /\b(?:today|tonight|this week|this month|currently|nowadays|2025|2026|2027)\b.*\b(?:news|event|happened|update|winner|score|champion|price|launch|released|announced|war|summit|match|election)\b/i,
+  /\b(?:2025|2026|2027)\b.*\b(?:news|event|happened|update|winner|score|champion|price|launch|released|announced|war|summit|match|election)\b/i,
   /(?:গুগল(?:ে)?\s*(?:সার্চ|খুঁজে|দেখো)|অনলাইনে দেখো|ইন্টারনেটে দেখো|সার্চ করে বলো|খুঁজে বলো|বর্তমান প্রধানমন্ত্রী|বর্তমান রাষ্ট্রপতি|বর্তমান প্রধান উপদেষ্টা|সর্বশেষ ভার্সন|কবে মুক্তি|এখন দাম কত|কে জিতল|কোন দল জিতল|আজকের দাম)/i
 ];
 
@@ -94,10 +94,16 @@ export function classifyRealtimeSearchIntent(
     };
   }
 
-  const isNewsDirect = NEWS_AND_RECENCY_PATTERNS.some(rx => rx.test(query));
-  const isGeneralSearchDirect = GENERAL_WEB_SEARCH_PATTERNS.some(rx => rx.test(query));
+  // Avoid triggering news search on coding/plan prompts containing "update my code" or "today's plan"
+  const isPlanningOrCodingPrompt =
+    /\b(?:write code|fix code|update code|update the code|update my|study plan|workout plan|diet plan|meal plan|travel plan|itinerary|budget plan)\b/i.test(
+      query
+    ) && !/\b(?:news|headlines|breaking|rss|article)\b/i.test(query);
 
-  // Preserve search context on follow-up questions if recent turn used Google search
+  const isNewsDirect = !isPlanningOrCodingPrompt && NEWS_AND_RECENCY_PATTERNS.some(rx => rx.test(query));
+  const isGeneralSearchDirect = !isPlanningOrCodingPrompt && GENERAL_WEB_SEARCH_PATTERNS.some(rx => rx.test(query));
+
+  // Preserve search context on follow-up questions if recent turn used news/search
   const prevTurnUsedSearch = recentMessages
     .slice(-4)
     .some(

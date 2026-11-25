@@ -35,9 +35,11 @@ export const MicrophonePermissionModal: React.FC<MicrophonePermissionModalProps>
   const [isChecking, setIsChecking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showSettingsGuide, setShowSettingsGuide] = useState(false);
+  const onGrantedRef = React.useRef(onPermissionGranted);
+  onGrantedRef.current = onPermissionGranted;
 
-  // Sync live OS/browser permission state every time modal opens.
-  // If microphone is already granted, immediately start listening without showing any intermediate granted blocker.
+  // Sync live OS/browser permission state when modal opens.
+  // If microphone is already granted, immediately start listening with zero dialog shown.
   useEffect(() => {
     if (!isOpen) return;
     let active = true;
@@ -51,7 +53,7 @@ export const MicrophonePermissionModal: React.FC<MicrophonePermissionModalProps>
         const current = await checkMicrophonePermission();
         if (!active) return;
         if (current === 'granted') {
-          onPermissionGranted();
+          onGrantedRef.current();
           return;
         }
         setStatus(current);
@@ -63,7 +65,7 @@ export const MicrophonePermissionModal: React.FC<MicrophonePermissionModalProps>
     return () => {
       active = false;
     };
-  }, [isOpen, initialState, onPermissionGranted]);
+  }, [isOpen, initialState]);
 
   if (!isOpen) return null;
 
@@ -80,7 +82,7 @@ export const MicrophonePermissionModal: React.FC<MicrophonePermissionModalProps>
 
       if (result.success && result.state === 'granted') {
         playHapticSound('listen_start');
-        onPermissionGranted();
+        onGrantedRef.current();
         return;
       }
 
@@ -107,7 +109,7 @@ export const MicrophonePermissionModal: React.FC<MicrophonePermissionModalProps>
       const current = await checkMicrophonePermission();
       if (current === 'granted') {
         playHapticSound('listen_start');
-        onPermissionGranted();
+        onGrantedRef.current();
         return;
       }
       setStatus(current);

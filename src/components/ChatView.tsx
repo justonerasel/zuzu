@@ -11,7 +11,8 @@ import {
   AlertCircle,
   Square,
   ExternalLink,
-  Globe2
+  Newspaper,
+  ListChecks
 } from 'lucide-react';
 import { AppSettings, ChatMessage, SearchSourceItem } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
@@ -25,6 +26,41 @@ import {
 } from '../utils/intentDetector';
 import { getNativeZuzuPlugin } from '../utils/permission';
 import { formatSourcePublicationTime } from '../utils/sourceFormat';
+import { MarkdownMessage } from './MarkdownMessage';
+
+function classifyAssistantCard(msg: ChatMessage): {
+  kind: 'news' | 'plan' | 'standard';
+  badge?: string;
+  heading?: string;
+} {
+  const hasNews = Boolean(msg.usedRealtimeSearch || (msg.sources && msg.sources.length > 0));
+  if (hasNews) {
+    const isBn = /[\u0980-\u09FF]/.test(msg.text || '');
+    return {
+      kind: 'news',
+      badge: 'Latest news',
+      heading: isBn ? 'তাজা সংবাদ সারাংশ' : 'News Update'
+    };
+  }
+
+  const text = msg.text || '';
+  const hasMarkdownStructure = /^#{1,3}\s+|\|.+\|\n\|[-:\s|]+\||^\d+\.\s+/m.test(text);
+  const looksLikePlan =
+    /\b(?:plan|schedule|roadmap|routine|itinerary|budget|study guide|meal plan|action plan|step-by-step)\b/i.test(
+      text
+    ) || /(?:পরিকল্পনা|রুটিন|সময়সূচি|সময়সূচি|বাজেট|ধাপ)/i.test(text);
+
+  if (hasMarkdownStructure && looksLikePlan) {
+    const isBn = /[\u0980-\u09FF]/.test(text);
+    return {
+      kind: 'plan',
+      badge: 'Plan',
+      heading: isBn ? 'পরিকল্পনা ও ধাপসমূহ' : 'Structured Plan'
+    };
+  }
+
+  return { kind: 'standard' };
+}
 
 interface ChatViewProps {
   settings: AppSettings;
@@ -41,6 +77,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [apiErrorBanner, setApiErrorBanner] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const pendingClarificationRef = useRef<PendingReminderClarification | null>(null);
 
@@ -54,6 +91,21 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
   useEffect(() => {
     scrollToBottom();
   }, [messages, isLoading, streamingText]);
+
+  // Auto-grow chat textarea smoothly up to 8 lines, then scroll internally
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const computed = window.getComputedStyle(el);
+    const lineHeight = parseFloat(computed.lineHeight) || 18;
+    const paddingTop = parseFloat(computed.paddingTop) || 10;
+    const paddingBottom = parseFloat(computed.paddingBottom) || 10;
+    const maxHeight = Math.round(lineHeight * 8 + paddingTop + paddingBottom);
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = `${Math.max(40, nextHeight)}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [inputText]);
 
   useEffect(() => {
     const onWorkspaceSwitch = () => {
@@ -268,38 +320,32 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const renderSourcesBlock = (sources?: SearchSourceItem[], usedSearch?: boolean) => {
+  const renderSourcesBlock = (sources?: SearchSourceItem[]) => {
     if (!sources || sources.length === 0) return null;
     return (
-      <div className="mt-2.5 pt-2 border-t border-white/10 space-y-1.5">
-        <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-cyan-300">
-          <Globe2 className="w-3 h-3" />
-          <span>{usedSearch ? 'Google Search Sources' : 'Sources'}</span>
+      <div className="mt-3 pt-2.5 border-t border-purple-500/20">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-purple-300 mb-1.5">
+          Sources
         </div>
-        <div className="space-y-1.5">
-          {sources.slice(0, 6).map((src, idx) => (
+        <div className="flex flex-wrap gap-1.5">
+          {sources.slice(0, 8).map((src, idx) => (
             <a
               key={`${src.url}-${idx}`}
               href={src.url}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => handleOpenSourceLink(e, src.url)}
-              className="block p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+              className="inline-flex items-center gap-1.5 max-w-full px-2.5 py-1 rounded-full bg-purple-950/50 hover:bg-purple-900/60 border border-purple-500/30 text-[10px] transition-colors"
               title={`${src.title}${src.publishedAt ? ` • ${src.publishedAt}` : ''}`}
             >
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-[11px] font-semibold text-slate-100 line-clamp-2">
-                  {src.title || src.sourceName}
-                </span>
-                <ExternalLink className="w-3 h-3 text-cyan-300 flex-shrink-0 mt-0.5" />
-              </div>
-              <div className="mt-1 flex items-center flex-wrap gap-1.5 text-[10px]">
-                <span className="font-bold text-cyan-300">{src.sourceName || 'Web Source'}</span>
-                <span className="text-slate-500">•</span>
-                <span className={src.isWithin20Min ? 'font-bold text-emerald-400' : 'text-slate-400'}>
-                  {formatSourcePublicationTime(src)}
-                </span>
-              </div>
+              <span className="font-semibold text-purple-200 truncate max-w-[120px]">
+                {src.sourceName || 'Source'}
+              </span>
+              <span className="text-purple-400/70">•</span>
+              <span className="text-slate-300 whitespace-nowrap">
+                {formatSourcePublicationTime(src)}
+              </span>
+              <ExternalLink className="w-2.5 h-2.5 text-purple-300 flex-shrink-0" />
             </a>
           ))}
         </div>
@@ -356,11 +402,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
           messages.map((msg) => {
             const isUser = msg.sender === 'user';
             const msgIdentity = VOICE_IDENTITIES[msg.voiceIdentity || 'male'];
+            const cardInfo = isUser ? { kind: 'standard' as const } : classifyAssistantCard(msg);
+            const isCard = !isUser && cardInfo.kind !== 'standard';
 
             return (
               <div
                 key={msg.id}
-                className={`flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'} group`}
+                className={`flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start animate-reply-in'} group`}
               >
                 {!isUser && (
                   <div
@@ -369,7 +417,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
                     <div className="w-full h-full bg-[#0a0d16] rounded-[6px] flex items-center justify-center">
                       <Sparkles
                         className={`w-3.5 h-3.5 ${
-                          msg.voiceIdentity === 'female' ? 'text-rose-400' : 'text-cyan-400'
+                          msg.voiceIdentity === 'female' ? 'text-rose-400' : 'text-purple-400'
                         }`}
                       />
                     </div>
@@ -377,23 +425,25 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
                 )}
 
                 <div
-                  className={`max-w-[82%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed relative ${
+                  className={`rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed relative ${
                     isUser
-                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-br-xs shadow-md shadow-blue-900/20'
-                      : 'bg-[#111625] text-slate-200 border border-white/5 rounded-bl-xs shadow-md'
+                      ? 'max-w-[82%] bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-br-xs shadow-md shadow-purple-950/30'
+                      : isCard
+                      ? 'max-w-[88%] w-full bg-gradient-to-br from-[#14192d] to-[#0f1322] text-slate-200 border border-purple-500/35 rounded-bl-xs shadow-lg shadow-purple-950/20'
+                      : 'max-w-[86%] bg-[#111625] text-slate-200 border border-purple-500/15 rounded-bl-xs shadow-md'
                   }`}
                 >
                   {!isUser && (
-                    <div className="text-[10px] font-semibold text-slate-400 mb-1 flex items-center justify-between">
-                      <span className="flex items-center gap-1 text-slate-300">
-                        {msgIdentity.name}
-                        <span className="text-[9px] px-1 rounded bg-white/10 font-mono">
+                    <div className="text-[10px] font-semibold text-slate-400 mb-1.5 flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-slate-300">
+                        <span>{msgIdentity.name}</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-slate-300 font-mono">
                           {msg.personality || 'Normal'}
                         </span>
                       </span>
                       <button
                         onClick={() => handleCopyText(msg.id, msg.text)}
-                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-white transition-opacity ml-2"
+                        className="opacity-70 sm:opacity-0 group-hover:opacity-100 p-0.5 hover:text-purple-300 transition-opacity ml-2"
                         title="Copy text"
                       >
                         {copiedId === msg.id ? (
@@ -405,13 +455,35 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
                     </div>
                   )}
 
-                  <div className="whitespace-pre-wrap break-words">{msg.text}</div>
+                  {isCard && cardInfo.heading && (
+                    <div className="mb-2 pb-1.5 border-b border-purple-500/20 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 font-bold text-xs text-purple-300">
+                        {cardInfo.kind === 'news' ? (
+                          <Newspaper className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
+                        ) : (
+                          <ListChecks className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
+                        )}
+                        <span>{cardInfo.heading}</span>
+                      </div>
+                      {cardInfo.badge && (
+                        <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-200 border border-purple-400/30 whitespace-nowrap">
+                          {cardInfo.badge}
+                        </span>
+                      )}
+                    </div>
+                  )}
 
-                  {!isUser && renderSourcesBlock(msg.sources, msg.usedRealtimeSearch)}
+                  {isUser ? (
+                    <div className="whitespace-pre-wrap break-words">{msg.text}</div>
+                  ) : (
+                    <MarkdownMessage text={msg.text} />
+                  )}
+
+                  {!isUser && renderSourcesBlock(msg.sources)}
 
                   <div
-                    className={`text-[9px] mt-1 font-mono flex items-center justify-end gap-1 ${
-                      isUser ? 'text-blue-200/70' : 'text-slate-400'
+                    className={`text-[9px] mt-1.5 font-mono flex items-center justify-end gap-1 ${
+                      isUser ? 'text-purple-100/75' : 'text-slate-400'
                     }`}
                   >
                     <span>
@@ -434,24 +506,24 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
         )}
 
         {isLoading && streamingText && streamingText.length > 0 ? (
-          <div className="flex gap-2.5 justify-start group">
+          <div className="flex gap-2.5 justify-start animate-reply-in group">
             <div
               className={`w-7 h-7 rounded-lg bg-gradient-to-tr ${activeIdentity.avatarGradient} p-0.5 flex-shrink-0 mt-0.5`}
             >
               <div className="w-full h-full bg-[#0a0d16] rounded-[6px] flex items-center justify-center">
                 <Sparkles
                   className={`w-3.5 h-3.5 animate-pulse ${
-                    settings.activeIdentity === 'female' ? 'text-rose-400' : 'text-cyan-400'
+                    settings.activeIdentity === 'female' ? 'text-rose-400' : 'text-purple-400'
                   }`}
                 />
               </div>
             </div>
-            <div className="max-w-[82%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed bg-[#111625] text-slate-200 border border-cyan-500/25 rounded-bl-xs shadow-md">
-              <div className="text-[10px] font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
-                <span className="text-slate-300">{activeIdentity.name}</span>
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+            <div className="max-w-[86%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed bg-[#111625] text-slate-200 border border-purple-500/30 rounded-bl-xs shadow-md">
+              <div className="text-[10px] font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5">
+                <span className="text-purple-300">{activeIdentity.name}</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-ping" />
               </div>
-              <div className="whitespace-pre-wrap break-words">{streamingText}</div>
+              <MarkdownMessage text={streamingText} isStreaming />
             </div>
           </div>
         ) : isLoading ? (
@@ -497,24 +569,31 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
         </div>
       )}
 
-      {/* Input Field Area */}
+      {/* Multi-Line Auto-Growing Input Field Area */}
       <form
         onSubmit={handleSendMessage}
-        className="p-3 bg-[#0a0d16] border-t border-white/10 flex items-center gap-2 select-none"
+        className="p-3 bg-[#0a0d16] border-t border-white/10 flex items-end gap-2 select-none"
       >
-        <input
-          type="text"
+        <textarea
+          ref={textareaRef}
+          rows={1}
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              handleSendMessage();
+            }
+          }}
           placeholder={`Type message to ${activeIdentity.name}...`}
-          className="flex-1 bg-[#121624] text-slate-100 placeholder-slate-400 text-xs px-4 py-2.5 rounded-2xl border border-white/10 focus:outline-none focus:border-cyan-500 transition-colors"
+          className="flex-1 min-w-0 bg-[#121624] text-slate-100 placeholder-slate-400 text-xs leading-[18px] px-4 py-2.5 rounded-2xl border border-white/10 focus:outline-none focus:border-cyan-500 transition-colors resize-none"
         />
 
         {isLoading && (
           <button
             type="button"
             onClick={handleStopStreaming}
-            className="p-2.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition-all shadow-md"
+            className="flex-shrink-0 p-2.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition-all shadow-md"
             title="Stop Response"
           >
             <Square className="w-4 h-4 fill-current" />
@@ -524,7 +603,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
         <button
           type="submit"
           disabled={!inputText.trim()}
-          className={`p-2.5 rounded-2xl text-white font-bold transition-all shadow-md ${
+          className={`flex-shrink-0 p-2.5 rounded-2xl text-white font-bold transition-all shadow-md ${
             inputText.trim()
               ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:opacity-95 shadow-cyan-600/30'
               : 'bg-white/10 text-slate-400 cursor-not-allowed'

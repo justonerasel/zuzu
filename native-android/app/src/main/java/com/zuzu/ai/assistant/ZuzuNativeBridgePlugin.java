@@ -61,10 +61,15 @@ import com.getcapacitor.annotation.PermissionCallback;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -131,6 +136,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     private float pendingTtsRate = 1.0f;
     private float pendingTtsPitch = 1.0f;
     private PluginCall pendingTtsCall = null;
+    private volatile String activeTtsUtteranceId = null;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -475,6 +481,16 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void checkRecordAudioPermission(PluginCall call) {
+        Context ctx = getContext();
+        boolean granted = hasPerm(ctx, Manifest.permission.RECORD_AUDIO);
+        JSObject ret = new JSObject();
+        ret.put("granted", granted);
+        ret.put("state", granted ? "granted" : resolveRuntimeState(ctx, Manifest.permission.RECORD_AUDIO));
+        call.resolve(ret);
+    }
+
+    @PluginMethod
     public void checkAllNativePermissions(PluginCall call) {
         call.resolve(buildPermissionSnapshot());
     }
@@ -810,6 +826,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, resolvedLang);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, resolvedLang);
+            intent.putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", new String[]{"bn-BD", "en-US"});
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
             intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.getPackageName());
@@ -1055,48 +1072,95 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         });
     }
 
+    private Locale resolveBestTtsLocale(String lang) {
+        if ("bn-BD".equalsIgnoreCase(lang) || "bn".equalsIgnoreCase(lang)) {
+            Locale[] bnCandidates = new Locale[]{
+                    new Locale("bn", "BD"),
+                    new Locale("bn", "IN"),
+                    new Locale("bn")
+            };
+            for (Locale loc : bnCandidates) {
+                if (textToSpeech.isLanguageAvailable(loc) >= TextToSpeech.LANG_AVAILABLE) {
+                    return loc;
+                }
+            }
+        }
+        return Locale.US;
+    }
+
     private void performNativeSpeak(String text, String lang, float rate, float pitch, PluginCall call) {
         try {
-            Locale targetLocale = "bn-BD".equals(lang) ? new Locale("bn", "BD") : Locale.US;
-            int avail = textToSpeech.isLanguageAvailable(targetLocale);
-            if (avail >= TextToSpeech.LANG_AVAILABLE) {
-                textToSpeech.setLanguage(targetLocale);
-            } else {
-                textToSpeech.setLanguage(Locale.US);
-            }
+            Locale targetLocale = resolveBestTtsLocale(lang);
+            textToSpeech.setLanguage(targetLocale);
 
             textToSpeech.setSpeechRate(Math.max(0.6f, Math.min(1.6f, rate)));
             textToSpeech.setPitch(Math.max(0.6f, Math.min(1.5f, pitch)));
 
             final String utteranceId = "zuzu-tts-" + System.currentTimeMillis();
+            activeTtsUtteranceId = utteranceId;
+
             textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                 @Override
                 public void onStart(String id) {
-                    mainHandler.post(() -> notifyListeners("nativeTtsStart", new JSObject().put("id", id)));
+                    if (id == null || !id.equals(activeTtsUtteranceId)) return;
+                    mainHandler.post(() -> {
+                        if (id.equals(activeTtsUtteranceId)) {
+                            notifyListeners("nativeTtsStart", new JSObject().put("id", id));
+                        }
+                    });
                 }
 
                 @Override
                 public void onDone(String id) {
-                    mainHandler.post(() -> notifyListeners("nativeTtsEnd", new JSObject().put("id", id)));
+                    if (id == null || !id.equals(activeTtsUtteranceId)) return;
+                    mainHandler.post(() -> {
+                        if (id.equals(activeTtsUtteranceId)) {
+                            activeTtsUtteranceId = null;
+                            notifyListeners("nativeTtsEnd", new JSObject().put("id", id));
+                        }
+                    });
                 }
 
                 @Override
                 public void onError(String id) {
-                    mainHandler.post(() -> notifyListeners("nativeTtsError", new JSObject().put("id", id)));
+                    if (id == null || !id.equals(activeTtsUtteranceId)) return;
+                    mainHandler.post(() -> {
+                        if (id.equals(activeTtsUtteranceId)) {
+                            activeTtsUtteranceId = null;
+                            notifyListeners("nativeTtsError", new JSObject().put("id", id));
+                        }
+                    });
+                }
+
+                @Override
+                public void onError(String id, int errorCode) {
+                    if (id == null || !id.equals(activeTtsUtteranceId)) return;
+                    mainHandler.post(() -> {
+                        if (id.equals(activeTtsUtteranceId)) {
+                            activeTtsUtteranceId = null;
+                            JSObject payload = new JSObject();
+                            payload.put("id", id);
+                            payload.put("code", errorCode);
+                            notifyListeners("nativeTtsError", payload);
+                        }
+                    });
                 }
             });
 
             int speakResult = textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
             if (speakResult == TextToSpeech.ERROR) {
-                call.reject("TTS speak returned ERROR.");
+                activeTtsUtteranceId = null;
+                call.reject("Android TextToSpeech speak returned ERROR.");
                 return;
             }
 
             JSObject ret = new JSObject();
             ret.put("speaking", true);
             ret.put("utteranceId", utteranceId);
+            ret.put("language", targetLocale.toLanguageTag());
             call.resolve(ret);
         } catch (Exception e) {
+            activeTtsUtteranceId = null;
             call.reject("TTS speak failed: " + e.getMessage());
         }
     }
@@ -1104,6 +1168,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     @PluginMethod
     public void stopNativeSpeak(PluginCall call) {
         mainHandler.post(() -> {
+            activeTtsUtteranceId = null;
             if (pendingTtsCall != null) {
                 try {
                     pendingTtsCall.reject("Speech stopped.");
@@ -1618,6 +1683,103 @@ public class ZuzuNativeBridgePlugin extends Plugin {
         }
     }
 
+    /**
+     * Fetches text/XML from a public HTTPS/HTTP URL natively using HttpURLConnection
+     * to bypass Android WebView CORS restrictions for Google News RSS inside standalone APKs.
+     */
+    @PluginMethod
+    public void fetchUrlText(PluginCall call) {
+        final String rawUrl = call.getString("url", "").trim();
+        final int timeoutMs = Math.max(2000, Math.min(15000, call.getInt("timeoutMs", 7000)));
+        if (rawUrl.isEmpty() || (!rawUrl.startsWith("https://") && !rawUrl.startsWith("http://"))) {
+            call.reject("A valid http(s) URL is required.", "INVALID_URL");
+            return;
+        }
+
+        new Thread(() -> {
+            HttpURLConnection conn = null;
+            try {
+                String currentUrl = rawUrl;
+                int redirects = 0;
+                int status = 0;
+
+                while (redirects < 4) {
+                    URL url = new URL(currentUrl);
+                    conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setConnectTimeout(timeoutMs);
+                    conn.setReadTimeout(timeoutMs);
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) ZuzuAI/3.8");
+                    conn.setRequestProperty("Accept", "application/rss+xml, application/xml, text/xml, */*");
+
+                    status = conn.getResponseCode();
+                    if (status == HttpURLConnection.HTTP_MOVED_TEMP
+                            || status == HttpURLConnection.HTTP_MOVED_PERM
+                            || status == HttpURLConnection.HTTP_SEE_OTHER
+                            || status == 307
+                            || status == 308) {
+                        String location = conn.getHeaderField("Location");
+                        conn.disconnect();
+                        conn = null;
+                        if (location == null || location.trim().isEmpty()) {
+                            break;
+                        }
+                        URL nextUrl = new URL(url, location.trim());
+                        String protocol = nextUrl.getProtocol();
+                        if (!"https".equalsIgnoreCase(protocol) && !"http".equalsIgnoreCase(protocol)) {
+                            break;
+                        }
+                        currentUrl = nextUrl.toString();
+                        redirects++;
+                        continue;
+                    }
+                    break;
+                }
+
+                if (conn == null) {
+                    call.reject("HTTP redirect failed without destination URL.", "NETWORK_ERROR");
+                    return;
+                }
+
+                InputStream stream = (status >= 200 && status < 400)
+                        ? conn.getInputStream()
+                        : conn.getErrorStream();
+
+                String bodyText = "";
+                if (stream != null) {
+                    try (BufferedInputStream bis = new BufferedInputStream(stream);
+                         ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+                        byte[] buf = new byte[8192];
+                        int total = 0;
+                        int n;
+                        final int maxBytes = 1024 * 1024;
+                        while ((n = bis.read(buf)) != -1) {
+                            int remaining = maxBytes - total;
+                            if (remaining <= 0) break;
+                            int toWrite = Math.min(n, remaining);
+                            baos.write(buf, 0, toWrite);
+                            total += toWrite;
+                        }
+                        bodyText = new String(baos.toByteArray(), StandardCharsets.UTF_8);
+                    }
+                }
+
+                JSObject ret = new JSObject();
+                ret.put("ok", status >= 200 && status < 300);
+                ret.put("status", status);
+                ret.put("text", bodyText);
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("Native HTTP fetch failed: " + (e.getMessage() != null ? e.getMessage() : "network error"), "NETWORK_ERROR");
+            } finally {
+                if (conn != null) {
+                    try { conn.disconnect(); } catch (Exception ignored) {}
+                }
+            }
+        }, "ZuzuNativeHttpFetch").start();
+    }
+
     @Override
     protected void handleOnDestroy() {
         stopMonitorInternal();
@@ -1640,24 +1802,28 @@ public class ZuzuNativeBridgePlugin extends Plugin {
     private String mapSpeechError(int code) {
         switch (code) {
             case SpeechRecognizer.ERROR_AUDIO:
-                return "Audio recording error.";
+                return "Microphone audio recording error. Check if another app is using the mic.";
+            case SpeechRecognizer.ERROR_CLIENT:
+                return "Speech recognizer client error. Please try speaking again.";
             case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
                 return "Microphone permission is required.";
             case SpeechRecognizer.ERROR_NETWORK:
             case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
-                return "Network unreachable for speech recognition.";
+                return "Network unreachable for Android speech recognition. Please check your connection.";
             case SpeechRecognizer.ERROR_NO_MATCH:
                 return "no-match";
             case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
                 return "no-speech";
             case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
-                return "Recognizer busy, retrying.";
+                return "Speech recognizer is busy. Tap the orb to retry.";
+            case SpeechRecognizer.ERROR_SERVER:
+                return "Google speech server returned an error. Please try again.";
             case 12:
-                return "Speech recognition error (12): Requested language pack unavailable on device.";
+                return "Speech language (bn-BD / en-US) is not available on this device.";
             case 13:
-                return "Speech recognition error (13): Offline language engine unavailable.";
+                return "Offline speech language pack is unavailable on this device.";
             default:
-                return "Speech recognition error (" + code + ")";
+                return "Speech recognition failed (error " + code + "). Please try again.";
         }
     }
 

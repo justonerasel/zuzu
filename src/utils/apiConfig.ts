@@ -2,6 +2,12 @@ import { AppSettings, SearchSourceItem, UserMemory } from '../types';
 import { generateIntelligentAnswer } from './aiEngine';
 import { classifyRealtimeSearchIntent } from './searchIntent';
 import { getAppSettings } from './storage';
+import {
+  MAX_NEWS_RSS_RESULTS,
+  buildNewsFeedErrorMessage,
+  buildStrictNewsRssSystemInstruction,
+  fetchGoogleNewsRssClient
+} from './newsRss';
 
 /**
  * Centralized Google Gemini API client, streaming SSE pipeline, real-time search grounding,
@@ -12,11 +18,44 @@ import { getAppSettings } from './storage';
 export const APP_VERSION = '3.8.0';
 export const APP_VERSION_CODE = 380;
 
-// Centralized Gemini Model Configuration (never hardcoded in UI components; zero deprecated models)
-const GEMINI_TEXT_CANDIDATES = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
+// Centralized free Gemini Model Configuration (never hardcoded in UI components; zero paid or deprecated models)
+const GEMINI_TEXT_CANDIDATES = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-4-hydrogen'
+] as const;
 const GEMINI_TTS_CANDIDATES = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'] as const;
-const GEMINI_TRANSCRIBE_CANDIDATES = ['gemini-3.5-transcribe', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
+const GEMINI_TRANSCRIBE_CANDIDATES = ['gemini-3.5-transcribe', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const;
 const GEMINI_IMAGE_CANDIDATES = ['gemini-3.1-flash-lite-image', 'gemini-nano-banana-2.1'] as const;
+const HIGH_DEMAND_RETRY_DELAYS_MS = [2000, 4000] as const;
+
+function isRetryableHighDemand(rawMsg: string, status?: number): boolean {
+  if (status === 503 || status === 429) return true;
+  return /503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand|overloaded|Service Unavailable|quota|rate limit/i.test(rawMsg);
+}
+
+function isModelMissingError(rawMsg: string, status?: number): boolean {
+  if (status === 404) return true;
+  return /404|NOT_FOUND|not found|not supported|unknown model|thinking/i.test(rawMsg);
+}
+
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      return reject(new DOMException('Request cancelled', 'AbortError'));
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Request cancelled', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 // Deployed Cloud Run Production Backend URL for Android APK
 export const DEFAULT_REMOTE_BACKEND_URL = 'https://ais-pre-requvmmuycwborvooarj55-817905745905.asia-east1.run.app';
@@ -159,17 +198,21 @@ export async function validateGeminiKeyDirectly(apiKey: string): Promise<{
 
   const startTime = Date.now();
   try {
-    // Perform real lightweight generation check first, falling back to /models list only if model ID is temporarily unavailable
-    const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TEXT_CANDIDATES[0]}:generateContent?key=${encodeURIComponent(trimmed)}`;
+    // Perform real lightweight generation check first, falling back across free Flash/Flash-Lite models or /models list
+    const testModel = GEMINI_TEXT_CANDIDATES[GEMINI_TEXT_CANDIDATES.length - 1];
+    const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${encodeURIComponent(trimmed)}`;
+    const genBody: any = {
+      contents: [{ role: 'user', parts: [{ text: 'OK' }] }]
+    };
+    if (testModel.startsWith('gemini-4')) {
+      genBody.generationConfig = { thinkingConfig: { thinkingLevel: 'LOW' } };
+    }
     const genRes = await fetchWithTimeout(
       genUrl,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: 'OK' }] }],
-          generationConfig: { thinkingConfig: { thinkingLevel: 'LOW' } }
-        })
+        body: JSON.stringify(genBody)
       },
       10000
     );
@@ -294,21 +337,24 @@ function buildSystemInstruction(
   });
 
   let sys = `You are ${identityName} (${assistantNick}), a natural, intelligent, emotionally perceptive AI companion running on Android.
-Voice persona: ${pronoun}. User's name: ${userNick}. Current Local Date & Time: ${liveClock}.
+Voice persona: ${pronoun}. User's name: ${userNick}.
+Today's Date & Current Time: ${liveClock} (UTC: ${now.toISOString()}).
 
 CREATOR KNOWLEDGE:
 - Your creator and lead developer is Rasel (MD. Rasel Hossen), a Computer Science student and full-stack Android & AI developer from Bangladesh (GitHub & TikTok: @justonerasel).
 - Mention this warmly and proudly only when asked who built/created/developed you or who Rasel is.
 
 CONVERSATION PRINCIPLES:
+- Reply in the same language as the user. Be short and direct. Answer only what was asked. If the user asks several questions, answer each in 1-2 lines. Give long or detailed answers only when the user asks for details.
 - Speak naturally, warmly, and empathetically like an attentive human partner.
 - Answer directly without parroting or repeating back the user's question.
 - Never repeat repetitive stock fillers or canned catchphrases across turns.
-- Fluent in both Bengali (বাংলা) and English — reply naturally in whichever language the user uses.
 - Active Personality: ${settings.activePersonality}. ${settings.customPersonalityPrompt || ''}`;
 
   if (isVoiceMode) {
-    sys += `\nVoice Mode: Keep spoken responses concise, conversational, engaging, and free of markdown asterisks, raw tables, or code fences.`;
+    sys += `\nVoice Mode: Keep spoken responses crisp, natural dialog, and free of markdown asterisks, raw tables, or code fences.`;
+  } else {
+    sys += `\nText Formatting: Use clean Markdown headings, bullet lists, numbered steps, and fenced code blocks where helpful. Use Markdown tables for comparisons, calculations, and plans.`;
   }
 
   if (settings.memoryEnabled && memories.length > 0) {
@@ -324,8 +370,12 @@ CONVERSATION PRINCIPLES:
 function formatMessagesForGeminiRest(
   messages: Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>
 ): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  // Cap conversation context at the last 10 messages for speed
+  const recentMessages = messages
+    .filter((m) => m && typeof m.text === 'string' && m.text.trim().length > 0)
+    .slice(-10);
   const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
-  for (const msg of messages) {
+  for (const msg of recentMessages) {
     const text = (msg?.text || '').trim();
     if (!text) continue;
     const role: 'user' | 'model' = msg.sender === 'assistant' || msg.sender === 'model' ? 'model' : 'user';
@@ -334,6 +384,9 @@ function formatMessagesForGeminiRest(
     } else {
       contents.push({ role, parts: [{ text }] });
     }
+  }
+  while (contents.length > 1 && contents[0].role !== 'user') {
+    contents.shift();
   }
   if (contents.length > 0 && contents[0].role !== 'user') {
     contents.unshift({ role: 'user', parts: [{ text: 'Hello' }] });
@@ -396,6 +449,8 @@ async function directGeminiStreamContent(params: {
   messages: Array<{ sender: 'user' | 'assistant' | 'model'; text: string }>;
   systemInstruction: string;
   enableGoogleSearch?: boolean;
+  strictNewsItems?: SearchSourceItem[];
+  isBengali?: boolean;
   signal?: AbortSignal;
   onDelta?: (accumulatedText: string, delta: string) => void;
 }): Promise<{ text: string; isCloudAI: boolean; sources?: SearchSourceItem[] }> {
@@ -403,109 +458,156 @@ async function directGeminiStreamContent(params: {
   const contents = formatMessagesForGeminiRest(params.messages);
   let lastErrorMsg = 'Google Gemini request failed.';
 
+  const hasStrictNews = Array.isArray(params.strictNewsItems) && params.strictNewsItems.length > 0;
+  const strictTop8 = hasStrictNews ? params.strictNewsItems!.slice(0, MAX_NEWS_RSS_RESULTS) : [];
+  const enableSearchTool = Boolean(params.enableGoogleSearch && !hasStrictNews);
+
   let sysInst = params.systemInstruction;
-  if (params.enableGoogleSearch) {
-    sysInst += `\n\nREAL-TIME GOOGLE SEARCH GROUNDING ENABLED:\n- Use verified live Google Search results (supporting both English and Bengali queries) for current events, breaking news, prices, weather, and recent updates.\n- Prioritize newly published web articles and news reports, including items published within the last 20 minutes when available.\n- Include publisher/source names and exact publication times when confirmed by retrieved articles.\n- Never fabricate publication timestamps, headlines, or URLs. If no verified reports exist inside a requested narrow time window (e.g., last 20 minutes), state that honestly and provide the latest verified updates with their real timestamps.`;
+  if (hasStrictNews) {
+    sysInst += buildStrictNewsRssSystemInstruction(strictTop8, Boolean(params.isBengali));
+  } else if (enableSearchTool) {
+    sysInst += `\n\nREAL-TIME GOOGLE SEARCH GROUNDING ENABLED:\n- Use verified live Google Search results (supporting both English and Bengali queries) for current events, breaking news, prices, weather, and recent updates.\n- Include publisher/source names and publication times when confirmed by retrieved articles.\n- Never fabricate publication timestamps, headlines, or URLs.`;
   }
 
-  for (const modelId of GEMINI_TEXT_CANDIDATES) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(cleanKey)}`;
-    const body: any = {
-      contents,
-      systemInstruction: { parts: [{ text: sysInst }] }
-    };
-    if (params.enableGoogleSearch) {
-      body.tools = [{ googleSearch: {} }];
-    }
-    if (modelId.startsWith('gemini-4')) {
-      body.generationConfig = {
-        thinkingConfig: { thinkingLevel: 'LOW' }
+  for (let i = 0; i < GEMINI_TEXT_CANDIDATES.length; i++) {
+    const modelId = GEMINI_TEXT_CANDIDATES[i];
+    const hasMore = i < GEMINI_TEXT_CANDIDATES.length - 1;
+    const maxRetriesForModel = i === 0 ? HIGH_DEMAND_RETRY_DELAYS_MS.length : 0;
+
+    for (let attempt = 0; attempt <= maxRetriesForModel; attempt++) {
+      if (params.signal?.aborted) {
+        throw new DOMException('Request cancelled', 'AbortError');
+      }
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(cleanKey)}`;
+      const body: any = {
+        contents,
+        systemInstruction: { parts: [{ text: sysInst }] }
       };
-    }
-
-    const res = await fetchWithTimeout(
-      url,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      },
-      params.enableGoogleSearch ? 22000 : 16000,
-      params.signal
-    );
-
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
-      lastErrorMsg = formatGeminiFriendlyError(rawMsg, res.status);
-      if (
-        res.status === 404 ||
-        res.status === 503 ||
-        /NOT_FOUND|not found for API version|not supported|thinking|UNAVAILABLE|high demand|overloaded/i.test(rawMsg)
-      ) {
-        continue;
+      if (enableSearchTool) {
+        body.tools = [{ googleSearch: {} }];
       }
-      throw new Error(lastErrorMsg);
-    }
-
-    const collectedSources: SearchSourceItem[] = [];
-    const reader = res.body?.getReader();
-    if (!reader) {
-      // Fallback if ReadableStream unavailable in older WebView
-      const jsonText = await res.text();
-      let assembled = '';
-      for (const line of jsonText.split('\n')) {
-        const trimmedLine = line.trim();
-        if (!trimmedLine.startsWith('data:')) continue;
-        const jsonPart = trimmedLine.slice(5).trim();
-        if (!jsonPart || jsonPart === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(jsonPart);
-          const chunkText = (parsed?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('');
-          if (chunkText) {
-            assembled += chunkText;
-            params.onDelta?.(assembled, chunkText);
-          }
-          collectedSources.push(...extractSourcesFromRestCandidate(parsed));
-        } catch {}
+      if (modelId.startsWith('gemini-4')) {
+        body.generationConfig = {
+          thinkingConfig: { thinkingLevel: 'LOW' }
+        };
       }
-      if (!assembled.trim()) throw new Error('Gemini returned an empty response. Please try again.');
-      return { text: assembled.trim(), isCloudAI: true, sources: dedupeSources(collectedSources) };
-    }
 
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let accumulated = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (!trimmedLine.startsWith('data:')) continue;
-        const payload = trimmedLine.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(payload);
-          const chunkText = (parsed?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('');
-          if (chunkText) {
-            accumulated += chunkText;
-            params.onDelta?.(accumulated, chunkText);
-          }
-          collectedSources.push(...extractSourcesFromRestCandidate(parsed));
-        } catch {}
+      let res: Response;
+      try {
+        res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          },
+          params.enableGoogleSearch ? 22000 : 14000,
+          params.signal
+        );
+      } catch (netErr: any) {
+        if (netErr?.name === 'AbortError' && params.signal?.aborted) {
+          throw netErr;
+        }
+        lastErrorMsg = formatGeminiFriendlyError(netErr?.message || 'Network timeout reaching Google Gemini');
+        if (attempt < maxRetriesForModel) {
+          await sleepWithAbort(HIGH_DEMAND_RETRY_DELAYS_MS[attempt], params.signal);
+          continue;
+        }
+        if (hasMore) break;
+        throw new Error(lastErrorMsg);
       }
-    }
 
-    if (accumulated.trim()) {
-      return { text: accumulated.trim(), isCloudAI: true, sources: dedupeSources(collectedSources) };
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        const rawMsg = errJson?.error?.message || `Google Gemini API error (${res.status})`;
+        lastErrorMsg = formatGeminiFriendlyError(rawMsg, res.status);
+
+        if (isModelMissingError(rawMsg, res.status)) {
+          break;
+        }
+        if (attempt < maxRetriesForModel && isRetryableHighDemand(rawMsg, res.status)) {
+          await sleepWithAbort(HIGH_DEMAND_RETRY_DELAYS_MS[attempt], params.signal);
+          continue;
+        }
+        if (hasMore && isRetryableHighDemand(rawMsg, res.status)) {
+          break;
+        }
+        throw new Error(lastErrorMsg);
+      }
+
+      const collectedSources: SearchSourceItem[] = [];
+      const reader = res.body?.getReader();
+      if (!reader) {
+        const jsonText = await res.text();
+        let assembled = '';
+        for (const line of jsonText.split('\n')) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine.startsWith('data:')) continue;
+          const jsonPart = trimmedLine.slice(5).trim();
+          if (!jsonPart || jsonPart === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(jsonPart);
+            const chunkText = (parsed?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('');
+            if (chunkText) {
+              assembled += chunkText;
+              params.onDelta?.(assembled, chunkText);
+            }
+            collectedSources.push(...extractSourcesFromRestCandidate(parsed));
+          } catch {}
+        }
+        if (assembled.trim()) {
+          return {
+            text: assembled.trim(),
+            isCloudAI: true,
+            sources: hasStrictNews ? strictTop8 : dedupeSources(collectedSources)
+          };
+        }
+        lastErrorMsg = 'Gemini returned an empty response. Please try again.';
+        break;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulated = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine.startsWith('data:')) continue;
+          const payload = trimmedLine.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(payload);
+            const chunkText = (parsed?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('');
+            if (chunkText) {
+              accumulated += chunkText;
+              params.onDelta?.(accumulated, chunkText);
+            }
+            if (enableSearchTool) {
+              collectedSources.push(...extractSourcesFromRestCandidate(parsed));
+            }
+          } catch {}
+        }
+      }
+
+      if (accumulated.trim()) {
+        return {
+          text: accumulated.trim(),
+          isCloudAI: true,
+          sources: hasStrictNews ? strictTop8 : dedupeSources(collectedSources)
+        };
+      }
+      lastErrorMsg = 'Gemini returned an empty response. Please try again.';
+      break;
     }
-    throw new Error('Gemini returned an empty response. Please try again.');
   }
 
   throw new Error(lastErrorMsg);
@@ -764,19 +866,77 @@ export async function streamUnifiedAiChat(params: {
     customGeminiApiKey: (params.settings.customGeminiApiKey || latestStored.customGeminiApiKey || '').trim()
   };
 
-  const latestUserMsg = [...params.messages].reverse().find(m => m.sender === 'user')?.text || '';
+  const recentMessages = params.messages.slice(-10);
+  const latestUserMsg = [...recentMessages].reverse().find(m => m.sender === 'user')?.text || '';
   const hasUserGeminiKey = settings.customGeminiApiKey.length > 0 && settings.geminiEnabled !== false;
-  const searchClassification = classifyRealtimeSearchIntent(latestUserMsg, params.messages);
+  const searchClassification = classifyRealtimeSearchIntent(latestUserMsg, recentMessages);
 
-  // 1. Try Backend SSE Stream first (/api/chat/stream)
+  const cap = typeof window !== 'undefined' ? (window as any).Capacitor : null;
+  const hasNativeHttpPlugin = Boolean(cap?.isNativePlatform?.() && cap?.Plugins?.ZuzuNative?.fetchUrlText);
+
+  let prefetchedRssItems: SearchSourceItem[] | undefined;
+  let prefetchedRssError: string | undefined;
+
+  // Inside Android APK: fetch Google News RSS directly via Capacitor native HttpURLConnection (CORS-free, zero server)
+  if (searchClassification.isNewsQuery && hasNativeHttpPlugin) {
+    const rssRes = await fetchGoogleNewsRssClient(searchClassification);
+    if (!rssRes.ok || rssRes.items.length === 0) {
+      const failText = buildNewsFeedErrorMessage(
+        searchClassification.isBengali,
+        rssRes.error || 'No headlines returned'
+      );
+      params.onDelta?.(failText, failText);
+      return {
+        reply: failText,
+        isCloudAI: false,
+        usedRealtimeSearch: false,
+        sources: []
+      };
+    }
+    prefetchedRssItems = rssRes.items.slice(0, MAX_NEWS_RSS_RESULTS);
+
+    // Standalone APK with local Gemini key: stream directly to Gemini with top 8 native RSS results (zero server needed!)
+    if (hasUserGeminiKey) {
+      const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
+      try {
+        const directRes = await directGeminiStreamContent({
+          apiKey: settings.customGeminiApiKey,
+          messages: recentMessages,
+          systemInstruction: sysPrompt,
+          strictNewsItems: prefetchedRssItems,
+          isBengali: searchClassification.isBengali,
+          signal: params.signal,
+          onDelta: params.onDelta
+        });
+        return {
+          reply: directRes.text,
+          isCloudAI: true,
+          usedRealtimeSearch: true,
+          sources: prefetchedRssItems
+        };
+      } catch (directErr: any) {
+        if (directErr?.name === 'AbortError' && params.signal?.aborted) {
+          throw directErr;
+        }
+        return {
+          reply: directErr?.message || 'Google Gemini request failed.',
+          isCloudAI: false,
+          isError: true
+        };
+      }
+    }
+  }
+
+  // 1. Try Backend SSE Stream first (/api/chat/stream) — timeout allows full 2s+4s retries and model fallbacks
   let backendExplicitError: string | null = null;
+  let backendExhaustedFullChain = false;
   try {
     const res = await apiFetch(
       '/api/chat/stream',
       {
         method: 'POST',
         body: JSON.stringify({
-          messages: params.messages,
+          messages: recentMessages,
           personality: settings.activePersonality,
           voiceIdentity: settings.activeIdentity,
           customPersonalityPrompt: settings.customPersonalityPrompt,
@@ -786,10 +946,12 @@ export async function streamUnifiedAiChat(params: {
           memoryEnabled: settings.memoryEnabled,
           assistantNickname: settings.assistantNickname || 'Zuzu',
           userNickname: settings.userNickname || 'Friend',
-          gfIntensity: settings.gfIntensity || 'sweet'
+          gfIntensity: settings.gfIntensity || 'sweet',
+          ...(prefetchedRssItems ? { prefetchedRssItems } : {}),
+          ...(prefetchedRssError ? { prefetchedRssError } : {})
         })
       },
-      searchClassification.needsSearch ? 22000 : 16000,
+      searchClassification.needsSearch ? 50000 : 45000,
       params.signal
     );
 
@@ -821,6 +983,7 @@ export async function streamUnifiedAiChat(params: {
             const payload = JSON.parse(trimmed.slice(5).trim());
             if (payload.error) {
               backendExplicitError = String(payload.error);
+              backendExhaustedFullChain = true;
               break;
             }
             if (typeof payload.delta === 'string' && payload.delta.length > 0) {
@@ -837,7 +1000,7 @@ export async function streamUnifiedAiChat(params: {
       }
 
       if (!backendExplicitError && accumulated.trim().length > 0) {
-        if (!hasUserGeminiKey || doneMeta.isCloudAI) {
+        if (!hasUserGeminiKey || doneMeta.isCloudAI || !doneMeta.requiresKey) {
           return {
             reply: accumulated.trim(),
             isCloudAI: Boolean(doneMeta.isCloudAI),
@@ -860,44 +1023,60 @@ export async function streamUnifiedAiChat(params: {
     // Backend unreachable; fall through to direct Gemini REST stream (essential on standalone APK)
   }
 
-  // 2. Direct Gemini REST SSE Stream fallback (1 controlled transient retry)
-  if (hasUserGeminiKey) {
-    const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
-    let attempt = 0;
-    let lastErrorMsg = backendExplicitError || '';
+  // If backend already ran the full retry & fallback chain with the same user key and still failed, return that error
+  if (backendExhaustedFullChain && backendExplicitError) {
+    return {
+      reply: backendExplicitError,
+      isCloudAI: false,
+      isError: true
+    };
+  }
 
-    while (attempt < 2) {
-      attempt += 1;
-      try {
-        const directRes = await directGeminiStreamContent({
-          apiKey: settings.customGeminiApiKey,
-          messages: params.messages,
-          systemInstruction: sysPrompt,
-          enableGoogleSearch: searchClassification.needsSearch,
-          signal: params.signal,
-          onDelta: params.onDelta
-        });
+  // 2. Direct Gemini REST SSE Stream fallback (for standalone APK or unreachable backend)
+  if (hasUserGeminiKey) {
+    let strictNewsItems: SearchSourceItem[] | undefined = prefetchedRssItems;
+    if (searchClassification.isNewsQuery && !strictNewsItems) {
+      const rssFallback = await fetchGoogleNewsRssClient(searchClassification);
+      if (!rssFallback.ok || rssFallback.items.length === 0) {
+        const failText = buildNewsFeedErrorMessage(
+          searchClassification.isBengali,
+          rssFallback.error || 'No headlines returned'
+        );
+        params.onDelta?.(failText, failText);
         return {
-          reply: directRes.text,
-          isCloudAI: true,
-          usedRealtimeSearch: searchClassification.needsSearch,
-          sources: directRes.sources || []
+          reply: failText,
+          isCloudAI: false,
+          usedRealtimeSearch: false,
+          sources: []
         };
-      } catch (directErr: any) {
-        if (directErr?.name === 'AbortError' && params.signal?.aborted) {
-          throw directErr;
-        }
-        lastErrorMsg = directErr?.message || lastErrorMsg || 'Google Gemini request failed.';
-        const isTransient = /timeout|timed out|Network|Failed to fetch|503|504/i.test(lastErrorMsg);
-        if (!isTransient || attempt >= 2) {
-          break;
-        }
       }
+      strictNewsItems = rssFallback.items.slice(0, MAX_NEWS_RSS_RESULTS);
     }
 
-    if (lastErrorMsg) {
+    const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
+    try {
+      const directRes = await directGeminiStreamContent({
+        apiKey: settings.customGeminiApiKey,
+        messages: recentMessages,
+        systemInstruction: sysPrompt,
+        enableGoogleSearch: searchClassification.needsSearch && !searchClassification.isNewsQuery,
+        strictNewsItems,
+        isBengali: searchClassification.isBengali,
+        signal: params.signal,
+        onDelta: params.onDelta
+      });
       return {
-        reply: lastErrorMsg,
+        reply: directRes.text,
+        isCloudAI: true,
+        usedRealtimeSearch: searchClassification.needsSearch,
+        sources: strictNewsItems || directRes.sources || []
+      };
+    } catch (directErr: any) {
+      if (directErr?.name === 'AbortError' && params.signal?.aborted) {
+        throw directErr;
+      }
+      return {
+        reply: directErr?.message || backendExplicitError || 'Google Gemini request failed.',
         isCloudAI: false,
         isError: true
       };

@@ -286,6 +286,23 @@ export async function checkMicrophonePermission(): Promise<MicrophonePermissionS
   }
 
   const nativePlugin = getNativeZuzuPlugin();
+  if (nativePlugin?.checkRecordAudioPermission) {
+    try {
+      const recCheck = await nativePlugin.checkRecordAudioPermission();
+      if (recCheck?.granted === true || recCheck?.state === 'granted') {
+        localStorage.setItem(MIC_STORAGE_KEY, 'granted');
+        localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, 'granted');
+        return 'granted';
+      }
+      const rawState = recCheck?.state;
+      if (rawState === 'permanently_denied' || rawState === 'denied' || rawState === 'prompt') {
+        localStorage.setItem(MIC_STORAGE_KEY, rawState);
+        localStorage.setItem(`${STORAGE_KEY_PREFIX}microphone`, rawState);
+        return rawState;
+      }
+    } catch {}
+  }
+
   if (nativePlugin?.checkAllNativePermissions) {
     try {
       const nativeStatus = await nativePlugin.checkAllNativePermissions();

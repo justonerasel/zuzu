@@ -28,7 +28,13 @@ import {
 } from '../utils/intentDetector';
 import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
 import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
-import { checkMicrophonePermission, getNativeZuzuPlugin, MicrophonePermissionState, openAndroidAppSettingsGuide } from '../utils/permission';
+import {
+  checkMicrophonePermission,
+  requestMicrophonePermission,
+  getNativeZuzuPlugin,
+  MicrophonePermissionState,
+  openAndroidAppSettingsGuide
+} from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import { executeConfirmedMessageIntent } from './NotesRemindersModal';
 import { streamUnifiedAiChat } from '../utils/apiConfig';
@@ -61,7 +67,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [statusMessage, setStatusMessage] = useState('Tap microphone to start voice session');
+  const [aiReplyText, setAiReplyText] = useState('');
+  const [statusMessage, setStatusMessage] = useState('Tap orb to start voice chat');
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [lastSources, setLastSources] = useState<SearchSourceItem[]>([]);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
@@ -179,8 +186,10 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         language: latestSettings.recognitionLanguage || 'auto',
         onStart: () => {
           setHasError(false);
+          setErrorNotice(null);
           setIsListening(true);
           setTranscript('');
+          setAiReplyText('');
           setStatusMessage('Listening to your voice...');
         },
         onPartial: (partialText) => {
@@ -199,9 +208,10 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
           setIsListening(false);
-          setTranscript('');
           if (!isCancelledRef.current) {
-            setStatusMessage('No speech detected. Tap orb to speak again.');
+            setHasError(true);
+            setErrorNotice('No speech was recognized. Please speak clearly and tap the orb to try again.');
+            setStatusMessage('No speech detected • Tap orb to retry');
           }
         },
         onPermissionDenied: async () => {
@@ -224,8 +234,8 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           setMicBusyForActiveSession(false);
           setIsListening(false);
           setHasError(true);
-          setErrorNotice(msg);
-          setStatusMessage('Error • Tap orb to retry');
+          setErrorNotice(msg || 'Speech recognition failed. Tap the orb to try again.');
+          setStatusMessage('Recognition error • Tap orb to retry');
         }
       });
 
@@ -239,7 +249,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     }
   };
 
-  // Verify microphone permission and immediately open microphone listening
+  // Check RECORD_AUDIO first; start immediately if granted, request directly if prompt (no intermediate Granted dialog)
   const ensurePermissionAndStart = async () => {
     if (isStartingRef.current) return;
     isStartingRef.current = true;
@@ -248,11 +258,23 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       setErrorNotice(null);
       try {
         const permState = await checkMicrophonePermission();
-        if (permState !== 'granted') {
-          setMicModalState(permState);
+        if (permState === 'granted') {
+          await startListening();
+          return;
+        }
+        if (permState === 'prompt') {
+          const reqResult = await requestMicrophonePermission();
+          if (reqResult.success && reqResult.state === 'granted') {
+            await startListening();
+            return;
+          }
+          setMicModalState(reqResult.state);
           setShowPermissionModal(true);
           return;
         }
+        setMicModalState(permState);
+        setShowPermissionModal(true);
+        return;
       } catch {}
 
       await startListening();
@@ -287,24 +309,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     };
   }, []);
 
-  // Stop listening
-  const stopListening = () => {
-    if (captureControllerRef.current) {
-      captureControllerRef.current.stop();
-    }
-    setMicBusyForActiveSession(false);
-    setIsListening(false);
-    playHapticSound('listen_stop');
-  };
-
-  // Interrupt active AI speaking immediately and start listening for the user's next turn
-  const interruptSpeechAndListen = () => {
-    stopSpeaking();
-    setIsSpeaking(false);
-    ensurePermissionAndStart();
-  };
-
-  // Cancel action: stops everything immediately
+  // Stop/Cancel action: stops listening, speaking, and pending AI streams immediately
   const handleCancel = () => {
     isCancelledRef.current = true;
     suppressContinuousOnceRef.current = true;
@@ -419,7 +424,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         voiceIdentity: currentId
       });
       setIsProcessing(false);
-      setTranscript(sleepIntent.confirmationSpoken);
+      setAiReplyText(sleepIntent.confirmationSpoken);
       speakZuzuResponse(sleepIntent.confirmationSpoken, currentId, () => {
         setStatusMessage('Standby mode • Say "Wake up Zuzu" anytime');
       });
@@ -450,7 +455,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         voiceIdentity: currentId
       });
       setIsProcessing(false);
-      setTranscript(resolved.spokenConfirmation);
+      setAiReplyText(resolved.spokenConfirmation);
       speakZuzuResponse(resolved.spokenConfirmation, currentId);
       return;
     }
@@ -537,7 +542,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       });
 
       setIsProcessing(false);
-      setTranscript(actionIntent.spokenConfirmation);
+      setAiReplyText(actionIntent.spokenConfirmation);
       speakZuzuResponse(actionIntent.spokenConfirmation, currentId);
       return;
     }
@@ -595,7 +600,12 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         settings: latestSettings,
         memories: activeMemories,
         isVoiceMode: true,
-        signal: controller.signal
+        signal: controller.signal,
+        onDelta: (accumulated) => {
+          if (!controller.signal.aborted && !isCancelledRef.current) {
+            setAiReplyText(accumulated);
+          }
+        }
       });
 
       if (controller.signal.aborted || isCancelledRef.current) {
@@ -628,7 +638,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       });
 
       setIsProcessing(false);
-      setTranscript(aiReply);
+      setAiReplyText(aiReply);
 
       speakZuzuResponse(aiReply, currentId);
     } catch (err: any) {
@@ -648,9 +658,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   handleUserVoiceInputRef.current = handleUserVoiceInput;
   ensurePermissionAndStartRef.current = ensurePermissionAndStart;
   toggleOrbStateRef.current = () => {
-    if (isListening) stopListening();
-    else if (isSpeaking) interruptSpeechAndListen();
-    else if (isProcessing) handleCancel();
+    if (isListening || isSpeaking || isProcessing) handleCancel();
     else ensurePermissionAndStart();
   };
 
@@ -757,11 +765,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             particleDensity={settings.orbParticleDensity}
             size={265}
             onClick={() =>
-              isListening
-                ? stopListening()
-                : isSpeaking
-                ? interruptSpeechAndListen()
-                : isProcessing
+              isListening || isSpeaking || isProcessing
                 ? handleCancel()
                 : ensurePermissionAndStart()
             }
@@ -789,9 +793,9 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
               {isListening
                 ? 'LISTENING... • TAP TO STOP'
                 : isSpeaking
-                ? 'SPEAKING... • TAP TO INTERRUPT'
+                ? 'SPEAKING... • TAP TO STOP'
                 : isProcessing
-                ? 'THINKING...'
+                ? 'THINKING... • TAP TO STOP'
                 : hasError
                 ? 'ERROR • TAP ORB TO RETRY'
                 : 'ZUZU AI ACTIVE • TAP ORB TO SPEAK'}
@@ -805,16 +809,24 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           </div>
         </div>
 
-        {/* Live Transcript Box */}
-        {(transcript || sessionRef.current?.messages.slice(-1)[0]) && (
-          <div className="w-full max-w-sm mt-3 p-3.5 bg-white/80 backdrop-blur-md rounded-2xl border border-white/80 shadow-sm text-xs animate-fade-in">
-            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-              <span>Live Transcript</span>
+        {/* Live Transcript & Reply Box */}
+        {(transcript || aiReplyText || sessionRef.current?.messages.slice(-1)[0]) && (
+          <div className="w-full max-w-sm mt-3 p-3.5 bg-white/80 backdrop-blur-md rounded-2xl border border-white/80 shadow-sm text-xs animate-fade-in space-y-1.5">
+            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider flex items-center justify-between">
+              <span>Voice Conversation</span>
               <span className="text-purple-600 font-medium text-[10px]">{statusMessage}</span>
             </div>
-            <p className="text-slate-700 italic line-clamp-4">
-              "{transcript || sessionRef.current?.messages.slice(-1)[0]?.text || ''}"
-            </p>
+            {transcript && (
+              <p className="text-slate-600 italic line-clamp-3">
+                <span className="font-bold not-italic text-purple-700">You: </span>
+                "{transcript}"
+              </p>
+            )}
+            {(aiReplyText || (!transcript && sessionRef.current?.messages.slice(-1)[0]?.text)) && (
+              <p className="text-slate-800 font-medium line-clamp-5 whitespace-pre-wrap">
+                {aiReplyText || sessionRef.current?.messages.slice(-1)[0]?.text || ''}
+              </p>
+            )}
 
             {lastSources.length > 0 && (
               <div className="mt-2 pt-2 border-t border-purple-100 space-y-1.5">
@@ -914,24 +926,20 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         <div className="w-full max-w-xs mt-3 flex items-center justify-center gap-2.5 z-20 pb-2">
           <button
             onClick={() =>
-              isListening
-                ? stopListening()
-                : isSpeaking
-                ? interruptSpeechAndListen()
-                : isProcessing
+              isListening || isSpeaking || isProcessing
                 ? handleCancel()
                 : ensurePermissionAndStart()
             }
             className={`flex-1 py-2.5 px-4 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-all ${
-              isListening
+              isListening || isSpeaking || isProcessing
                 ? 'bg-rose-500 hover:bg-rose-600 text-white'
                 : 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:opacity-95'
             }`}
           >
-            {isListening ? (
+            {isListening || isSpeaking || isProcessing ? (
               <>
                 <Square className="w-3.5 h-3.5 fill-current" />
-                <span>Stop Listening</span>
+                <span>Stop Voice Loop</span>
               </>
             ) : (
               <>
@@ -973,7 +981,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
         onClose={() => setShowPermissionModal(false)}
         onPermissionGranted={() => {
           setShowPermissionModal(false);
-          ensurePermissionAndStart();
+          startListening();
         }}
       />
     </div>
