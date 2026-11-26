@@ -5,9 +5,10 @@ import { getAppSettings } from './storage';
 import {
   MAX_NEWS_RSS_RESULTS,
   buildNewsFeedErrorMessage,
-  buildStrictNewsRssSystemInstruction,
-  fetchGoogleNewsRssClient
+  buildStrictNewsRssSystemInstruction
 } from './newsRss';
+import { fetchGoogleNewsRssClient } from './newsRssClient';
+import { getNativeZuzuPlugin } from './permission';
 
 /**
  * Centralized Google Gemini API client, streaming SSE pipeline, real-time search grounding,
@@ -871,8 +872,8 @@ export async function streamUnifiedAiChat(params: {
   const hasUserGeminiKey = settings.customGeminiApiKey.length > 0 && settings.geminiEnabled !== false;
   const searchClassification = classifyRealtimeSearchIntent(latestUserMsg, recentMessages);
 
-  const cap = typeof window !== 'undefined' ? (window as any).Capacitor : null;
-  const hasNativeHttpPlugin = Boolean(cap?.isNativePlatform?.() && cap?.Plugins?.ZuzuNative?.fetchUrlText);
+  const nativePlugin = getNativeZuzuPlugin();
+  const hasNativeHttpPlugin = Boolean(nativePlugin?.fetchUrlText);
 
   let prefetchedRssItems: SearchSourceItem[] | undefined;
   let prefetchedRssError: string | undefined;

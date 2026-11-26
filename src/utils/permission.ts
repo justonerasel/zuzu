@@ -1,3 +1,5 @@
+import { Capacitor, registerPlugin } from '@capacitor/core';
+
 export type PermissionStatusState =
   | 'granted'
   | 'prompt'
@@ -58,8 +60,18 @@ export const PERMISSION_CATEGORY_TABS: Array<{ id: PermissionCategoryId; label: 
 const STORAGE_KEY_PREFIX = 'zuzu_perm_status_';
 const MIC_STORAGE_KEY = 'zuzu_mic_permission_status';
 
+const ZuzuNativePluginProxy =
+  typeof window !== 'undefined' ? registerPlugin<any>('ZuzuNative') : null;
+
 export function getNativeZuzuPlugin(): any | null {
   if (typeof window === 'undefined') return null;
+  if (
+    Capacitor.isNativePlatform() &&
+    Capacitor.isPluginAvailable('ZuzuNative') &&
+    ZuzuNativePluginProxy
+  ) {
+    return ZuzuNativePluginProxy;
+  }
   const cap = (window as any).Capacitor;
   if (cap?.isNativePlatform?.() && cap?.Plugins?.ZuzuNative) {
     return cap.Plugins.ZuzuNative;

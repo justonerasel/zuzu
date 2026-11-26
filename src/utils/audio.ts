@@ -14,9 +14,25 @@ function getAudioContext(): AudioContext {
     audioCtx = new AudioContextClass();
   }
   if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
+    void audioCtx.resume();
   }
   return audioCtx;
+}
+
+/**
+ * Must be invoked synchronously inside user tap/click event handlers
+ * so Android WebView / mobile browsers unlock audio output cleanly.
+ */
+export function resumeAudioContextOnGesture(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') {
+      void ctx.resume();
+    }
+  } catch {
+    // AudioContext may be unavailable in restricted environments
+  }
 }
 
 export function playHapticSound(type: 'switch' | 'listen_start' | 'listen_stop' | 'message_sent'): void {
@@ -184,7 +200,10 @@ async function speakWithDeviceFallback(params: {
         );
       }
 
-      if (params.seq !== speechGenerationSeq) return;
+      if (params.seq !== speechGenerationSeq) {
+        clearNativeTtsListeners();
+        return;
+      }
       params.onStart?.();
       const watchdogMs = Math.max(5000, Math.min(35000, cleanText.length * 140));
       nativeTtsWatchdogTimer = setTimeout(() => done(), watchdogMs);

@@ -26,7 +26,7 @@ import {
   PendingReminderClarification,
   resolvePendingReminderClarification
 } from '../utils/intentDetector';
-import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
+import { playHapticSound, resumeAudioContextOnGesture, speakText, stopSpeaking } from '../utils/audio';
 import { saveVoiceSession, getMemories, saveMemory } from '../utils/storage';
 import {
   checkMicrophonePermission,
@@ -89,6 +89,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   const sessionRef = useRef(currentSession);
   const isCancelledRef = useRef(false);
   const isStartingRef = useRef(false);
+  const continuousRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleUserVoiceInputRef = useRef<(spokenText: string) => void>(() => {});
   const ensurePermissionAndStartRef = useRef<() => void>(() => {});
   const toggleOrbStateRef = useRef<() => void>(() => {});
@@ -107,6 +108,10 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   // Cleanup active voice capture and in-flight requests on unmount
   useEffect(() => {
     return () => {
+      if (continuousRestartTimerRef.current) {
+        clearTimeout(continuousRestartTimerRef.current);
+        continuousRestartTimerRef.current = null;
+      }
       aiAbortControllerRef.current?.abort();
       aiAbortControllerRef.current = null;
       captureControllerRef.current?.cancel();
@@ -158,19 +163,23 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     saveVoiceSession(updatedSession);
   };
 
-  // Start Speech Recognition via unified native Android + Web Speech + Cloud Transcription fallback
+  // Start Speech Recognition via native Android SpeechRecognizer + Web Speech fallback
   const startListening = async () => {
     setHasError(false);
     setErrorNotice(null);
     isCancelledRef.current = false;
     suppressContinuousOnceRef.current = false;
+    if (continuousRestartTimerRef.current) {
+      clearTimeout(continuousRestartTimerRef.current);
+      continuousRestartTimerRef.current = null;
+    }
     stopSpeaking();
     setIsSpeaking(false);
+    setIsProcessing(false);
 
     if (aiAbortControllerRef.current) {
       aiAbortControllerRef.current.abort();
       aiAbortControllerRef.current = null;
-      setIsProcessing(false);
     }
 
     if (captureControllerRef.current) {
@@ -179,12 +188,15 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     }
 
     const latestSettings = settingsRef.current;
+    let sessionEnded = false;
     try {
       setStatusMessage('Preparing microphone...');
+      setIsListening(true);
       setMicBusyForActiveSession(true);
       const controller = await startVoiceCapture({
         language: latestSettings.recognitionLanguage || 'auto',
         onStart: () => {
+          if (sessionEnded || isCancelledRef.current) return;
           setHasError(false);
           setErrorNotice(null);
           setIsListening(true);
@@ -193,28 +205,38 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           setStatusMessage('Listening to your voice...');
         },
         onPartial: (partialText) => {
+          if (sessionEnded || isCancelledRef.current) return;
           setTranscript(partialText);
         },
         onResult: (finalText) => {
+          sessionEnded = true;
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
           setIsListening(false);
           setTranscript(finalText);
           if (!isCancelledRef.current && finalText.trim().length > 0) {
             handleUserVoiceInput(finalText.trim());
+          } else {
+            setHasError(false);
+            setErrorNotice(null);
+            setStatusMessage("I didn't hear anything, tap to try again");
           }
         },
         onEmptyEnd: () => {
+          sessionEnded = true;
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
           setIsListening(false);
+          setIsProcessing(false);
+          setIsSpeaking(false);
           if (!isCancelledRef.current) {
-            setHasError(true);
-            setErrorNotice('No speech was recognized. Please speak clearly and tap the orb to try again.');
-            setStatusMessage('No speech detected • Tap orb to retry');
+            setHasError(false);
+            setErrorNotice(null);
+            setStatusMessage("I didn't hear anything, tap to try again");
           }
         },
         onPermissionDenied: async () => {
+          sessionEnded = true;
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
           setIsListening(false);
@@ -230,19 +252,30 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           setErrorNotice('Microphone permission is required for voice conversation.');
         },
         onError: (msg) => {
+          sessionEnded = true;
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
           setIsListening(false);
+          setIsProcessing(false);
+          setIsSpeaking(false);
           setHasError(true);
           setErrorNotice(msg || 'Speech recognition failed. Tap the orb to try again.');
           setStatusMessage('Recognition error • Tap orb to retry');
         }
       });
 
-      captureControllerRef.current = controller;
+      if (!sessionEnded && !isCancelledRef.current) {
+        captureControllerRef.current = controller;
+      } else {
+        controller.cancel();
+      }
     } catch (err: any) {
+      sessionEnded = true;
+      captureControllerRef.current = null;
       setMicBusyForActiveSession(false);
       setIsListening(false);
+      setIsProcessing(false);
+      setIsSpeaking(false);
       setHasError(true);
       setErrorNotice(err?.message || 'Microphone activation failed');
       setStatusMessage('Error • Tap orb to retry');
@@ -251,33 +284,53 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
 
   // Check RECORD_AUDIO first; start immediately if granted, request directly if prompt (no intermediate Granted dialog)
   const ensurePermissionAndStart = async () => {
+    resumeAudioContextOnGesture();
     if (isStartingRef.current) return;
     isStartingRef.current = true;
     try {
+      isCancelledRef.current = false;
       setHasError(false);
       setErrorNotice(null);
-      try {
-        const permState = await checkMicrophonePermission();
-        if (permState === 'granted') {
+      const permState = await checkMicrophonePermission();
+      if (isCancelledRef.current) return;
+
+      if (permState === 'granted') {
+        await startListening();
+        return;
+      }
+      if (permState === 'prompt') {
+        const reqResult = await requestMicrophonePermission();
+        if (isCancelledRef.current) return;
+        if (reqResult.success && reqResult.state === 'granted') {
           await startListening();
           return;
         }
-        if (permState === 'prompt') {
-          const reqResult = await requestMicrophonePermission();
-          if (reqResult.success && reqResult.state === 'granted') {
-            await startListening();
-            return;
-          }
-          setMicModalState(reqResult.state);
-          setShowPermissionModal(true);
-          return;
-        }
-        setMicModalState(permState);
+        setMicModalState(reqResult.state);
         setShowPermissionModal(true);
+        setHasError(true);
+        setErrorNotice(reqResult.error || 'Microphone permission was declined.');
+        setStatusMessage('Microphone permission required');
         return;
-      } catch {}
-
-      await startListening();
+      }
+      if (permState === 'unsupported') {
+        setHasError(true);
+        setErrorNotice('Speech recognition and microphone are unavailable in this environment.');
+        setStatusMessage('Microphone unsupported');
+        return;
+      }
+      setMicModalState(permState);
+      setShowPermissionModal(true);
+      setHasError(true);
+      setErrorNotice(
+        permState === 'permanently_denied'
+          ? 'Microphone permission is blocked in Android Settings. Allow Microphone and retry.'
+          : 'Microphone permission is required for voice chat.'
+      );
+      setStatusMessage('Microphone permission required');
+    } catch (err: any) {
+      setHasError(true);
+      setErrorNotice(err?.message || 'Failed to check microphone permission.');
+      setStatusMessage('Error • Tap orb to retry');
     } finally {
       isStartingRef.current = false;
     }
@@ -312,7 +365,12 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   // Stop/Cancel action: stops listening, speaking, and pending AI streams immediately
   const handleCancel = () => {
     isCancelledRef.current = true;
+    isStartingRef.current = false;
     suppressContinuousOnceRef.current = true;
+    if (continuousRestartTimerRef.current) {
+      clearTimeout(continuousRestartTimerRef.current);
+      continuousRestartTimerRef.current = null;
+    }
     if (aiAbortControllerRef.current) {
       aiAbortControllerRef.current.abort();
       aiAbortControllerRef.current = null;
@@ -328,11 +386,11 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     setIsProcessing(false);
     setHasError(false);
     setErrorNotice(null);
-    setStatusMessage('Voice interaction cancelled.');
+    setStatusMessage('Voice interaction stopped.');
     playHapticSound('listen_stop');
   };
 
-  // Speak response using selected Gemini prebuilt voice
+  // Speak response using free Android native TextToSpeech / browser SpeechSynthesis
   const speakZuzuResponse = (
     responseText: string,
     targetIdentity: VoiceIdentity,
@@ -356,6 +414,7 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       speechRate: latestSettings.speechRate,
       volume: latestSettings.volume ?? 1.0,
       onStart: () => {
+        if (isCancelledRef.current) return;
         setIsSpeaking(true);
       },
       onEnd: () => {
@@ -368,28 +427,32 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
           !isCancelledRef.current &&
           !suppressContinuousOnceRef.current
         ) {
-          setTimeout(() => {
+          if (continuousRestartTimerRef.current) {
+            clearTimeout(continuousRestartTimerRef.current);
+          }
+          continuousRestartTimerRef.current = setTimeout(() => {
+            continuousRestartTimerRef.current = null;
             if (!isCancelledRef.current && !suppressContinuousOnceRef.current) {
-              startListening();
+              void startListening();
             }
-          }, 350);
+          }, 500);
         }
       },
       onError: (err) => {
         console.warn('Speech playback error:', err);
         setIsSpeaking(false);
-        if (
-          isContinuousRef.current &&
-          !isCancelledRef.current &&
-          !suppressContinuousOnceRef.current
-        ) {
-          setTimeout(() => {
-            if (!isCancelledRef.current && !suppressContinuousOnceRef.current) {
-              startListening();
-            }
-          }, 350);
-        }
+        setIsProcessing(false);
+        setHasError(true);
+        setErrorNotice(String(err?.message || err?.error || 'Audio playback failed.'));
+        setStatusMessage('Audio error • Tap orb to retry');
       }
+    }).catch((err: any) => {
+      if (isCancelledRef.current) return;
+      setIsSpeaking(false);
+      setIsProcessing(false);
+      setHasError(true);
+      setErrorNotice(String(err?.message || 'Audio playback failed.'));
+      setStatusMessage('Audio error • Tap orb to retry');
     });
   };
 
@@ -403,159 +466,159 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
     setStatusMessage('Processing speech intent...');
     setLastSources([]);
 
-    const currentId = activeIdentityRef.current;
-    const latestSettings = settingsRef.current;
-
-    // 0. Check "Bye Zuzu" / "Sleep Zuzu" Standby Command
-    const sleepIntent = detectSleepStopIntent(spokenText, latestSettings.assistantNickname || 'Zuzu');
-    if (sleepIntent.isSleepCommand) {
-      suppressContinuousOnceRef.current = true;
-      playHapticSound('listen_stop');
-      appendVoiceMessage({
-        sender: 'user',
-        text: spokenText,
-        timestamp: Date.now(),
-        voiceIdentity: currentId
-      });
-      appendVoiceMessage({
-        sender: 'assistant',
-        text: sleepIntent.confirmationSpoken,
-        timestamp: Date.now() + 80,
-        voiceIdentity: currentId
-      });
-      setIsProcessing(false);
-      setAiReplyText(sleepIntent.confirmationSpoken);
-      speakZuzuResponse(sleepIntent.confirmationSpoken, currentId, () => {
-        setStatusMessage('Standby mode • Say "Wake up Zuzu" anytime');
-      });
-      return;
-    }
-
-    // 0.5 Resolve pending reminder clarification if user answered a previous time/AM-PM prompt
-    if (
-      pendingClarificationRef.current &&
-      Date.now() - pendingClarificationRef.current.createdAt < 3 * 60 * 1000
-    ) {
-      const resolved = resolvePendingReminderClarification(
-        spokenText,
-        pendingClarificationRef.current
-      );
-      pendingClarificationRef.current = resolved.pendingClarification || null;
-      playHapticSound('message_sent');
-      appendVoiceMessage({
-        sender: 'user',
-        text: spokenText,
-        timestamp: Date.now(),
-        voiceIdentity: currentId
-      });
-      appendVoiceMessage({
-        sender: 'assistant',
-        text: resolved.spokenConfirmation,
-        timestamp: Date.now() + 80,
-        voiceIdentity: currentId
-      });
-      setIsProcessing(false);
-      setAiReplyText(resolved.spokenConfirmation);
-      speakZuzuResponse(resolved.spokenConfirmation, currentId);
-      return;
-    }
-    pendingClarificationRef.current = null;
-
-    // 1. Check for Voice Switch Command in English or Bengali
-    const switchIntent = detectVoiceSwitchIntent(spokenText, currentId);
-
-    if (switchIntent.isSwitchCommand && switchIntent.targetIdentity) {
-      const newIdentity = switchIntent.targetIdentity;
-      const newVoice = getDefaultGeminiVoiceForIdentity(newIdentity).id;
-      playHapticSound('switch');
-
-      onUpdateSettings({ activeIdentity: newIdentity, geminiVoiceName: newVoice });
-      activeIdentityRef.current = newIdentity;
-
-      appendVoiceMessage({
-        sender: 'user',
-        text: spokenText,
-        timestamp: Date.now(),
-        voiceIdentity: currentId,
-        isSwitchCommand: true
-      });
-
-      const confirmationText = switchIntent.confirmationSpoken;
-      appendVoiceMessage({
-        sender: 'assistant',
-        text: confirmationText,
-        timestamp: Date.now() + 100,
-        voiceIdentity: newIdentity,
-        audioDuration: 3
-      });
-
-      setIsProcessing(false);
-      speakZuzuResponse(confirmationText, newIdentity);
-      return;
-    }
-
-    if (switchIntent.isAmbiguous && switchIntent.ambiguousQuestion) {
-      const clarifyText = switchIntent.ambiguousQuestion;
-      appendVoiceMessage({
-        sender: 'user',
-        text: spokenText,
-        timestamp: Date.now(),
-        voiceIdentity: currentId
-      });
-      appendVoiceMessage({
-        sender: 'assistant',
-        text: clarifyText,
-        timestamp: Date.now() + 100,
-        voiceIdentity: currentId
-      });
-      setIsProcessing(false);
-      speakZuzuResponse(clarifyText, currentId);
-      return;
-    }
-
-    // 1.2 Natural Language Voice Command Action Intents (Apps, Notes CRUD, Reminders Lifecycle, Messages)
-    const actionIntent = detectVoiceActionIntent(spokenText);
-    if (actionIntent.hasActionIntent) {
-      playHapticSound('message_sent');
-      if (actionIntent.intentType === 'clarify_reminder' && actionIntent.pendingClarification) {
-        pendingClarificationRef.current = actionIntent.pendingClarification;
-      }
-      if (actionIntent.requiresConfirmation && actionIntent.messageDraft) {
-        setPendingMessageDraft(actionIntent.messageDraft);
-      } else {
-        setPendingMessageDraft(null);
-      }
-
-      appendVoiceMessage({
-        sender: 'user',
-        text: spokenText,
-        timestamp: Date.now(),
-        voiceIdentity: currentId
-      });
-
-      appendVoiceMessage({
-        sender: 'assistant',
-        text: actionIntent.spokenConfirmation,
-        timestamp: Date.now() + 100,
-        voiceIdentity: currentId,
-        audioDuration: 3
-      });
-
-      setIsProcessing(false);
-      setAiReplyText(actionIntent.spokenConfirmation);
-      speakZuzuResponse(actionIntent.spokenConfirmation, currentId);
-      return;
-    }
-
-    // Case C: Standard Voice Query / Conversation / Live Internet Search
-    appendVoiceMessage({
-      sender: 'user',
-      text: spokenText,
-      timestamp: Date.now(),
-      voiceIdentity: currentId
-    });
-
     try {
+      const currentId = activeIdentityRef.current;
+      const latestSettings = settingsRef.current;
+
+      // 0. Check "Bye Zuzu" / "Sleep Zuzu" Standby Command
+      const sleepIntent = detectSleepStopIntent(spokenText, latestSettings.assistantNickname || 'Zuzu');
+      if (sleepIntent.isSleepCommand) {
+        suppressContinuousOnceRef.current = true;
+        playHapticSound('listen_stop');
+        appendVoiceMessage({
+          sender: 'user',
+          text: spokenText,
+          timestamp: Date.now(),
+          voiceIdentity: currentId
+        });
+        appendVoiceMessage({
+          sender: 'assistant',
+          text: sleepIntent.confirmationSpoken,
+          timestamp: Date.now() + 80,
+          voiceIdentity: currentId
+        });
+        setIsProcessing(false);
+        setAiReplyText(sleepIntent.confirmationSpoken);
+        speakZuzuResponse(sleepIntent.confirmationSpoken, currentId, () => {
+          setStatusMessage('Standby mode • Say "Wake up Zuzu" anytime');
+        });
+        return;
+      }
+
+      // 0.5 Resolve pending reminder clarification if user answered a previous time/AM-PM prompt
+      if (
+        pendingClarificationRef.current &&
+        Date.now() - pendingClarificationRef.current.createdAt < 3 * 60 * 1000
+      ) {
+        const resolved = resolvePendingReminderClarification(
+          spokenText,
+          pendingClarificationRef.current
+        );
+        pendingClarificationRef.current = resolved.pendingClarification || null;
+        playHapticSound('message_sent');
+        appendVoiceMessage({
+          sender: 'user',
+          text: spokenText,
+          timestamp: Date.now(),
+          voiceIdentity: currentId
+        });
+        appendVoiceMessage({
+          sender: 'assistant',
+          text: resolved.spokenConfirmation,
+          timestamp: Date.now() + 80,
+          voiceIdentity: currentId
+        });
+        setIsProcessing(false);
+        setAiReplyText(resolved.spokenConfirmation);
+        speakZuzuResponse(resolved.spokenConfirmation, currentId);
+        return;
+      }
+      pendingClarificationRef.current = null;
+
+      // 1. Check for Voice Switch Command in English or Bengali
+      const switchIntent = detectVoiceSwitchIntent(spokenText, currentId);
+
+      if (switchIntent.isSwitchCommand && switchIntent.targetIdentity) {
+        const newIdentity = switchIntent.targetIdentity;
+        const newVoice = getDefaultGeminiVoiceForIdentity(newIdentity).id;
+        playHapticSound('switch');
+
+        onUpdateSettings({ activeIdentity: newIdentity, geminiVoiceName: newVoice });
+        activeIdentityRef.current = newIdentity;
+
+        appendVoiceMessage({
+          sender: 'user',
+          text: spokenText,
+          timestamp: Date.now(),
+          voiceIdentity: currentId,
+          isSwitchCommand: true
+        });
+
+        const confirmationText = switchIntent.confirmationSpoken;
+        appendVoiceMessage({
+          sender: 'assistant',
+          text: confirmationText,
+          timestamp: Date.now() + 100,
+          voiceIdentity: newIdentity,
+          audioDuration: 3
+        });
+
+        setIsProcessing(false);
+        speakZuzuResponse(confirmationText, newIdentity);
+        return;
+      }
+
+      if (switchIntent.isAmbiguous && switchIntent.ambiguousQuestion) {
+        const clarifyText = switchIntent.ambiguousQuestion;
+        appendVoiceMessage({
+          sender: 'user',
+          text: spokenText,
+          timestamp: Date.now(),
+          voiceIdentity: currentId
+        });
+        appendVoiceMessage({
+          sender: 'assistant',
+          text: clarifyText,
+          timestamp: Date.now() + 100,
+          voiceIdentity: currentId
+        });
+        setIsProcessing(false);
+        speakZuzuResponse(clarifyText, currentId);
+        return;
+      }
+
+      // 1.2 Natural Language Voice Command Action Intents (Apps, Notes CRUD, Reminders Lifecycle, Messages)
+      const actionIntent = detectVoiceActionIntent(spokenText);
+      if (actionIntent.hasActionIntent) {
+        playHapticSound('message_sent');
+        if (actionIntent.intentType === 'clarify_reminder' && actionIntent.pendingClarification) {
+          pendingClarificationRef.current = actionIntent.pendingClarification;
+        }
+        if (actionIntent.requiresConfirmation && actionIntent.messageDraft) {
+          setPendingMessageDraft(actionIntent.messageDraft);
+        } else {
+          setPendingMessageDraft(null);
+        }
+
+        appendVoiceMessage({
+          sender: 'user',
+          text: spokenText,
+          timestamp: Date.now(),
+          voiceIdentity: currentId
+        });
+
+        appendVoiceMessage({
+          sender: 'assistant',
+          text: actionIntent.spokenConfirmation,
+          timestamp: Date.now() + 100,
+          voiceIdentity: currentId,
+          audioDuration: 3
+        });
+
+        setIsProcessing(false);
+        setAiReplyText(actionIntent.spokenConfirmation);
+        speakZuzuResponse(actionIntent.spokenConfirmation, currentId);
+        return;
+      }
+
+      // Case C: Standard Voice Query / Conversation / Live Internet Search
+      appendVoiceMessage({
+        sender: 'user',
+        text: spokenText,
+        timestamp: Date.now(),
+        voiceIdentity: currentId
+      });
+
       const session = sessionRef.current;
       const historyContext = (session?.messages || []).map(m => ({
         sender: m.sender,
@@ -658,8 +721,12 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
   handleUserVoiceInputRef.current = handleUserVoiceInput;
   ensurePermissionAndStartRef.current = ensurePermissionAndStart;
   toggleOrbStateRef.current = () => {
-    if (isListening || isSpeaking || isProcessing) handleCancel();
-    else ensurePermissionAndStart();
+    resumeAudioContextOnGesture();
+    if (isListening || isSpeaking || isProcessing || isStartingRef.current || captureControllerRef.current !== null) {
+      handleCancel();
+    } else {
+      void ensurePermissionAndStart();
+    }
   };
 
   // Toggle Continuous Listening
@@ -764,11 +831,20 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
             glowIntensity={settings.orbGlowIntensity}
             particleDensity={settings.orbParticleDensity}
             size={265}
-            onClick={() =>
-              isListening || isSpeaking || isProcessing
-                ? handleCancel()
-                : ensurePermissionAndStart()
-            }
+            onClick={() => {
+              resumeAudioContextOnGesture();
+              if (
+                isListening ||
+                isSpeaking ||
+                isProcessing ||
+                isStartingRef.current ||
+                captureControllerRef.current !== null
+              ) {
+                handleCancel();
+              } else {
+                void ensurePermissionAndStart();
+              }
+            }}
           />
 
           <div className={`mt-3 inline-flex items-center gap-2 px-4 py-1.5 rounded-full border shadow-sm text-xs font-semibold ${
@@ -798,11 +874,39 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
                 ? 'THINKING... • TAP TO STOP'
                 : hasError
                 ? 'ERROR • TAP ORB TO RETRY'
+                : statusMessage === "I didn't hear anything, tap to try again"
+                ? "I didn't hear anything, tap to try again"
                 : 'ZUZU AI ACTIVE • TAP ORB TO SPEAK'}
             </span>
           </div>
 
-          <div className="mt-2 text-center">
+          {/* Always-visible real state & error debug readout */}
+          <div
+            data-testid="voice-orb-debug-status"
+            className={`mt-1.5 px-3 py-1 rounded-lg text-[11px] font-mono text-center max-w-xs break-words ${
+              currentOrbState === 'error'
+                ? 'bg-rose-50/95 border border-rose-200 text-rose-700'
+                : 'text-slate-600'
+            }`}
+          >
+            <span className="font-bold">
+              State:{' '}
+              {currentOrbState === 'idle'
+                ? 'Idle'
+                : currentOrbState === 'listening'
+                ? 'Listening'
+                : currentOrbState === 'thinking'
+                ? 'Thinking'
+                : currentOrbState === 'speaking'
+                ? 'Speaking'
+                : 'Error'}
+            </span>
+            {currentOrbState === 'error' && errorNotice ? (
+              <span className="block text-[10px] text-rose-600 mt-0.5">{errorNotice}</span>
+            ) : null}
+          </div>
+
+          <div className="mt-1.5 text-center">
             <p className="text-[11px] text-slate-500">
               Personality: <span className="font-semibold text-slate-700">{currentPersonality.name}</span>
             </p>
@@ -978,10 +1082,16 @@ export const VoiceView: React.FC<VoiceViewProps> = ({
       <MicrophonePermissionModal
         isOpen={showPermissionModal}
         initialState={micModalState}
-        onClose={() => setShowPermissionModal(false)}
-        onPermissionGranted={() => {
+        onClose={() => {
           setShowPermissionModal(false);
-          startListening();
+          isStartingRef.current = false;
+          setIsListening(false);
+        }}
+        onPermissionGranted={() => {
+          resumeAudioContextOnGesture();
+          setShowPermissionModal(false);
+          isCancelledRef.current = false;
+          void startListening();
         }}
       />
     </div>

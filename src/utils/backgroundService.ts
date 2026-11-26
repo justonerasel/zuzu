@@ -1,5 +1,6 @@
 import { AppSettings, CustomAudioTrigger } from '../types';
 import { extractAcousticFrameFeatures, matchAcousticFrame } from './audioTriggers';
+import { getNativeZuzuPlugin } from './permission';
 
 /**
  * Zuzu AI Background Foreground Service, Always-On Wake Word & Custom Audio Triggers
@@ -46,17 +47,11 @@ let currentWakeConfig: { phrase: string; lang: string } = {
 
 function isNativeAndroid(): boolean {
   if (typeof window === 'undefined') return false;
-  const cap = (window as any).Capacitor;
-  return Boolean(cap?.isNativePlatform?.());
+  return Boolean(getNativeZuzuPlugin());
 }
 
 function getZuzuNativePlugin(): any | null {
-  if (typeof window === 'undefined') return null;
-  const cap = (window as any).Capacitor;
-  if (cap?.isNativePlatform?.() && cap?.Plugins?.ZuzuNative) {
-    return cap.Plugins.ZuzuNative;
-  }
-  return null;
+  return getNativeZuzuPlugin();
 }
 
 function shouldRunAnyBackgroundMic(): boolean {

@@ -20,7 +20,7 @@ import {
 import { ParticleOrb, OrbState } from './ParticleOrb';
 import { BengaliMarqueeWidget } from './BengaliMarqueeWidget';
 import { WeatherCard } from './WeatherCard';
-import { playHapticSound, speakText, stopSpeaking } from '../utils/audio';
+import { playHapticSound, resumeAudioContextOnGesture, speakText, stopSpeaking } from '../utils/audio';
 import { checkMicrophonePermission, requestMicrophonePermission, getNativeZuzuPlugin, MicrophonePermissionState } from '../utils/permission';
 import { MicrophonePermissionModal } from './MicrophonePermissionModal';
 import {
@@ -66,6 +66,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // 2. Voice Assistant & Particle Orb State
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [statusText, setStatusText] = useState<string>('ZUZU AI OFF • TAP TO START');
+  const [debugError, setDebugError] = useState<string | null>(null);
   const [transcriptText, setTranscriptText] = useState<string>('');
   const [lastAiResponse, setLastAiResponse] = useState<string | null>(null);
   const [lastSources, setLastSources] = useState<SearchSourceItem[]>([]);
@@ -99,6 +100,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const currentSessionRef = useRef<VoiceSession | null>(null);
   const isCancelledRef = useRef<boolean>(false);
   const isStartingVoiceRef = useRef<boolean>(false);
+  const continuousRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settingsRef = useRef<AppSettings>(settings);
 
   useEffect(() => {
@@ -118,6 +120,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const tick = setInterval(syncCounts, 20000);
     return () => {
       clearInterval(tick);
+      if (continuousRestartTimerRef.current) {
+        clearTimeout(continuousRestartTimerRef.current);
+        continuousRestartTimerRef.current = null;
+      }
       window.removeEventListener('zuzu-notes-reminders-changed', syncCounts);
       window.removeEventListener('zuzu-workspace-switched', syncCounts);
       aiAbortControllerRef.current?.abort();
@@ -166,6 +172,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const beginMicCapture = async () => {
     if (isCancelledRef.current) return;
     suppressContinuousOnceRef.current = false;
+    if (continuousRestartTimerRef.current) {
+      clearTimeout(continuousRestartTimerRef.current);
+      continuousRestartTimerRef.current = null;
+    }
 
     const latestSettings = settingsRef.current;
     if (!currentSessionRef.current) {
@@ -180,38 +190,54 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       };
     }
 
+    let sessionEnded = false;
     try {
+      setDebugError(null);
       setStatusText('OPENING MIC...');
+      setOrbState('listening');
+      setIsVoiceActive(true);
       setMicBusyForActiveSession(true);
+
       const controller = await startVoiceCapture({
         language: latestSettings.recognitionLanguage || 'auto',
         onStart: () => {
+          if (sessionEnded || isCancelledRef.current) return;
+          setDebugError(null);
           setOrbState('listening');
           setStatusText('LISTENING...');
           setIsVoiceActive(true);
         },
         onPartial: (partial) => {
+          if (sessionEnded || isCancelledRef.current) return;
           setTranscriptText(partial);
         },
         onResult: (finalText) => {
+          sessionEnded = true;
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
           setTranscriptText(finalText);
           if (!isCancelledRef.current && finalText.trim().length > 0) {
             handleProcessSpeech(finalText.trim());
+          } else {
+            setOrbState('idle');
+            setIsVoiceActive(false);
+            setStatusText("I didn't hear anything, tap to try again");
           }
         },
         onEmptyEnd: () => {
+          sessionEnded = true;
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
-          setOrbState('error');
-          setStatusText('NO SPEECH DETECTED • TAP TO RETRY');
-          setLastAiResponse('No speech was recognized. Please speak clearly and tap the orb to try again.');
           setIsVoiceActive(false);
+          setOrbState('idle');
+          setDebugError(null);
+          setStatusText("I didn't hear anything, tap to try again");
         },
         onPermissionDenied: async () => {
+          sessionEnded = true;
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
+          setIsVoiceActive(false);
           try {
             const latestPerm = await checkMicrophonePermission();
             setMicModalState(latestPerm === 'granted' ? 'denied' : latestPerm);
@@ -220,25 +246,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           }
           setShowPermissionModal(true);
           setOrbState('error');
+          setDebugError('Microphone permission is required for Voice Assistant.');
           setStatusText('MICROPHONE NEEDED • TAP TO ENABLE');
-          setIsVoiceActive(false);
         },
         onError: (msg) => {
+          sessionEnded = true;
           captureControllerRef.current = null;
           setMicBusyForActiveSession(false);
-          setOrbState('error');
-          setStatusText('ERROR • TAP TO RETRY');
-          setLastAiResponse(msg || 'Speech recognition failed. Tap the orb to try again.');
           setIsVoiceActive(false);
+          const exactMsg = msg || 'Speech recognition failed. Tap the orb to try again.';
+          setOrbState('error');
+          setDebugError(exactMsg);
+          setStatusText('ERROR • TAP TO RETRY');
+          setLastAiResponse(exactMsg);
         }
       });
-      captureControllerRef.current = controller;
+      if (!sessionEnded && !isCancelledRef.current) {
+        captureControllerRef.current = controller;
+      } else {
+        controller.cancel();
+      }
     } catch (err: any) {
+      sessionEnded = true;
+      captureControllerRef.current = null;
       setMicBusyForActiveSession(false);
       setIsVoiceActive(false);
+      const exactMsg = err?.message || 'Could not start voice capture. Tap the Orb to retry.';
       setOrbState('error');
+      setDebugError(exactMsg);
       setStatusText('ERROR • TAP TO RETRY');
-      setLastAiResponse(err?.message || 'Could not start voice capture. Tap the Orb to retry.');
+      setLastAiResponse(exactMsg);
       console.warn('Recognition start error:', err);
     }
   };
@@ -251,6 +288,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     try {
       isCancelledRef.current = false;
       suppressContinuousOnceRef.current = false;
+      if (continuousRestartTimerRef.current) {
+        clearTimeout(continuousRestartTimerRef.current);
+        continuousRestartTimerRef.current = null;
+      }
+      setDebugError(null);
       setTranscriptText('');
       setLastAiResponse(null);
       setLastSources([]);
@@ -266,28 +308,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         captureControllerRef.current = null;
       }
 
-      try {
-        const permState = await checkMicrophonePermission();
-        if (permState === 'granted') {
+      const permState = await checkMicrophonePermission();
+      if (isCancelledRef.current) return;
+
+      if (permState === 'granted') {
+        await beginMicCapture();
+        return;
+      }
+      if (permState === 'prompt') {
+        const reqResult = await requestMicrophonePermission();
+        if (isCancelledRef.current) return;
+        if (reqResult.success && reqResult.state === 'granted') {
           await beginMicCapture();
           return;
         }
-        if (permState === 'prompt') {
-          const reqResult = await requestMicrophonePermission();
-          if (reqResult.success && reqResult.state === 'granted') {
-            await beginMicCapture();
-            return;
-          }
-          setMicModalState(reqResult.state);
-          setShowPermissionModal(true);
-          return;
-        }
-        setMicModalState(permState);
+        setMicModalState(reqResult.state);
         setShowPermissionModal(true);
+        setOrbState('error');
+        setDebugError(reqResult.error || 'Microphone permission was declined.');
+        setStatusText('MICROPHONE NEEDED • TAP TO ENABLE');
+        setIsVoiceActive(false);
         return;
-      } catch {}
+      }
+      if (permState === 'unsupported') {
+        setOrbState('error');
+        setDebugError('Speech recognition and microphone are unavailable in this environment.');
+        setStatusText('ERROR • MIC UNSUPPORTED');
+        setIsVoiceActive(false);
+        return;
+      }
 
-      await beginMicCapture();
+      setMicModalState(permState);
+      setShowPermissionModal(true);
+      setOrbState('error');
+      setDebugError(
+        permState === 'permanently_denied'
+          ? 'Microphone permission is blocked in Android Settings. Allow Microphone and retry.'
+          : 'Microphone permission is required for voice chat.'
+      );
+      setStatusText('MICROPHONE NEEDED • TAP TO ENABLE');
+      setIsVoiceActive(false);
+    } catch (err: any) {
+      setOrbState('error');
+      setDebugError(err?.message || 'Could not initialize microphone permission.');
+      setStatusText('ERROR • TAP TO RETRY');
+      setIsVoiceActive(false);
     } finally {
       isStartingVoiceRef.current = false;
     }
@@ -296,7 +361,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Stop / Cancel voice interaction
   const stopVoiceInteraction = () => {
     isCancelledRef.current = true;
+    isStartingVoiceRef.current = false;
     suppressContinuousOnceRef.current = true;
+    if (continuousRestartTimerRef.current) {
+      clearTimeout(continuousRestartTimerRef.current);
+      continuousRestartTimerRef.current = null;
+    }
     setMicBusyForActiveSession(false);
     if (aiAbortControllerRef.current) {
       aiAbortControllerRef.current.abort();
@@ -308,6 +378,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
     stopSpeaking();
     setOrbState('idle');
+    setDebugError(null);
     setStatusText('ZUZU AI OFF • TAP TO START');
     setIsVoiceActive(false);
     playHapticSound('listen_stop');
@@ -315,147 +386,156 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Tapping the Orb stops an active loop or starts a new voice loop
   const handleOrbTap = () => {
-    if (isVoiceActive || orbState === 'listening' || orbState === 'speaking' || orbState === 'thinking') {
+    resumeAudioContextOnGesture();
+    if (
+      isVoiceActive ||
+      isStartingVoiceRef.current ||
+      captureControllerRef.current !== null ||
+      orbState === 'listening' ||
+      orbState === 'speaking' ||
+      orbState === 'thinking'
+    ) {
       stopVoiceInteraction();
       return;
     }
-    startVoiceInteraction();
+    void startVoiceInteraction();
   };
 
   // Process User Speech
   const handleProcessSpeech = async (spoken: string) => {
     const latestSettings = settingsRef.current;
+    setDebugError(null);
     setOrbState('thinking');
     setStatusText('THINKING...');
     setLastSources([]);
     playHapticSound('message_sent');
 
-    const currentId = latestSettings.activeIdentity;
-    const nickname = (latestSettings.assistantNickname || 'Zuzu').trim();
+    try {
+      const currentId = latestSettings.activeIdentity;
+      const nickname = (latestSettings.assistantNickname || 'Zuzu').trim();
 
-    // 0. Check "Bye Zuzu" / "Sleep Zuzu" standby command
-    const sleepIntent = detectSleepStopIntent(spoken, nickname);
-    if (sleepIntent.isSleepCommand) {
-      suppressContinuousOnceRef.current = true;
-      setLastAiResponse(sleepIntent.confirmationSpoken);
-      speakSpokenReply(sleepIntent.confirmationSpoken, currentId);
-      return;
-    }
-
-    // 0.1 Resolve pending reminder clarification if open
-    if (
-      pendingClarificationRef.current &&
-      Date.now() - pendingClarificationRef.current.createdAt < 3 * 60 * 1000
-    ) {
-      const resolved = resolvePendingReminderClarification(
-        spoken,
-        pendingClarificationRef.current
-      );
-      pendingClarificationRef.current = resolved.pendingClarification || null;
-      setLastAiResponse(resolved.spokenConfirmation);
-      speakSpokenReply(resolved.spokenConfirmation, currentId);
-      return;
-    }
-    pendingClarificationRef.current = null;
-
-    // 0.2 Handle Custom Assistant Nickname wake-words
-    let cleanedSpoken = spoken.trim();
-    const escapedNick = nickname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const wakeRegex = new RegExp(`^(hey|hi|hello)?\\s*(${escapedNick}|zuzu|stonic)\\b[,:\\s]*`, 'i');
-    if (wakeRegex.test(cleanedSpoken)) {
-      const stripped = cleanedSpoken.replace(wakeRegex, '').trim();
-      if (stripped.length > 0) {
-        cleanedSpoken = stripped;
+      // 0. Check "Bye Zuzu" / "Sleep Zuzu" standby command
+      const sleepIntent = detectSleepStopIntent(spoken, nickname);
+      if (sleepIntent.isSleepCommand) {
+        suppressContinuousOnceRef.current = true;
+        setLastAiResponse(sleepIntent.confirmationSpoken);
+        speakSpokenReply(sleepIntent.confirmationSpoken, currentId);
+        return;
       }
-    }
 
-    const lowerSpoken = cleanedSpoken.toLowerCase();
-
-    // 0.3 Check Image Creator Intent
-    if (
-      /create\s+(?:an?\s+)?image|generate\s+(?:an?\s+)?image|image\s+creator|draw\s+|ছবি\s*(?:বানাও|তৈরি)/i.test(lowerSpoken)
-    ) {
-      onNavigateTab('image_creator');
-      const imgReply = 'Opening Zuzu AI Image Creator!';
-      setLastAiResponse(imgReply);
-      speakSpokenReply(imgReply, currentId);
-      return;
-    }
-
-    // 1. Check Voice Switch Intent
-    const switchIntent = detectVoiceSwitchIntent(cleanedSpoken, currentId);
-    if (switchIntent.isSwitchCommand && switchIntent.targetIdentity) {
-      const newIdentity = switchIntent.targetIdentity;
-      onUpdateSettings({
-        activeIdentity: newIdentity,
-        geminiVoiceName: getDefaultGeminiVoiceForIdentity(newIdentity).id
-      });
-      playHapticSound('switch');
-
-      const confirmation = switchIntent.confirmationSpoken;
-      setLastAiResponse(confirmation);
-      speakSpokenReply(confirmation, newIdentity);
-      return;
-    }
-
-    // 1.1 Check Natural Language Voice Action Intents (Apps, Notes CRUD, Reminders Lifecycle, Messages)
-    const actionIntent = detectVoiceActionIntent(cleanedSpoken);
-    if (actionIntent.hasActionIntent) {
-      playHapticSound('message_sent');
-      if (actionIntent.intentType === 'clarify_reminder' && actionIntent.pendingClarification) {
-        pendingClarificationRef.current = actionIntent.pendingClarification;
-      }
-      if (actionIntent.requiresConfirmation && actionIntent.messageDraft) {
-        setPendingMessageDraft(actionIntent.messageDraft);
-      } else {
-        setPendingMessageDraft(null);
-      }
-      setLastAiResponse(actionIntent.spokenConfirmation);
-      speakSpokenReply(actionIntent.spokenConfirmation, currentId);
-      setStatusText(actionIntent.requiresConfirmation ? 'CONFIRM ACTION' : 'COMMAND EXECUTED');
-      return;
-    }
-
-    // 2. Auto-extract memory intent if enabled
-    const activeMemories = latestSettings.memoryEnabled ? getMemories() : [];
-    if (latestSettings.memoryEnabled) {
-      const lower = cleanedSpoken.toLowerCase().trim();
+      // 0.1 Resolve pending reminder clarification if open
       if (
-        lower.startsWith('remember that') ||
-        lower.startsWith('remember this') ||
-        lower.startsWith('remember:') ||
-        lower.startsWith('please remember') ||
-        /মনে রেখো/i.test(cleanedSpoken)
+        pendingClarificationRef.current &&
+        Date.now() - pendingClarificationRef.current.createdAt < 3 * 60 * 1000
       ) {
-        const fact = cleanedSpoken.replace(/^(remember that|remember this|remember:|please remember|মনে রেখো)\s*:?/i, '').trim();
-        if (fact) {
-          saveMemory({
-            key: fact.length > 35 ? fact.slice(0, 32) + '...' : fact,
-            value: fact,
-            category: 'personal',
-            source: 'learned'
-          });
+        const resolved = resolvePendingReminderClarification(
+          spoken,
+          pendingClarificationRef.current
+        );
+        pendingClarificationRef.current = resolved.pendingClarification || null;
+        setLastAiResponse(resolved.spokenConfirmation);
+        speakSpokenReply(resolved.spokenConfirmation, currentId);
+        return;
+      }
+      pendingClarificationRef.current = null;
+
+      // 0.2 Handle Custom Assistant Nickname wake-words
+      let cleanedSpoken = spoken.trim();
+      const escapedNick = nickname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const wakeRegex = new RegExp(`^(hey|hi|hello)?\\s*(${escapedNick}|zuzu|stonic)\\b[,:\\s]*`, 'i');
+      if (wakeRegex.test(cleanedSpoken)) {
+        const stripped = cleanedSpoken.replace(wakeRegex, '').trim();
+        if (stripped.length > 0) {
+          cleanedSpoken = stripped;
         }
       }
-    }
 
-    // Record user message in Voice Session
-    const userVoiceMsg: VoiceMessage = {
-      id: `vox-${Date.now()}`,
-      conversation_type: 'voice',
-      sessionId: currentSessionRef.current?.id || 'vox',
-      sender: 'user',
-      text: spoken,
-      timestamp: Date.now(),
-      voiceIdentity: currentId
-    };
-    if (currentSessionRef.current) {
-      currentSessionRef.current.messages.push(userVoiceMsg);
-      saveVoiceSession(currentSessionRef.current);
-    }
+      const lowerSpoken = cleanedSpoken.toLowerCase();
 
-    // 3. Request AI Response via fast unified Gemini streaming pipeline
-    try {
+      // 0.3 Check Image Creator Intent
+      if (
+        /create\s+(?:an?\s+)?image|generate\s+(?:an?\s+)?image|image\s+creator|draw\s+|ছবি\s*(?:বানাও|তৈরি)/i.test(lowerSpoken)
+      ) {
+        onNavigateTab('image_creator');
+        const imgReply = 'Opening Zuzu AI Image Creator!';
+        setLastAiResponse(imgReply);
+        speakSpokenReply(imgReply, currentId);
+        return;
+      }
+
+      // 1. Check Voice Switch Intent
+      const switchIntent = detectVoiceSwitchIntent(cleanedSpoken, currentId);
+      if (switchIntent.isSwitchCommand && switchIntent.targetIdentity) {
+        const newIdentity = switchIntent.targetIdentity;
+        onUpdateSettings({
+          activeIdentity: newIdentity,
+          geminiVoiceName: getDefaultGeminiVoiceForIdentity(newIdentity).id
+        });
+        playHapticSound('switch');
+
+        const confirmation = switchIntent.confirmationSpoken;
+        setLastAiResponse(confirmation);
+        speakSpokenReply(confirmation, newIdentity);
+        return;
+      }
+
+      // 1.1 Check Natural Language Voice Action Intents (Apps, Notes CRUD, Reminders Lifecycle, Messages)
+      const actionIntent = detectVoiceActionIntent(cleanedSpoken);
+      if (actionIntent.hasActionIntent) {
+        playHapticSound('message_sent');
+        if (actionIntent.intentType === 'clarify_reminder' && actionIntent.pendingClarification) {
+          pendingClarificationRef.current = actionIntent.pendingClarification;
+        }
+        if (actionIntent.requiresConfirmation && actionIntent.messageDraft) {
+          setPendingMessageDraft(actionIntent.messageDraft);
+        } else {
+          setPendingMessageDraft(null);
+        }
+        setLastAiResponse(actionIntent.spokenConfirmation);
+        speakSpokenReply(actionIntent.spokenConfirmation, currentId);
+        setStatusText(actionIntent.requiresConfirmation ? 'CONFIRM ACTION' : 'COMMAND EXECUTED');
+        return;
+      }
+
+      // 2. Auto-extract memory intent if enabled
+      const activeMemories = latestSettings.memoryEnabled ? getMemories() : [];
+      if (latestSettings.memoryEnabled) {
+        const lower = cleanedSpoken.toLowerCase().trim();
+        if (
+          lower.startsWith('remember that') ||
+          lower.startsWith('remember this') ||
+          lower.startsWith('remember:') ||
+          lower.startsWith('please remember') ||
+          /মনে রেখো/i.test(cleanedSpoken)
+        ) {
+          const fact = cleanedSpoken.replace(/^(remember that|remember this|remember:|please remember|মনে রেখো)\s*:?/i, '').trim();
+          if (fact) {
+            saveMemory({
+              key: fact.length > 35 ? fact.slice(0, 32) + '...' : fact,
+              value: fact,
+              category: 'personal',
+              source: 'learned'
+            });
+          }
+        }
+      }
+
+      // Record user message in Voice Session
+      const userVoiceMsg: VoiceMessage = {
+        id: `vox-${Date.now()}`,
+        conversation_type: 'voice',
+        sessionId: currentSessionRef.current?.id || 'vox',
+        sender: 'user',
+        text: spoken,
+        timestamp: Date.now(),
+        voiceIdentity: currentId
+      };
+      if (currentSessionRef.current) {
+        currentSessionRef.current.messages.push(userVoiceMsg);
+        saveVoiceSession(currentSessionRef.current);
+      }
+
+      // 3. Request AI Response via fast unified Gemini streaming pipeline
       const historyContext = (currentSessionRef.current?.messages || []).map(m => ({
         sender: m.sender,
         text: m.text,
@@ -482,12 +562,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       });
 
       if (controller.signal.aborted || isCancelledRef.current) {
+        setOrbState('idle');
+        setIsVoiceActive(false);
         return;
       }
 
       if (aiResult.isError) {
         setLastAiResponse(aiResult.reply);
         setOrbState('error');
+        setDebugError(aiResult.reply);
         setStatusText('ERROR • TAP TO RETRY');
         setIsVoiceActive(false);
         if (/API Key/i.test(aiResult.reply) && onRequestApiKeyModal) {
@@ -521,24 +604,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       speakSpokenReply(reply, currentId);
     } catch (err: any) {
       if (err?.name === 'AbortError' || isCancelledRef.current) {
+        setOrbState('idle');
+        setIsVoiceActive(false);
         return;
       }
+      const exactMsg = err?.message || 'Could not process voice request.';
       setOrbState('error');
+      setDebugError(exactMsg);
       setStatusText('ERROR • TAP TO RETRY');
-      setLastAiResponse(err?.message || 'Could not reach Gemini service.');
+      setLastAiResponse(exactMsg);
       setIsVoiceActive(false);
     } finally {
       aiAbortControllerRef.current = null;
     }
   };
 
-  // Speak response using configured Gemini prebuilt neural voice
+  // Speak response using free Android native TextToSpeech / browser SpeechSynthesis
   const speakSpokenReply = (textToSpeak: string, identity: VoiceIdentity) => {
     const latestSettings = settingsRef.current;
     const resolved = resolveGeminiVoiceForSettings(latestSettings.geminiVoiceName, identity);
     const voiceName =
       resolved.gender === identity ? resolved.id : getDefaultGeminiVoiceForIdentity(identity).id;
 
+    setDebugError(null);
     setOrbState('speaking');
     setStatusText('SPEAKING... • TAP TO STOP');
     setIsVoiceActive(true);
@@ -551,6 +639,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       speechRate: latestSettings.speechRate,
       volume: latestSettings.volume ?? 1.0,
       onStart: () => {
+        if (isCancelledRef.current) return;
         setOrbState('speaking');
         setStatusText('SPEAKING... • TAP TO STOP');
       },
@@ -561,22 +650,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           !isCancelledRef.current &&
           !suppressContinuousOnceRef.current
         ) {
-          setStatusText('VOICE SESSION ACTIVE');
-          setTimeout(() => {
+          setStatusText('LISTENING AGAIN...');
+          if (continuousRestartTimerRef.current) {
+            clearTimeout(continuousRestartTimerRef.current);
+          }
+          continuousRestartTimerRef.current = setTimeout(() => {
+            continuousRestartTimerRef.current = null;
             if (!isCancelledRef.current && !suppressContinuousOnceRef.current) {
-              beginMicCapture();
+              void beginMicCapture();
             }
-          }, 350);
+          }, 500);
         } else {
           setIsVoiceActive(false);
           setStatusText('ZUZU AI OFF • TAP TO START');
         }
       },
-      onError: () => {
+      onError: (err) => {
+        const msg = err?.message || err?.error || 'Audio playback error.';
         setOrbState('error');
+        setDebugError(String(msg));
         setStatusText('AUDIO ERROR • TAP TO RETRY');
         setIsVoiceActive(false);
       }
+    }).catch((err: any) => {
+      if (isCancelledRef.current) return;
+      const msg = err?.message || 'Audio playback failed.';
+      setOrbState('error');
+      setDebugError(String(msg));
+      setStatusText('AUDIO ERROR • TAP TO RETRY');
+      setIsVoiceActive(false);
     });
   };
 
@@ -660,10 +762,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           size={255}
         />
 
-        <div className="mt-1 flex items-center justify-center">
+        <div className="mt-1 flex flex-col items-center justify-center gap-1.5">
           <button
+            type="button"
             onClick={handleOrbTap}
-            className={`px-4 py-1.5 rounded-full text-[11px] font-bold font-mono tracking-wider transition-all duration-300 flex items-center gap-2 shadow-sm border ${
+            className={`px-4 py-1.5 rounded-full text-[11px] font-bold font-mono tracking-wider transition-all duration-300 flex items-center gap-2 shadow-sm border touch-manipulation ${
               orbState === 'listening'
                 ? 'bg-cyan-50 border-cyan-300 text-cyan-800 shadow-cyan-200/50 scale-105'
                 : orbState === 'speaking'
@@ -690,6 +793,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             />
             <span>{statusText}</span>
           </button>
+
+          {/* Always-visible real state & error debug readout */}
+          <div
+            data-testid="orb-debug-status"
+            className={`px-3 py-1 rounded-lg text-[11px] font-mono text-center max-w-xs break-words ${
+              orbState === 'error'
+                ? 'bg-rose-50/95 border border-rose-200 text-rose-700'
+                : 'text-slate-600'
+            }`}
+          >
+            <span className="font-bold">
+              State:{' '}
+              {orbState === 'idle'
+                ? 'Idle'
+                : orbState === 'listening'
+                ? 'Listening'
+                : orbState === 'thinking'
+                ? 'Thinking'
+                : orbState === 'speaking'
+                ? 'Speaking'
+                : 'Error'}
+            </span>
+            {orbState === 'error' && debugError ? (
+              <span className="block text-[10px] text-rose-600 mt-0.5">{debugError}</span>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -928,10 +1057,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <MicrophonePermissionModal
         isOpen={showPermissionModal}
         initialState={micModalState}
-        onClose={() => setShowPermissionModal(false)}
-        onPermissionGranted={() => {
+        onClose={() => {
           setShowPermissionModal(false);
-          beginMicCapture();
+          isStartingVoiceRef.current = false;
+          setIsVoiceActive(false);
+          if (orbState !== 'error') {
+            setOrbState('idle');
+            setStatusText('ZUZU AI OFF • TAP TO START');
+          }
+        }}
+        onPermissionGranted={() => {
+          resumeAudioContextOnGesture();
+          setShowPermissionModal(false);
+          isCancelledRef.current = false;
+          void beginMicCapture();
         }}
       />
     </div>

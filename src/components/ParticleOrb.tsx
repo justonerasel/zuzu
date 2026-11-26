@@ -1,10 +1,10 @@
 import React, { useRef, useEffect } from 'react';
-import { 
-  OrbStyleId, 
-  OrbColorScheme, 
-  OrbRotationSpeed, 
-  OrbGlowIntensity, 
-  OrbParticleDensity 
+import {
+  OrbStyleId,
+  OrbColorScheme,
+  OrbRotationSpeed,
+  OrbGlowIntensity,
+  OrbParticleDensity
 } from '../types';
 
 export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
@@ -20,21 +20,117 @@ export interface ParticleOrbProps {
   size?: number;
 }
 
-interface Point3D {
-  x: number;
-  y: number;
-  z: number;
-  baseRadius: number;
-  theta: number;
-  phi: number;
-  phase: number;
-  colorType: number;
-  type?: 'ribbon' | 'shell' | 'matrix' | 'mesh' | 'spiral_dot' | 'orbit_ring';
+const BUCKET_COUNT = 12;
+
+interface PaletteConfig {
+  haloInner: string;
+  haloMid: string;
+  ring: string;
+  ringBack: string;
+  bucketsIdle: string[];
+  bucketsActive: string[];
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function buildPaletteBuckets(
+  baseRgb: [number, number, number],
+  midRgb: [number, number, number],
+  highRgb: [number, number, number],
+  dimMode: boolean
+): string[] {
+  const buckets: string[] = new Array(BUCKET_COUNT);
+  for (let b = 0; b < BUCKET_COUNT; b++) {
+    const t = b / (BUCKET_COUNT - 1);
+    let r: number;
+    let g: number;
+    let bl: number;
+    if (t < 0.55) {
+      const k = t / 0.55;
+      r = Math.round(lerp(baseRgb[0], midRgb[0], k));
+      g = Math.round(lerp(baseRgb[1], midRgb[1], k));
+      bl = Math.round(lerp(baseRgb[2], midRgb[2], k));
+    } else {
+      const k = (t - 0.55) / 0.45;
+      r = Math.round(lerp(midRgb[0], highRgb[0], k));
+      g = Math.round(lerp(midRgb[1], highRgb[1], k));
+      bl = Math.round(lerp(midRgb[2], highRgb[2], k));
+    }
+
+    const alpha = dimMode
+      ? 0.14 + Math.pow(t, 1.25) * 0.48
+      : 0.22 + Math.pow(t, 1.15) * 0.78;
+    buckets[b] = `rgba(${r}, ${g}, ${bl}, ${alpha.toFixed(3)})`;
+  }
+  return buckets;
+}
+
+function getPalette(scheme: OrbColorScheme, state: OrbState): PaletteConfig {
+  if (state === 'error') {
+    return {
+      haloInner: 'rgba(244, 63, 94, 0.34)',
+      haloMid: 'rgba(190, 24, 93, 0.16)',
+      ring: 'rgba(253, 164, 175, 0.55)',
+      ringBack: 'rgba(244, 63, 94, 0.22)',
+      bucketsIdle: buildPaletteBuckets([136, 19, 55], [225, 29, 72], [254, 205, 211], true),
+      bucketsActive: buildPaletteBuckets([159, 18, 57], [244, 63, 94], [255, 241, 242], false)
+    };
+  }
+
+  switch (scheme) {
+    case 'cyan':
+      return {
+        haloInner: 'rgba(56, 189, 248, 0.32)',
+        haloMid: 'rgba(14, 165, 233, 0.14)',
+        ring: 'rgba(186, 230, 253, 0.52)',
+        ringBack: 'rgba(56, 189, 248, 0.2)',
+        bucketsIdle: buildPaletteBuckets([12, 74, 110], [56, 189, 248], [224, 242, 254], true),
+        bucketsActive: buildPaletteBuckets([14, 116, 144], [56, 189, 248], [255, 255, 255], false)
+      };
+    case 'rose':
+      return {
+        haloInner: 'rgba(244, 114, 182, 0.32)',
+        haloMid: 'rgba(225, 29, 72, 0.14)',
+        ring: 'rgba(251, 207, 232, 0.52)',
+        ringBack: 'rgba(244, 114, 182, 0.2)',
+        bucketsIdle: buildPaletteBuckets([131, 24, 67], [244, 114, 182], [252, 231, 243], true),
+        bucketsActive: buildPaletteBuckets([157, 23, 77], [244, 114, 182], [255, 255, 255], false)
+      };
+    case 'mint':
+      return {
+        haloInner: 'rgba(52, 211, 153, 0.3)',
+        haloMid: 'rgba(16, 185, 129, 0.14)',
+        ring: 'rgba(167, 243, 208, 0.52)',
+        ringBack: 'rgba(52, 211, 153, 0.2)',
+        bucketsIdle: buildPaletteBuckets([6, 78, 59], [52, 211, 153], [209, 250, 229], true),
+        bucketsActive: buildPaletteBuckets([4, 120, 87], [52, 211, 153], [255, 255, 255], false)
+      };
+    case 'amber':
+      return {
+        haloInner: 'rgba(251, 191, 36, 0.3)',
+        haloMid: 'rgba(217, 119, 6, 0.14)',
+        ring: 'rgba(253, 230, 138, 0.52)',
+        ringBack: 'rgba(251, 191, 36, 0.2)',
+        bucketsIdle: buildPaletteBuckets([120, 53, 15], [251, 191, 36], [254, 243, 199], true),
+        bucketsActive: buildPaletteBuckets([180, 83, 9], [251, 191, 36], [255, 255, 255], false)
+      };
+    case 'purple':
+    default:
+      return {
+        haloInner: 'rgba(168, 85, 247, 0.34)',
+        haloMid: 'rgba(109, 40, 217, 0.15)',
+        ring: 'rgba(233, 213, 255, 0.56)',
+        ringBack: 'rgba(168, 85, 247, 0.22)',
+        bucketsIdle: buildPaletteBuckets([76, 29, 149], [168, 85, 247], [243, 232, 255], true),
+        bucketsActive: buildPaletteBuckets([107, 33, 168], [192, 132, 252], [255, 255, 255], false)
+      };
+  }
 }
 
 export const ParticleOrb: React.FC<ParticleOrbProps> = ({
   state = 'idle',
-  style = 'purple_spiral_globe',
   colorScheme = 'purple',
   rotationSpeed = 'normal',
   glowIntensity = 'medium',
@@ -45,637 +141,406 @@ export const ParticleOrb: React.FC<ParticleOrbProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const stateRef = useRef<OrbState>(state);
-  const styleRef = useRef<OrbStyleId>(style);
   const colorRef = useRef<OrbColorScheme>(colorScheme);
   const speedRef = useRef<OrbRotationSpeed>(rotationSpeed);
   const glowRef = useRef<OrbGlowIntensity>(glowIntensity);
-  const densityRef = useRef<OrbParticleDensity>(particleDensity);
-
-  // Map any legacy or alternative ID to the 4 canonical custom styles
-  const resolveStyle = (s?: string): OrbStyleId => {
-    if (!s) return 'purple_spiral_globe';
-    if (s === 'purple_spiral_globe' || s === 'glowing_globe' || s === 'crystal' || s === 'quantum') return 'purple_spiral_globe';
-    if (s === 'aura_glass' || s === 'glass_iridescent_wave') return 'glass_iridescent_wave';
-    if (s === 'particle_blue_violet' || s === 'blue_violet_matrix' || s === 'dot_matrix' || s === 'galaxy' || s === 'human') return 'blue_violet_matrix';
-    if (s === 'particle_magenta_cyan' || s === 'magenta_cyan_mesh' || s === 'particle_sphere' || s === 'neon') return 'magenta_cyan_mesh';
-    return 'purple_spiral_globe';
-  };
+  const micTargetRef = useRef<number>(0);
+  const lastMicEventAtRef = useRef<number>(0);
 
   useEffect(() => {
     stateRef.current = state;
-    styleRef.current = resolveStyle(style);
     colorRef.current = colorScheme;
     speedRef.current = rotationSpeed;
     glowRef.current = glowIntensity;
-    densityRef.current = particleDensity;
-  }, [state, style, colorScheme, rotationSpeed, glowIntensity, particleDensity]);
+    if (state !== 'listening') {
+      micTargetRef.current = 0;
+    }
+  }, [state, colorScheme, rotationSpeed, glowIntensity]);
+
+  // Subscribe to passive live microphone RMS events emitted by speech pipeline
+  useEffect(() => {
+    const onMicLevel = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      const lvl = Number(detail?.level ?? 0);
+      micTargetRef.current = Math.max(0, Math.min(1, Number.isFinite(lvl) ? lvl : 0));
+      lastMicEventAtRef.current = performance.now();
+    };
+    window.addEventListener('zuzu-mic-level', onMicLevel);
+    return () => {
+      window.removeEventListener('zuzu-mic-level', onMicLevel);
+    };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
+    // Clean devicePixelRatio capped at 2 for crisp rendering + smooth 60fps on mobile GPUs
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(size * dpr);
+    canvas.height = Math.round(size * dpr);
     canvas.style.width = `${size}px`;
     canvas.style.height = `${size}px`;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Particle density count
-    let count = 1250;
-    if (densityRef.current === 'eco') count = 800;
-    else if (densityRef.current === 'ultra') count = 2100;
+    // Fibonacci sphere point count strictly within 3000 - 4000 fine dots
+    const dotCount =
+      particleDensity === 'eco'
+        ? 3100
+        : particleDensity === 'ultra'
+        ? 3900
+        : 3500;
 
-    const currentStyle = resolveStyle(styleRef.current);
-    const baseRadius = currentStyle === 'purple_spiral_globe' ? size * 0.37 : size * 0.43;
-    const points: Point3D[] = [];
+    // Precompute unit Fibonacci sphere coordinates into flat typed arrays (zero per-frame GC)
+    const uxArr = new Float32Array(dotCount);
+    const uyArr = new Float32Array(dotCount);
+    const uzArr = new Float32Array(dotCount);
+    const thetaArr = new Float32Array(dotCount);
+    const phiArr = new Float32Array(dotCount);
 
-    // =========================================================================
-    // STYLE 1: Glass Iridescent Wave (da5d185d5fef16008ef717a105376508.jpg)
-    // Multi-layered glowing translucent orb with fluid internal light waves
-    // =========================================================================
-    if (currentStyle === 'glass_iridescent_wave') {
-      const ribbonCount = Math.round(count * 0.72);
-      for (let i = 0; i < ribbonCount; i++) {
-        const u = Math.random() * Math.PI * 2;
-        const v = (Math.random() - 0.5) * Math.PI;
-        const rNorm = Math.pow(Math.random(), 0.55) * 0.85;
-        const r = baseRadius * rNorm;
-
-        points.push({
-          x: r * Math.cos(v) * Math.cos(u),
-          y: r * Math.sin(v),
-          z: r * Math.cos(v) * Math.sin(u),
-          baseRadius: r,
-          theta: u,
-          phi: v,
-          phase: Math.random() * Math.PI * 2,
-          colorType: i % 4, // 0: Cyan, 1: Magenta, 2: Amber/Gold, 3: Soft Green
-          type: 'ribbon'
-        });
-      }
-
-      // Translucent glass sphere outer boundary points
-      const shellCount = count - ribbonCount;
-      for (let i = 0; i < shellCount; i++) {
-        const u = Math.random() * Math.PI * 2;
-        const v = Math.acos(2 * Math.random() - 1);
-        const r = baseRadius * 0.98;
-        points.push({
-          x: r * Math.sin(v) * Math.cos(u),
-          y: r * Math.cos(v),
-          z: r * Math.sin(v) * Math.sin(u),
-          baseRadius: r,
-          theta: u,
-          phi: v,
-          phase: u + v,
-          colorType: 4, // Glass specular highlight
-          type: 'shell'
-        });
-      }
-    }
-    // =========================================================================
-    // STYLE 2: Blue-Violet Particle Matrix (66ba3e1d2797e5926917697d2432f77f.jpg)
-    // Dynamic 3D sphere formed by dense glowing blue-to-violet matrix dots with fluid wave motion
-    // =========================================================================
-    else if (currentStyle === 'blue_violet_matrix') {
-      const phiGolden = Math.PI * (3 - Math.sqrt(5));
-      for (let i = 0; i < count; i++) {
-        const yNorm = 1 - (i / (count - 1)) * 2; // -1 to 1
-        const radiusAtY = Math.sqrt(Math.max(0, 1 - yNorm * yNorm));
-        const theta = phiGolden * i;
-        const phi = Math.acos(Math.max(-1, Math.min(1, yNorm)));
-
-        // Fluid undulating folded ribbon wave
-        const wave = Math.sin(theta * 4) * Math.cos(phi * 3) * 0.18 + Math.sin(phi * 6) * 0.08;
-        const r = baseRadius * (0.88 + wave);
-
-        points.push({
-          x: Math.cos(theta) * radiusAtY * r,
-          y: yNorm * r,
-          z: Math.sin(theta) * radiusAtY * r,
-          baseRadius: r,
-          theta,
-          phi,
-          phase: theta * 2 + phi * 3,
-          colorType: i % 2 === 0 ? 0 : 1, // 0: Electric Blue/Sky, 1: Vivid Violet
-          type: 'matrix'
-        });
-      }
-    }
-    // =========================================================================
-    // STYLE 3: Magenta-Cyan Glowing Mesh (bd8d2f99f2effa5519a7639c3864e791.jpg)
-    // Intricate particle mesh sphere with vibrant magenta, cyan & blue neon glowing gradients
-    // =========================================================================
-    else if (currentStyle === 'magenta_cyan_mesh') {
-      const phiGolden = Math.PI * (3 - Math.sqrt(5));
-      for (let i = 0; i < count; i++) {
-        const yNorm = 1 - (i / (count - 1)) * 2; // +1 (top: cyan) to -1 (bottom: magenta)
-        const radiusAtY = Math.sqrt(Math.max(0, 1 - yNorm * yNorm));
-        const theta = phiGolden * i;
-        const phi = Math.acos(Math.max(-1, Math.min(1, yNorm)));
-
-        // Surface ripple turbulence matching the image
-        const wave = Math.sin(theta * 5) * Math.sin(phi * 4) * 0.16 + Math.cos(theta * 3 + phi * 5) * 0.09;
-        const r = baseRadius * (0.86 + wave);
-
-        // Color mapping by vertical elevation
-        let cType = 1; // Purple
-        if (yNorm > 0.25) cType = 0; // Top Cyan
-        else if (yNorm < -0.2) cType = 2; // Bottom Magenta
-
-        points.push({
-          x: Math.cos(theta) * radiusAtY * r,
-          y: yNorm * r,
-          z: Math.sin(theta) * radiusAtY * r,
-          baseRadius: r,
-          theta,
-          phi,
-          phase: theta * 3,
-          colorType: cType,
-          type: 'mesh'
-        });
-      }
-    }
-    // =========================================================================
-    // STYLE 4: Purple Spiral Dot Globe (Screenshot_2026-11-09-08-30-53-451.jpg)
-    // Precise spherical grid formed by concentric purple and white glowing dot lines with orbit rings
-    // =========================================================================
-    else {
-      // 1. Concentric diagonal spiral dot rings forming the sphere
-      const rings = 26;
-      const dotsPerRing = Math.round((count * 0.8) / rings);
-      const spiralTilt = 0.52; // ~30 deg diagonal spiral alignment like in screenshot
-
-      for (let r = 0; r < rings; r++) {
-        const ringFraction = r / (rings - 1);
-        const phi = ringFraction * Math.PI; // 0 to PI
-        const ringRadius = baseRadius * 0.94 * Math.sin(phi);
-        const y = baseRadius * 0.94 * Math.cos(phi);
-
-        for (let j = 0; j < dotsPerRing; j++) {
-          const theta = (j / dotsPerRing) * Math.PI * 2 + r * 0.22; // Spiral twist offset
-
-          // Rotate coordinate by spiral tilt
-          const px = ringRadius * Math.cos(theta);
-          const pz = ringRadius * Math.sin(theta);
-          const py = y;
-
-          // Tilted coordinate transform
-          const xTilted = px * Math.cos(spiralTilt) - py * Math.sin(spiralTilt);
-          const yTilted = px * Math.sin(spiralTilt) + py * Math.cos(spiralTilt);
-          const zTilted = pz;
-
-          // Color alternating between purple and white dots
-          const isWhiteDot = (r + j) % 3 === 0;
-
-          points.push({
-            x: xTilted,
-            y: yTilted,
-            z: zTilted,
-            baseRadius: baseRadius * 0.94,
-            theta,
-            phi,
-            phase: theta + r,
-            colorType: isWhiteDot ? 0 : 1, // 0: White glow, 1: Deep purple dot
-            type: 'spiral_dot'
-          });
-        }
-      }
-
-      // 2. Surrounding Planetary Orbit Rings (Visible in screenshot)
-      const orbitRingPoints = Math.round(count * 0.2);
-      const orbitRadiusA = baseRadius * 1.28;
-      const orbitRadiusB = baseRadius * 1.34;
-      const orbitTilt = 0.35;
-
-      for (let i = 0; i < orbitRingPoints; i++) {
-        const angle = (i / orbitRingPoints) * Math.PI * 2;
-        const rOrbit = i % 2 === 0 ? orbitRadiusA : orbitRadiusB;
-        const ox = Math.cos(angle) * rOrbit;
-        const oy = Math.sin(angle) * (rOrbit * 0.32); // Elliptical projection
-        const oz = Math.sin(angle) * (rOrbit * 0.6);
-
-        // Tilt orbit
-        const xOrb = ox;
-        const yOrb = oy * Math.cos(orbitTilt) - oz * Math.sin(orbitTilt);
-        const zOrb = oy * Math.sin(orbitTilt) + oz * Math.cos(orbitTilt);
-
-        points.push({
-          x: xOrb,
-          y: yOrb,
-          z: zOrb,
-          baseRadius: rOrbit,
-          theta: angle,
-          phi: Math.PI / 2,
-          phase: angle * 2,
-          colorType: 2, // Orbit ring purple aura
-          type: 'orbit_ring'
-        });
-      }
+    const phiGolden = Math.PI * (3 - Math.sqrt(5));
+    for (let i = 0; i < dotCount; i++) {
+      const uy = 1 - (2 * i) / (dotCount - 1);
+      const rSlice = Math.sqrt(Math.max(0, 1 - uy * uy));
+      const theta = phiGolden * i;
+      uxArr[i] = Math.cos(theta) * rSlice;
+      uyArr[i] = uy;
+      uzArr[i] = Math.sin(theta) * rSlice;
+      thetaArr[i] = theta;
+      phiArr[i] = Math.acos(Math.max(-1, Math.min(1, uy)));
     }
 
-    let angleX = 0.15;
+    // Pre-allocate depth/brightness bucket buffers so rendering 3500+ dots needs no sort or save/restore
+    const bucketX: Float32Array[] = [];
+    const bucketY: Float32Array[] = [];
+    const bucketS: Float32Array[] = [];
+    const bucketCounts = new Int32Array(BUCKET_COUNT);
+    for (let b = 0; b < BUCKET_COUNT; b++) {
+      bucketX.push(new Float32Array(dotCount));
+      bucketY.push(new Float32Array(dotCount));
+      bucketS.push(new Float32Array(dotCount));
+    }
+
+    // Pre-build palettes for all schemes so zero string interpolation runs per frame
+    const paletteCache = new Map<string, PaletteConfig>();
+    const getCachedPalette = (scheme: OrbColorScheme, st: OrbState): PaletteConfig => {
+      const key = `${scheme}:${st === 'error' ? 'error' : 'normal'}`;
+      let p = paletteCache.get(key);
+      if (!p) {
+        p = getPalette(scheme, st);
+        paletteCache.set(key, p);
+      }
+      return p;
+    };
+
+    const centerX = size / 2;
+    const centerY = size / 2;
+    // Sphere radius sized comfortably so listening pulses and thin outer ring never clip fixed container
+    const baseRadius = size * 0.305;
+    const fov = size * 1.45;
+    const tiltX = 0.24;
+    const cosTiltX = Math.cos(tiltX);
+    const sinTiltX = Math.sin(tiltX);
+
     let angleY = 0;
     let time = 0;
+    let micEnvelope = 0;
+    let isPaused = typeof document !== 'undefined' ? document.hidden : false;
+    let lastDrawMs = 0;
+    let lastStepMs = performance.now();
+    const minFrameMs = 1000 / 60; // Cap at 60 fps
 
-    const render = () => {
-      ctx.clearRect(0, 0, size, size);
+    const renderFrame = (now: number) => {
+      if (isPaused) {
+        animFrameRef.current = null;
+        return;
+      }
+
+      if (lastDrawMs !== 0 && now - lastDrawMs < minFrameMs - 0.8) {
+        animFrameRef.current = requestAnimationFrame(renderFrame);
+        return;
+      }
+
+      const dt = Math.min(0.05, Math.max(0.004, (now - lastStepMs) / 1000));
+      lastStepMs = now;
+      lastDrawMs = now;
 
       const st = stateRef.current;
       const sp = speedRef.current;
       const gl = glowRef.current;
-      const curStyle = resolveStyle(styleRef.current);
-
-      let baseSpeed = 0.008;
-      if (sp === 'slow') baseSpeed = 0.004;
-      else if (sp === 'fast') baseSpeed = 0.015;
-
-      let rotationMult = 1.0;
-      let waveFreq = 1.0;
-      let waveAmp = 1.0;
-
-      if (st === 'listening') {
-        rotationMult = 1.35;
-        waveFreq = 2.0;
-        waveAmp = 1.5;
-      } else if (st === 'thinking') {
-        rotationMult = 2.2;
-        waveFreq = 3.2;
-        waveAmp = 1.3;
-      } else if (st === 'speaking') {
-        rotationMult = 1.45;
-        waveFreq = 4.0;
-        waveAmp = 2.2;
-      } else if (st === 'error') {
-        rotationMult = 0.65;
-        waveFreq = 2.8;
-        waveAmp = 1.75;
-      }
-
-      time += 0.02 * waveFreq;
-
-      if (curStyle === 'purple_spiral_globe') {
-        // Spiral globe rotates primarily along its axis
-        angleY += baseSpeed * 0.85 * rotationMult;
-        angleX = 0.18;
-      } else {
-        angleY += baseSpeed * rotationMult;
-        angleX += baseSpeed * 0.45 * rotationMult;
-      }
-
-      const centerX = size / 2;
-      const centerY = size / 2;
-      const fov = size * 1.25;
-
-      // -----------------------------------------------------------------------
-      // AMBIENT CORE GLOW
-      // -----------------------------------------------------------------------
-      let glowR = baseRadius * 1.25;
-      if (gl === 'soft') glowR = baseRadius * 1.05;
-      else if (gl === 'intense') glowR = baseRadius * 1.45;
-
       const scheme = colorRef.current || 'purple';
-      const schemeAura: Record<OrbColorScheme, [string, string]> = {
-        purple: ['rgba(192, 132, 252, 0.32)', 'rgba(147, 51, 234, 0.18)'],
-        cyan: ['rgba(56, 189, 248, 0.35)', 'rgba(14, 165, 233, 0.2)'],
-        rose: ['rgba(244, 114, 182, 0.35)', 'rgba(225, 29, 72, 0.18)'],
-        mint: ['rgba(52, 211, 153, 0.35)', 'rgba(16, 185, 129, 0.18)'],
-        amber: ['rgba(251, 191, 36, 0.34)', 'rgba(245, 158, 11, 0.18)']
-      };
-      const [auraPrimary, auraSecondary] =
-        st === 'error'
-          ? ['rgba(244, 63, 94, 0.42)', 'rgba(225, 29, 72, 0.24)']
-          : schemeAura[scheme] || schemeAura.purple;
+      const palette = getCachedPalette(scheme, st);
 
-      if (curStyle === 'glass_iridescent_wave') {
-        const auraGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.2, centerX, centerY, glowR);
-        auraGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
-        auraGrad.addColorStop(0.35, auraPrimary);
-        auraGrad.addColorStop(0.68, auraSecondary);
-        auraGrad.addColorStop(1, 'transparent');
-        ctx.fillStyle = auraGrad;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, glowR, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (curStyle === 'blue_violet_matrix') {
-        const blueGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.1, centerX, centerY, glowR);
-        blueGrad.addColorStop(0, auraPrimary);
-        blueGrad.addColorStop(0.5, auraSecondary);
-        blueGrad.addColorStop(1, 'transparent');
-        ctx.fillStyle = blueGrad;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, glowR, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (curStyle === 'magenta_cyan_mesh') {
-        const grad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.1, centerX, centerY, glowR);
-        grad.addColorStop(0, auraPrimary);
-        grad.addColorStop(0.5, auraSecondary);
-        grad.addColorStop(1, 'transparent');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, glowR, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (curStyle === 'purple_spiral_globe') {
-        const purpleGrad = ctx.createRadialGradient(centerX, centerY, baseRadius * 0.2, centerX, centerY, glowR * 1.15);
-        purpleGrad.addColorStop(0, auraPrimary);
-        purpleGrad.addColorStop(0.55, auraSecondary);
-        purpleGrad.addColorStop(0.85, 'rgba(126, 34, 206, 0.06)');
-        purpleGrad.addColorStop(1, 'transparent');
-        ctx.fillStyle = purpleGrad;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, glowR * 1.15, 0, Math.PI * 2);
-        ctx.fill();
+      const speedScalar = sp === 'slow' ? 0.55 : sp === 'fast' ? 1.75 : 1.0;
+
+      // Smooth microphone envelope when listening
+      if (st === 'listening') {
+        const hasRecentHardwareRms = now - lastMicEventAtRef.current < 420;
+        const targetMic = hasRecentHardwareRms
+          ? micTargetRef.current
+          : 0.22 + 0.16 * Math.sin(time * 3.4) + 0.1 * Math.sin(time * 7.1);
+        const blend = targetMic > micEnvelope ? Math.min(1, dt * 16) : Math.min(1, dt * 7);
+        micEnvelope += (targetMic - micEnvelope) * blend;
+      } else {
+        micEnvelope += (0 - micEnvelope) * Math.min(1, dt * 10);
       }
 
-      // -----------------------------------------------------------------------
-      // 3D TRANSFORM & PROJECTION
-      // -----------------------------------------------------------------------
+      // State-specific rotation & wave rates
+      let rotVel = 0.24 * speedScalar; // idle: slow gentle rotation
+      let timeRate = 1.0;
+      if (st === 'listening') {
+        rotVel = (0.38 + micEnvelope * 0.45) * speedScalar;
+        timeRate = 1.4;
+      } else if (st === 'thinking') {
+        rotVel = 0.88 * speedScalar; // faster swirl
+        timeRate = 2.6;
+      } else if (st === 'speaking') {
+        rotVel = 0.44 * speedScalar;
+        timeRate = 2.1;
+      } else if (st === 'error') {
+        rotVel = 0.18 * speedScalar;
+        timeRate = 2.2;
+      }
+
+      angleY += rotVel * dt;
+      time += dt * timeRate;
+
+      ctx.clearRect(0, 0, size, size);
+
+      // 1. Soft halo behind the sphere
+      const glowMult = gl === 'soft' ? 0.85 : gl === 'intense' ? 1.15 : 1.0;
+      const haloPulse =
+        st === 'idle'
+          ? 0.72
+          : st === 'listening'
+          ? 0.92 + micEnvelope * 0.35
+          : st === 'speaking'
+          ? 1.0 + Math.sin(time * 4.2) * 0.12
+          : st === 'thinking'
+          ? 0.96
+          : 0.9;
+      const haloRadius = baseRadius * 1.48 * glowMult * (1 + micEnvelope * 0.06);
+      const haloAlphaScale = (st === 'idle' ? 0.58 : 1.0) * (gl === 'soft' ? 0.75 : gl === 'intense' ? 1.2 : 1.0);
+
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, haloAlphaScale * haloPulse);
+      const haloGrad = ctx.createRadialGradient(
+        centerX,
+        centerY,
+        baseRadius * 0.12,
+        centerX,
+        centerY,
+        haloRadius
+      );
+      haloGrad.addColorStop(0, palette.haloInner);
+      haloGrad.addColorStop(0.52, palette.haloMid);
+      haloGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = haloGrad;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, haloRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // 2. Back half of the single thin orbital ring (behind the sphere)
+      const ringRx = baseRadius * (1.29 + micEnvelope * 0.12);
+      const ringRy = ringRx * 0.31;
+      const ringTilt = -0.34;
+      const ringOpacity =
+        st === 'idle' ? 0.42 : st === 'listening' ? 0.65 + micEnvelope * 0.25 : 0.72;
+
+      ctx.save();
+      ctx.globalAlpha = ringOpacity;
+      ctx.strokeStyle = palette.ringBack;
+      ctx.lineWidth = 1.05;
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY, ringRx, ringRy, ringTilt, Math.PI, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // 3. Transform, modulate by state, and bucket all 3000-4000 Fibonacci dots
+      bucketCounts.fill(0);
       const cosY = Math.cos(angleY);
       const sinY = Math.sin(angleY);
-      const cosX = Math.cos(angleX);
-      const sinX = Math.sin(angleX);
+      const isIdle = st === 'idle';
+      const isListening = st === 'listening';
+      const isThinking = st === 'thinking';
+      const isSpeaking = st === 'speaking';
+      const isError = st === 'error';
 
-      const projectedList: Array<{
-        x2d: number;
-        y2d: number;
-        z: number;
-        radius: number;
-        alpha: number;
-        color: string;
-        haloColor: string;
-        isOrbit?: boolean;
-      }> = [];
+      const radialListeningGain = isListening ? micEnvelope * 0.22 : 0;
+      const basePixelSize = size >= 240 ? 1.45 : 1.25;
 
-      for (let i = 0; i < points.length; i++) {
-        const pt = points[i];
+      for (let i = 0; i < dotCount; i++) {
+        let ux = uxArr[i];
+        let uy = uyArr[i];
+        let uz = uzArr[i];
+        const theta = thetaArr[i];
+        const phi = phiArr[i];
 
-        let x = pt.x;
-        let y = pt.y;
-        let z = pt.z;
+        let r = baseRadius;
+        let crestBoost = 0;
 
-        // Dynamic State Modulation
-        if (curStyle === 'glass_iridescent_wave') {
-          if (pt.type === 'ribbon') {
-            const wave = Math.sin(time * 2 + pt.phase) * (baseRadius * 0.12 * waveAmp);
-            x += Math.cos(pt.theta + time) * wave;
-            y += Math.sin(pt.phi + time * 1.5) * wave;
-          }
-        } else if (curStyle === 'blue_violet_matrix' || curStyle === 'magenta_cyan_mesh') {
-          const wavePulse = Math.sin(time * 3 + pt.phase) * (3.5 * waveAmp);
-          const normR = pt.baseRadius || 1;
-          x += (pt.x / normR) * wavePulse;
-          y += (pt.y / normR) * wavePulse;
-          z += (pt.z / normR) * wavePulse;
-        } else if (curStyle === 'purple_spiral_globe') {
-          if (pt.type === 'spiral_dot') {
-            // Harmonic wave along spiral lines
-            const pulse = 1 + Math.sin(time * 3 + pt.phase) * 0.03 * waveAmp;
-            x *= pulse;
-            y *= pulse;
-            z *= pulse;
-          } else if (pt.type === 'orbit_ring') {
-            // Orbit gentle rotation
-            const orbPulse = 1 + Math.sin(time * 2 + pt.phase) * 0.02;
-            x *= orbPulse;
-            y *= orbPulse;
-            z *= orbPulse;
-          }
+        if (isIdle) {
+          // Calm slow micro-breath
+          r *= 1 + Math.sin(time * 0.9 + phi * 2) * 0.008;
+        } else if (isListening) {
+          // Pulse outward directly with microphone volume + subtle radial shimmer
+          const subtleWave = Math.sin(time * 3.8 + phi * 3.0 + theta * 2.0) * (0.015 + micEnvelope * 0.035);
+          r *= 1 + radialListeningGain + subtleWave;
+          crestBoost = micEnvelope * 0.32;
+        } else if (isThinking) {
+          // Faster helical swirl across latitude bands
+          const swirlAngle =
+            Math.sin(phi * 2.4 - time * 2.4) * 0.55 +
+            Math.cos(phi * 4.0 + time * 1.7) * 0.16;
+          const cosS = Math.cos(swirlAngle);
+          const sinS = Math.sin(swirlAngle);
+          const sx = ux * cosS - uz * sinS;
+          const sz = ux * sinS + uz * cosS;
+          ux = sx;
+          uz = sz;
+          r *= 1 + Math.sin(phi * 3 - time * 2.8) * 0.035;
+          crestBoost = 0.14 + 0.14 * Math.sin(theta * 2 + phi * 3 - time * 3.2);
+        } else if (isSpeaking) {
+          // Smooth ripples sweeping across the sphere surface
+          const rippleA = Math.sin(phi * 6.5 - time * 5.2);
+          const rippleB = Math.sin(theta * 3.0 + phi * 4.0 - time * 3.8);
+          const ripple = rippleA * 0.65 + rippleB * 0.35;
+          r *= 1 + ripple * 0.095;
+          crestBoost = Math.max(0, ripple) * 0.38;
+        } else if (isError) {
+          const jitter = Math.sin(time * 12 + theta * 7 + phi * 5) * 0.025;
+          r *= 1 + jitter;
+          crestBoost = 0.15;
         }
 
-        // Rotate Y
-        const rx1 = x * cosY + z * sinY;
-        const ry1 = y;
-        const rz1 = -x * sinY + z * cosY;
+        // Rotate Y then gentle fixed X tilt
+        const x1 = ux * r;
+        const y1 = uy * r;
+        const z1 = uz * r;
 
-        // Rotate X
-        const rx2 = rx1;
-        const ry2 = ry1 * cosX - rz1 * sinX;
-        const rz2 = ry1 * sinX + rz1 * cosX;
+        const rx1 = x1 * cosY + z1 * sinY;
+        const rz1 = -x1 * sinY + z1 * cosY;
 
-        // Perspective
-        const scale = fov / (fov + rz2);
-        const x2d = centerX + rx2 * scale;
-        const y2d = centerY + ry2 * scale;
+        const ry2 = y1 * cosTiltX - rz1 * sinTiltX;
+        const rz2 = y1 * sinTiltX + rz1 * cosTiltX;
 
-        const depthNorm = (rz2 + baseRadius) / (baseRadius * 2);
-        const alpha = Math.max(0.15, Math.min(1.0, 0.25 + depthNorm * 0.75));
-        const ptRadius = Math.max(0.8, (1.2 + depthNorm * 1.8) * scale);
+        const persp = fov / (fov + rz2);
+        const x2d = centerX + rx1 * persp;
+        const y2d = centerY + ry2 * persp;
 
-        // Color selection
-        let color = '#38bdf8';
-        let haloColor = 'rgba(56, 189, 248, 0.4)';
-        let isOrbit = false;
+        // Normalized depth (-1 back .. +1 front) mapped to [0..1]
+        const depthNorm = Math.max(0, Math.min(1, (rz2 / (baseRadius * 1.15) + 1) * 0.5));
+        const bNorm = Math.max(0, Math.min(1, depthNorm * 0.84 + crestBoost));
+        const bIdx = Math.min(BUCKET_COUNT - 1, Math.floor(bNorm * BUCKET_COUNT));
 
-        const schemePrimaryMap: Record<OrbColorScheme, { solid: string; secondary: string; orbit: string }> = {
-          purple: { solid: '#9333ea', secondary: '#a855f7', orbit: '#c084fc' },
-          cyan: { solid: '#0284c7', secondary: '#38bdf8', orbit: '#7dd3fc' },
-          rose: { solid: '#e11d48', secondary: '#fb7185', orbit: '#fda4af' },
-          mint: { solid: '#059669', secondary: '#34d399', orbit: '#6ee7b7' },
-          amber: { solid: '#d97706', secondary: '#fbbf24', orbit: '#fde68a' }
-        };
-        const schemeColors =
-          st === 'error'
-            ? { solid: '#e11d48', secondary: '#fb7185', orbit: '#fda4af' }
-            : schemePrimaryMap[scheme] || schemePrimaryMap.purple;
+        const c = bucketCounts[bIdx];
+        bucketX[bIdx][c] = x2d;
+        bucketY[bIdx][c] = y2d;
+        bucketS[bIdx][c] = (basePixelSize * (0.68 + depthNorm * 0.65)) * persp;
+        bucketCounts[bIdx] = c + 1;
+      }
 
-        if (curStyle === 'glass_iridescent_wave') {
-          if (pt.colorType === 0) {
-            color = '#38bdf8';
-            haloColor = 'rgba(56, 189, 248, 0.5)';
-          } else if (pt.colorType === 1) {
-            color = scheme === 'purple' ? '#ec4899' : schemeColors.solid;
-            haloColor = 'rgba(236, 72, 153, 0.45)';
-          } else if (pt.colorType === 2) {
-            color = '#fde047';
-            haloColor = 'rgba(253, 224, 71, 0.45)';
-          } else if (pt.colorType === 3) {
-            color = '#34d399';
-            haloColor = 'rgba(52, 211, 153, 0.45)';
-          } else {
-            color = '#ffffff';
-            haloColor = 'rgba(255, 255, 255, 0.7)';
-          }
-        } else if (curStyle === 'blue_violet_matrix') {
-          if (pt.colorType === 0) {
-            color = scheme === 'purple' ? '#38bdf8' : schemeColors.secondary;
-            haloColor = 'rgba(56, 189, 248, 0.45)';
-          } else {
-            color = schemeColors.solid;
-            haloColor = 'rgba(168, 85, 247, 0.45)';
-          }
-        } else if (curStyle === 'magenta_cyan_mesh') {
-          if (pt.colorType === 0) {
-            color = scheme === 'purple' ? '#06b6d4' : schemeColors.orbit;
-            haloColor = 'rgba(6, 182, 212, 0.45)';
-          } else if (pt.colorType === 1) {
-            color = schemeColors.secondary;
-            haloColor = 'rgba(168, 85, 247, 0.45)';
-          } else {
-            color = scheme === 'purple' ? '#ec4899' : schemeColors.solid;
-            haloColor = 'rgba(236, 72, 153, 0.45)';
-          }
-        } else if (curStyle === 'purple_spiral_globe') {
-          if (pt.type === 'orbit_ring') {
-            color = schemeColors.orbit;
-            haloColor = 'rgba(192, 132, 252, 0.4)';
-            isOrbit = true;
-          } else if (pt.colorType === 0) {
-            color = '#ffffff';
-            haloColor = 'rgba(255, 255, 255, 0.75)';
-          } else {
-            color = schemeColors.solid;
-            haloColor = 'rgba(147, 51, 234, 0.55)';
-          }
+      const activeBuckets = isIdle ? palette.bucketsIdle : palette.bucketsActive;
+      for (let b = 0; b < BUCKET_COUNT; b++) {
+        const len = bucketCounts[b];
+        if (len === 0) continue;
+        ctx.fillStyle = activeBuckets[b];
+        const xs = bucketX[b];
+        const ys = bucketY[b];
+        const ss = bucketS[b];
+        for (let i = 0; i < len; i++) {
+          const d = ss[i];
+          const half = d * 0.5;
+          ctx.fillRect(xs[i] - half, ys[i] - half, d, d);
         }
-
-        projectedList.push({
-          x2d,
-          y2d,
-          z: rz2,
-          radius: ptRadius,
-          alpha,
-          color,
-          haloColor,
-          isOrbit
-        });
       }
 
-      // Depth sort
-      projectedList.sort((a, b) => a.z - b.z);
+      // 4. Front half of the single thin orbital ring (in front of the sphere)
+      ctx.save();
+      ctx.globalAlpha = ringOpacity;
+      ctx.strokeStyle = palette.ring;
+      ctx.lineWidth = 1.15;
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY, ringRx, ringRy, ringTilt, 0, Math.PI);
+      ctx.stroke();
+      ctx.restore();
 
-      // Render dots
-      for (let i = 0; i < projectedList.length; i++) {
-        const p = projectedList[i];
-
-        ctx.save();
-        ctx.globalAlpha = p.alpha;
-
-        // Draw radiant halo first if dot is in front hemisphere
-        if (p.z > 0) {
-          ctx.fillStyle = p.haloColor;
-          ctx.beginPath();
-          ctx.arc(p.x2d, p.y2d, p.radius * 2.2, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // Crisp solid core dot
-        ctx.fillStyle = p.color;
-        ctx.beginPath();
-        ctx.arc(p.x2d, p.y2d, p.isOrbit ? p.radius * 0.75 : p.radius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // White glowing dots: crisp specular highlight
-        if (p.color === '#ffffff' && p.z > -10) {
-          ctx.fillStyle = '#ffffff';
-          ctx.beginPath();
-          ctx.arc(p.x2d, p.y2d, p.radius * 0.55, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        ctx.restore();
-      }
-
-      // Post-Processing Glass Highlight for Style 1
-      if (curStyle === 'glass_iridescent_wave') {
-        ctx.save();
-        const coreGrad = ctx.createRadialGradient(
-          centerX, 
-          centerY, 
-          0, 
-          centerX, 
-          centerY, 
-          baseRadius * 0.55 * (1 + Math.sin(time * 3) * 0.1 * waveAmp)
-        );
-        coreGrad.addColorStop(0, 'rgba(255, 255, 255, 0.85)');
-        coreGrad.addColorStop(0.3, 'rgba(224, 242, 254, 0.5)');
-        coreGrad.addColorStop(0.7, 'rgba(192, 132, 252, 0.25)');
-        coreGrad.addColorStop(1, 'transparent');
-        ctx.fillStyle = coreGrad;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, baseRadius * 0.55, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Rim
-        const rimGrad = ctx.createRadialGradient(
-          centerX - baseRadius * 0.25, 
-          centerY - baseRadius * 0.28, 
-          baseRadius * 0.1, 
-          centerX, 
-          centerY, 
-          baseRadius
-        );
-        rimGrad.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
-        rimGrad.addColorStop(0.65, 'rgba(255, 255, 255, 0.05)');
-        rimGrad.addColorStop(0.92, 'rgba(56, 189, 248, 0.35)');
-        rimGrad.addColorStop(0.98, 'rgba(217, 70, 239, 0.55)');
-        rimGrad.addColorStop(1, 'rgba(255, 255, 255, 0.7)');
-
-        ctx.strokeStyle = rimGrad;
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, baseRadius * 0.98, 0, Math.PI * 2);
-        ctx.stroke();
-
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.32)';
-        ctx.beginPath();
-        ctx.ellipse(
-          centerX - baseRadius * 0.32, 
-          centerY - baseRadius * 0.35, 
-          baseRadius * 0.26, 
-          baseRadius * 0.12, 
-          -Math.PI / 4, 
-          0, 
-          Math.PI * 2
-        );
-        ctx.fill();
-        ctx.restore();
-      }
-
-      // Post-Processing for Style 4 Purple Spiral Globe: Concentric planetary orbit rings
-      if (curStyle === 'purple_spiral_globe') {
-        ctx.save();
-        // Inner luminous orbit ring
-        ctx.strokeStyle = 'rgba(192, 132, 252, 0.5)';
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.ellipse(centerX, centerY, baseRadius * 1.24, baseRadius * 0.42, 0.36, 0, Math.PI * 2);
-        ctx.stroke();
-
-        // Outer subtle planetary orbit ring
-        ctx.strokeStyle = 'rgba(168, 85, 247, 0.32)';
-        ctx.lineWidth = 1.0;
-        ctx.beginPath();
-        ctx.ellipse(centerX, centerY, baseRadius * 1.35, baseRadius * 0.46, 0.36, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      animFrameRef.current = requestAnimationFrame(render);
+      animFrameRef.current = requestAnimationFrame(renderFrame);
     };
 
-    animFrameRef.current = requestAnimationFrame(render);
+    const startLoop = () => {
+      if (isPaused || animFrameRef.current !== null) return;
+      lastStepMs = performance.now();
+      lastDrawMs = 0;
+      animFrameRef.current = requestAnimationFrame(renderFrame);
+    };
+
+    const stopLoop = () => {
+      if (animFrameRef.current !== null) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        isPaused = true;
+        stopLoop();
+      } else {
+        isPaused = false;
+        startLoop();
+      }
+    };
+
+    const handlePageHide = () => {
+      isPaused = true;
+      stopLoop();
+    };
+
+    const handlePageShow = () => {
+      isPaused = document.hidden;
+      if (!isPaused) startLoop();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('pageshow', handlePageShow);
+
+    if (!isPaused) {
+      startLoop();
+    }
 
     return () => {
-      if (animFrameRef.current) {
-        cancelAnimationFrame(animFrameRef.current);
-      }
+      stopLoop();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('pageshow', handlePageShow);
     };
-  }, [size, style, particleDensity]);
+  }, [size, particleDensity]);
 
   return (
-    <div 
-      className="relative flex items-center justify-center cursor-pointer select-none"
+    <button
+      type="button"
+      aria-label="Zuzu Voice Orb"
+      className="relative flex-shrink-0 flex items-center justify-center cursor-pointer select-none touch-manipulation bg-transparent border-0 p-0 focus:outline-none"
       onClick={onClick}
-      style={{ width: size, height: size }}
+      style={{
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        maxWidth: size,
+        maxHeight: size
+      }}
     >
-      <canvas 
-        ref={canvasRef} 
-        className="block transition-transform duration-300 hover:scale-105 active:scale-95"
+      <canvas
+        ref={canvasRef}
+        className="block pointer-events-none"
+        style={{ width: size, height: size }}
       />
-    </div>
+    </button>
   );
 };

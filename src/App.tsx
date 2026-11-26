@@ -21,7 +21,7 @@ import { ImageCreatorView } from './components/ImageCreatorView';
 import { FirstLaunchPermissionModal } from './components/FirstLaunchPermissionModal';
 import { ApiKeyModal } from './components/ApiKeyModal';
 import { ForceUpdateOverlay, ForceUpdatePayload } from './components/ForceUpdateOverlay';
-import { stopSpeaking, playHapticSound } from './utils/audio';
+import { stopSpeaking, playHapticSound, resumeAudioContextOnGesture } from './utils/audio';
 import { apiFetch, APP_VERSION, APP_VERSION_CODE } from './utils/apiConfig';
 import { syncBackgroundServicesWithSettings } from './utils/backgroundService';
 import { checkMicrophonePermission, getNativeZuzuPlugin } from './utils/permission';
@@ -44,6 +44,9 @@ import {
 } from './utils/userCloudVault';
 import { AuthModal } from './components/AuthModal';
 import { SettingsCategoryId } from './components/SettingsView';
+import { IntroSplash } from './components/IntroSplash';
+
+let hasShownIntroSplashThisLaunch = false;
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => getAppSettings());
@@ -66,6 +69,13 @@ export default function App() {
   // Force Update Overlay State (only shown when server signals genuine required update)
   const [forceUpdateInfo, setForceUpdateInfo] = useState<ForceUpdatePayload | null>(null);
   const [dueReminderToast, setDueReminderToast] = useState<string | null>(null);
+
+  // Fresh-start 2-second intro splash state (only once per fresh app start)
+  const [showIntroSplash, setShowIntroSplash] = useState(() => {
+    if (typeof window === 'undefined' || hasShownIntroSplashThisLaunch) return false;
+    hasShownIntroSplashThisLaunch = true;
+    return true;
+  });
 
   // First-launch permission flow state
   const [showFirstLaunch, setShowFirstLaunch] = useState(() => {
@@ -462,6 +472,7 @@ export default function App() {
         activeIdentity={settings.activeIdentity}
         isVoiceActive={Boolean(currentVoiceSession || isVoiceMinimized)}
         onMicClick={() => {
+          resumeAudioContextOnGesture();
           if (activeTab === 'voice') {
             window.dispatchEvent(new CustomEvent('zuzu-voice-orb-toggle'));
           } else {
@@ -480,9 +491,14 @@ export default function App() {
 
       {/* First-Launch Permission Introduction Popup */}
       <FirstLaunchPermissionModal
-        isOpen={showFirstLaunch}
+        isOpen={showFirstLaunch && !showIntroSplash}
         onFinish={() => setShowFirstLaunch(false)}
       />
+
+      {/* Fresh-Start 2-Second Intro Splash */}
+      {showIntroSplash && (
+        <IntroSplash onComplete={() => setShowIntroSplash(false)} />
+      )}
 
       {/* Floating Gemini API Key Popup */}
       <ApiKeyModal

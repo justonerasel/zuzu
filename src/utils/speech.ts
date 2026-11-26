@@ -20,6 +20,12 @@ export interface VoiceCaptureController {
 let activeCaptureCancelFn: (() => void) | null = null;
 let globalSpeechSeq = 0;
 
+function emitMicLevel(level: number) {
+  if (typeof window === 'undefined') return;
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 0));
+  window.dispatchEvent(new CustomEvent('zuzu-mic-level', { detail: { level: clamped } }));
+}
+
 function resolveRecognitionLanguage(lang: 'auto' | 'en-US' | 'bn-BD'): string {
   if (lang === 'bn-BD') return 'bn-BD';
   if (lang === 'en-US') return 'en-US';
@@ -108,6 +114,7 @@ async function startCloudAudioRecordingFallback(params: {
       let audioCtx: AudioContext | null = null;
 
       const cleanupAudio = () => {
+        emitMicLevel(0);
         if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
         if (vadTimer) { clearInterval(vadTimer); vadTimer = null; }
         if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
@@ -181,6 +188,7 @@ async function startCloudAudioRecordingFallback(params: {
               sum += v * v;
             }
             const rms = Math.sqrt(sum / buf.length);
+            emitMicLevel(Math.min(1, rms * 6.5));
             if (rms > 0.025) {
               heardSpeech = true;
               silentTicks = 0;
@@ -353,7 +361,23 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
   // 1. Native Android Capacitor SpeechRecognizer path
   if (nativePlugin?.startNativeSpeech) {
     const handles: Array<{ remove: () => Promise<void> | void }> = [];
+    let readyWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    let endGraceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearNativeTimers = () => {
+      if (readyWatchdogTimer) {
+        clearTimeout(readyWatchdogTimer);
+        readyWatchdogTimer = null;
+      }
+      if (endGraceTimer) {
+        clearTimeout(endGraceTimer);
+        endGraceTimer = null;
+      }
+    };
+
     const cleanupNativeListeners = () => {
+      emitMicLevel(0);
+      clearNativeTimers();
       handles.forEach((h) => {
         try {
           h?.remove?.();
@@ -388,18 +412,32 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
         handles.push(
           await nativePlugin.addListener('nativeSpeechReady', () => {
             if (isStale() || switchedToFallback) return;
+            if (readyWatchdogTimer) {
+              clearTimeout(readyWatchdogTimer);
+              readyWatchdogTimer = null;
+            }
             notifyStartedOnce();
           })
         );
         handles.push(
           await nativePlugin.addListener('nativeSpeechPartial', (data: any) => {
             if (isStale() || switchedToFallback) return;
+            if (readyWatchdogTimer) {
+              clearTimeout(readyWatchdogTimer);
+              readyWatchdogTimer = null;
+            }
             notifyStartedOnce();
             const txt = String(data?.text || '');
             if (txt) {
               latestTranscript = txt;
               onPartial?.(txt);
             }
+          })
+        );
+        handles.push(
+          await nativePlugin.addListener('nativeSpeechRms', (data: any) => {
+            if (isStale() || switchedToFallback) return;
+            emitMicLevel(Number(data?.level ?? 0));
           })
         );
         handles.push(
@@ -413,18 +451,20 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
         handles.push(
           await nativePlugin.addListener('nativeSpeechEnd', () => {
             if (isStale() || switchedToFallback) return;
-            setTimeout(() => {
+            if (endGraceTimer) clearTimeout(endGraceTimer);
+            endGraceTimer = setTimeout(() => {
+              endGraceTimer = null;
               if (!completed && !isStale() && !switchedToFallback) {
                 cleanupNativeListeners();
                 finishOnce(latestTranscript);
               }
-            }, 900);
+            }, 3500);
           })
         );
         handles.push(
           await nativePlugin.addListener('nativeSpeechError', (err: any) => {
-            cleanupNativeListeners();
             if (isStale() || completed || switchedToFallback) return;
+            cleanupNativeListeners();
             const msg = String(err?.message || 'Speech recognition failed. Please try again.');
             const errCode = Number(err?.code || 0);
 
@@ -441,7 +481,7 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
 
             completed = true;
             if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
-            if (msg === 'no-speech' || msg === 'no-match') {
+            if (msg === 'no-speech' || msg === 'no-match' || errCode === 6 || errCode === 7) {
               onEmptyEnd?.();
             } else {
               onError?.(msg);
@@ -450,22 +490,49 @@ export async function startVoiceCapture(options: VoiceCaptureOptions): Promise<V
         );
       }
 
+      if (isStale()) {
+        cleanupNativeListeners();
+        return { stop: () => {}, cancel: () => {} };
+      }
+
+      // Guard against Android SpeechRecognizer silently hanging before onReadyForSpeech
+      readyWatchdogTimer = setTimeout(() => {
+        readyWatchdogTimer = null;
+        if (!started && !completed && !isStale()) {
+          completed = true;
+          if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
+          cleanupNativeListeners();
+          nativePlugin.cancelNativeSpeech?.().catch(() => {});
+          onError?.('Microphone did not respond in time (timeout). Tap the orb to try again.');
+        }
+      }, 6000);
+
       await nativePlugin.startNativeSpeech({ language: resolvedLang });
+      if (isStale()) {
+        cleanupNativeListeners();
+        nativePlugin.cancelNativeSpeech?.().catch(() => {});
+        return { stop: () => {}, cancel: () => {} };
+      }
       return controller;
     } catch (nativeErr: any) {
       cleanupNativeListeners();
       const errCode = String(nativeErr?.code || nativeErr?.message || '');
       if (/PERMISSION_DENIED/i.test(errCode)) {
+        completed = true;
         if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
         onPermissionDenied?.();
         return { stop: () => {}, cancel: () => {} };
       }
       if (/UNAVAILABLE/i.test(errCode)) {
+        completed = true;
         if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
-        onError?.('Android SpeechRecognizer service is unavailable on this device. Please install or enable Google Speech Services.');
+        onError?.('Android SpeechRecognizer service is unavailable on this device. Please enable Google Speech Services.');
         return { stop: () => {}, cancel: () => {} };
       }
-      console.warn('[Speech] Native recognizer unavailable, trying Web Speech API:', nativeErr);
+      completed = true;
+      if (seq === globalSpeechSeq) activeCaptureCancelFn = null;
+      onError?.(nativeErr?.message || 'Failed to start Android SpeechRecognizer.');
+      return { stop: () => {}, cancel: () => {} };
     }
   }
 

@@ -642,9 +642,6 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             ordered.add("bn_BD");
             ordered.add("bn-IN");
             ordered.add("bn");
-            if (sysTag != null && !sysTag.trim().isEmpty()) {
-                ordered.add(sysTag);
-            }
         } else if ("auto".equalsIgnoreCase(clean) || clean.isEmpty()) {
             ordered.add("en-US");
             ordered.add("bn-BD");
@@ -682,6 +679,10 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             return;
         }
 
+        // Release any active AudioRecord capture/trigger thread before claiming the mic
+        stopMonitorInternal();
+        stopNativeAudioCaptureThreadInternal();
+
         final String langTag = call.getString("language", "en-US");
         final long sessionId = speechSessionCounter.incrementAndGet();
 
@@ -703,11 +704,11 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             if (firstLocale == null || firstLocale.trim().isEmpty()) {
                 firstLocale = "en-US";
             }
-            startSpeechWithLocale(ctx, firstLocale, sessionId, call);
+            startSpeechWithLocale(ctx, firstLocale, sessionId, call, false);
         });
     }
 
-    private void startSpeechWithLocale(Context ctx, String resolvedLang, long sessionId, PluginCall initialCall) {
+    private void startSpeechWithLocale(Context ctx, String resolvedLang, long sessionId, PluginCall initialCall, boolean retriedBusy) {
         try {
             destroySpeechRecognizerInternal();
             if (!isSpeechSessionActive.get() || sessionId != speechSessionCounter.get()) {
@@ -718,6 +719,7 @@ public class ZuzuNativeBridgePlugin extends Plugin {
             }
 
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(ctx);
+            final long[] lastRmsEmitAt = new long[]{0L};
             speechRecognizer.setRecognitionListener(new RecognitionListener() {
                 @Override
                 public void onReadyForSpeech(Bundle params) {
@@ -730,10 +732,30 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                 }
 
                 @Override
-                public void onBeginningOfSpeech() {}
+                public void onBeginningOfSpeech() {
+                    if (sessionId != speechSessionCounter.get()) return;
+                    mainHandler.post(() -> {
+                        if (sessionId == speechSessionCounter.get()) {
+                            notifyListeners("nativeSpeechReady", new JSObject());
+                        }
+                    });
+                }
 
                 @Override
-                public void onRmsChanged(float rmsdB) {}
+                public void onRmsChanged(float rmsdB) {
+                    if (sessionId != speechSessionCounter.get()) return;
+                    long now = System.currentTimeMillis();
+                    if (now - lastRmsEmitAt[0] < 45L) return;
+                    lastRmsEmitAt[0] = now;
+                    float normalized = Math.max(0.0f, Math.min(1.0f, (rmsdB + 2.0f) / 12.0f));
+                    JSObject payload = new JSObject();
+                    payload.put("level", normalized);
+                    mainHandler.post(() -> {
+                        if (sessionId == speechSessionCounter.get()) {
+                            notifyListeners("nativeSpeechRms", payload);
+                        }
+                    });
+                }
 
                 @Override
                 public void onBufferReceived(byte[] buffer) {}
@@ -753,11 +775,16 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                     if (sessionId != speechSessionCounter.get()) return;
                     destroySpeechRecognizerInternal();
 
+                    if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && !retriedBusy && isSpeechSessionActive.get()) {
+                        mainHandler.postDelayed(() -> startSpeechWithLocale(ctx, resolvedLang, sessionId, null, true), 280);
+                        return;
+                    }
+
                     boolean isLangErr = (error == 12 || error == 13);
                     if (isLangErr && isSpeechSessionActive.get() && !pendingSpeechLocales.isEmpty()) {
                         String nextLocale = pendingSpeechLocales.poll();
                         if (nextLocale != null && !nextLocale.trim().isEmpty()) {
-                            mainHandler.postDelayed(() -> startSpeechWithLocale(ctx, nextLocale, sessionId, null), 60);
+                            mainHandler.postDelayed(() -> startSpeechWithLocale(ctx, nextLocale, sessionId, null, false), 60);
                             return;
                         }
                     }
@@ -1085,7 +1112,10 @@ public class ZuzuNativeBridgePlugin extends Plugin {
                 }
             }
         }
-        return Locale.US;
+        if (textToSpeech.isLanguageAvailable(Locale.US) >= TextToSpeech.LANG_AVAILABLE) {
+            return Locale.US;
+        }
+        return Locale.getDefault() != null ? Locale.getDefault() : Locale.US;
     }
 
     private void performNativeSpeak(String text, String lang, float rate, float pitch, PluginCall call) {
