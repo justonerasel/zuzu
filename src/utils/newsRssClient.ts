@@ -4,7 +4,8 @@ import { getNativeZuzuPlugin } from './permission';
 import {
   MAX_NEWS_RSS_RESULTS,
   buildGoogleNewsRssUrl,
-  cleanTopicForRssQuery,
+  extractNewsSearchTopic,
+  filterAndScoreNewsRssItems,
   parseGoogleNewsRssXml
 } from './newsRss';
 
@@ -13,6 +14,8 @@ export interface NewsRssFetchResult {
   items: SearchSourceItem[];
   feedUrl: string;
   method: 'native_capacitor_http' | 'backend_rss_proxy';
+  noMatchingNews?: boolean;
+  topicQuery?: string;
   error?: string;
 }
 
@@ -28,13 +31,13 @@ function getClientApiBaseUrl(): string {
 /**
  * Fetches Google News RSS feed free of CORS both inside Capacitor Android APK
  * (via native Java HttpURLConnection in ZuzuNative.fetchUrlText) and in Web browsers
- * (via Express /api/news-rss proxy). Returns up to 8 newest headlines.
+ * (via Express /api/news-rss proxy). Filters strictly by user's topic and excludes sports unless asked.
  */
 export async function fetchGoogleNewsRssClient(
   classification: RealtimeSearchClassification
 ): Promise<NewsRssFetchResult> {
-  const topic = cleanTopicForRssQuery(classification.searchQuery, classification.regionHint);
-  const feedUrl = buildGoogleNewsRssUrl(topic, classification.isBengali, classification.regionHint);
+  const extracted = extractNewsSearchTopic(classification.searchQuery, classification.regionHint);
+  const feedUrl = buildGoogleNewsRssUrl(extracted.query, classification.isBengali, classification.regionHint);
 
   const nativePlugin = getNativeZuzuPlugin();
 
@@ -48,32 +51,25 @@ export async function fetchGoogleNewsRssClient(
           items: [],
           feedUrl,
           method: 'native_capacitor_http',
+          topicQuery: extracted.query,
           error: `HTTP ${nativeRes?.status || 'error'}`
         };
       }
 
-      let parsed = parseGoogleNewsRssXml(nativeRes.text);
-      let usedUrl = feedUrl;
-
-      // If hyper-specific topic returned 0 RSS <item>s, broaden cleanly once to regional/world headline feed
-      if (parsed.length === 0 && topic !== 'Bangladesh' && topic !== 'world news') {
-        const fallbackTopic = classification.regionHint === 'BD' ? 'Bangladesh' : 'world news';
-        const fallbackUrl = buildGoogleNewsRssUrl(fallbackTopic, classification.isBengali, classification.regionHint);
-        const retryRes = await nativePlugin.fetchUrlText({ url: fallbackUrl, timeoutMs: 7000 }).catch(() => null);
-        if (retryRes?.ok && typeof retryRes?.text === 'string') {
-          const retryItems = parseGoogleNewsRssXml(retryRes.text);
-          if (retryItems.length > 0) {
-            parsed = retryItems;
-            usedUrl = fallbackUrl;
-          }
-        }
-      }
+      const parsed = parseGoogleNewsRssXml(nativeRes.text, Date.now(), { maxResults: 24 });
+      const filtered = filterAndScoreNewsRssItems(parsed, {
+        keywords: extracted.keywords,
+        hasSpecificTopic: extracted.hasSpecificTopic,
+        asksAboutSports: classification.asksAboutSports
+      });
 
       return {
         ok: true,
-        items: parsed.slice(0, MAX_NEWS_RSS_RESULTS).map(({ publishedMs: _ms, ...rest }) => rest),
-        feedUrl: usedUrl,
-        method: 'native_capacitor_http'
+        items: filtered.items.slice(0, MAX_NEWS_RSS_RESULTS).map(({ publishedMs: _ms, ...rest }) => rest),
+        feedUrl,
+        method: 'native_capacitor_http',
+        noMatchingNews: filtered.noMatchingNews,
+        topicQuery: extracted.query
       };
     } catch (err: any) {
       return {
@@ -81,6 +77,7 @@ export async function fetchGoogleNewsRssClient(
         items: [],
         feedUrl,
         method: 'native_capacitor_http',
+        topicQuery: extracted.query,
         error: err?.message || 'Native HTTP fetch failed'
       };
     }
@@ -89,7 +86,7 @@ export async function fetchGoogleNewsRssClient(
   // 2. Web / Dev browser fallback: fetch via Express /api/news-rss proxy (free, avoids browser CORS)
   try {
     const base = getClientApiBaseUrl();
-    const proxyUrl = `${base}/api/news-rss?q=${encodeURIComponent(classification.searchQuery)}&bn=${classification.isBengali ? '1' : '0'}&region=${encodeURIComponent(classification.regionHint)}`;
+    const proxyUrl = `${base}/api/news-rss?q=${encodeURIComponent(classification.searchQuery)}&bn=${classification.isBengali ? '1' : '0'}&region=${encodeURIComponent(classification.regionHint)}&sports=${classification.asksAboutSports ? '1' : '0'}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8500);
     const res = await fetch(proxyUrl, { signal: controller.signal });
@@ -102,15 +99,19 @@ export async function fetchGoogleNewsRssClient(
         items: [],
         feedUrl: data?.feedUrl || feedUrl,
         method: 'backend_rss_proxy',
+        topicQuery: extracted.query,
         error: data?.error || `HTTP ${res.status}`
       };
     }
 
+    const items = Array.isArray(data.items) ? data.items.slice(0, MAX_NEWS_RSS_RESULTS) : [];
     return {
       ok: true,
-      items: Array.isArray(data.items) ? data.items.slice(0, MAX_NEWS_RSS_RESULTS) : [],
+      items,
       feedUrl: data.feedUrl || feedUrl,
-      method: 'backend_rss_proxy'
+      method: 'backend_rss_proxy',
+      noMatchingNews: Boolean(data.noMatchingNews) || items.length === 0,
+      topicQuery: data.topicQuery || extracted.query
     };
   } catch (err: any) {
     return {
@@ -118,6 +119,7 @@ export async function fetchGoogleNewsRssClient(
       items: [],
       feedUrl,
       method: 'backend_rss_proxy',
+      topicQuery: extracted.query,
       error: err?.name === 'AbortError' ? 'RSS request timed out' : err?.message || 'Network error'
     };
   }

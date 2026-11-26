@@ -18,7 +18,6 @@ import {
   resolveGeminiVoiceForSettings
 } from '../constants/personalities';
 import { ParticleOrb, OrbState } from './ParticleOrb';
-import { BengaliMarqueeWidget } from './BengaliMarqueeWidget';
 import { WeatherCard } from './WeatherCard';
 import { playHapticSound, resumeAudioContextOnGesture, speakText, stopSpeaking } from '../utils/audio';
 import { checkMicrophonePermission, requestMicrophonePermission, getNativeZuzuPlugin, MicrophonePermissionState } from '../utils/permission';
@@ -759,7 +758,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           glowIntensity={settings.orbGlowIntensity}
           particleDensity={settings.orbParticleDensity}
           onClick={handleOrbTap}
-          size={255}
+          size={304}
+          responsiveWidthRatio={0.78}
         />
 
         <div className="mt-1 flex flex-col items-center justify-center gap-1.5">
@@ -821,9 +821,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Single-Layer Scrolling LED Marquee */}
-      <BengaliMarqueeWidget />
 
       {/* Spoken Transcript & AI Reply Card */}
       {(transcriptText || lastAiResponse) && (

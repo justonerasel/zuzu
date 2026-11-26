@@ -9,16 +9,21 @@ export interface ParsedNewsRssItem extends SearchSourceItem {
 export function decodeXmlEntities(str: string): string {
   return String(str || '')
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&#(\d+);/g, (_m, dec) => {
+      const code = Number(dec);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+    })
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_m, dec) => {
-      const code = Number(dec);
-      return Number.isFinite(code) ? String.fromCharCode(code) : '';
-    })
+    .replace(/&nbsp;/g, ' ')
     .trim();
 }
 
@@ -41,24 +46,95 @@ function getHostnameLabel(rawUrl: string): string {
   }
 }
 
-export function cleanTopicForRssQuery(rawQuery: string, regionHint: 'BD' | 'GLOBAL'): string {
+export const SPORTS_CONTENT_REGEX =
+  /\b(?:sport|sports|cricket|football|soccer|tennis|badminton|hockey|basketball|nba|ipl|bpl|psl|bbl|cpl|fifa|uefa|champions\s+league|premier\s+league|la\s+liga|world\s+cup|t20|odi|test\s+match|wicket|innings|batsman|bowler|striker|goalkeeper|tournament|olympics|match\s+score|live\s+score|espn|cricinfo|espncricinfo|cricbuzz|goal\.com|sportskeeda|t\s*sports|shakib|tamim|liton|mushfiq|messi|ronaldo|kohli|rohit|bumrah)\b|(?:খেলা|খেলাধুলা|ক্রিকেট|ফুটবল|টেনিস|ব্যাডমিন্টন|হকি|বিপিএল|আইপিএল|ফিফা|বিশ্বকাপ|ম্যাচ|স্কোর|গোল|উইকেট|টুর্নামেন্ট|অলিম্পিক|ব্যাটসম্যান|বোলার|সাকিব|তামিম|লিটন|মুশফিক|মেসি|রোনালদো|কোহলি)/i;
+
+const EN_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'into', 'about', 'that', 'this', 'what', 'which', 'where',
+  'when', 'who', 'whom', 'whose', 'how', 'why', 'are', 'was', 'were', 'been', 'have', 'has', 'had',
+  'will', 'would', 'could', 'should', 'can', 'may', 'might', 'did', 'does', 'not', 'any', 'some',
+  'all', 'more', 'most', 'only', 'just', 'very', 'now', 'today', 'yesterday', 'recent', 'latest',
+  'breaking', 'news', 'headline', 'headlines', 'update', 'updates', 'report', 'reports', 'story',
+  'stories', 'tell', 'give', 'show', 'please', 'happened', 'happening', 'around', 'current', 'events',
+  'world', 'new', 'top', 'live'
+]);
+
+const BN_STOP_WORDS = new Set([
+  'আজ', 'আজকের', 'আজকে', 'এখন', 'এখনকার', 'সর্বশেষ', 'সবশেষ', 'তাজা', 'ব্রেকিং', 'খবর', 'সংবাদ',
+  'নিউজ', 'হেডলাইন', 'শিরোনাম', 'আপডেট', 'সাম্প্রতিক', 'ঘটনা', 'নতুন', 'বলো', 'বলেন', 'দাও', 'দিন',
+  'দেখাও', 'জানাও', 'কী', 'কি', 'কেমন', 'কোথায়', 'কখন', 'কেন', 'সম্পর্কে', 'নিয়ে', 'নিয়ে', 'বিষয়ে',
+  'বিষয়ে', 'এবং', 'আর', 'আরও', 'কোনো', 'কোন', 'থেকে', 'হয়েছে', 'হয়েছে', 'ঘটেছে', 'চলছে', 'হলো', 'হল',
+  'এই', 'সেই', 'তার', 'তাদের', 'জন্য'
+]);
+
+function stripBengaliSuffix(word: string): string {
+  const suffixes = ['গুলোর', 'গুলির', 'সমূহের', 'গুলো', 'গুলি', 'সমূহ', 'দের', 'য়ের', 'এর', 'তে', 'কে', 'য়ে', 'র', 'য়', 'ে'];
+  for (const sfx of suffixes) {
+    if (word.length > sfx.length + 2 && word.endsWith(sfx)) {
+      return word.slice(0, -sfx.length);
+    }
+  }
+  return word;
+}
+
+export interface ExtractedNewsTopic {
+  query: string;
+  hasSpecificTopic: boolean;
+  keywords: string[];
+}
+
+export function extractNewsSearchTopic(
+  rawQuery: string,
+  regionHint: 'BD' | 'GLOBAL'
+): ExtractedNewsTopic {
   const cleaned = (rawQuery || '')
     .replace(
-      /\b(?:tell me|what is|what's|can you|please|give me|show me|latest|breaking|news|headlines|any updates?|updates?|today|right now|now|in the last \d+ minutes?|last \d+ minutes?|past \d+ minutes?)\b/gi,
+      /\b(?:tell me|what is the|what's the|what is|what's|what are|what happened|can you|could you|please|give me|show me|any newer|any more|latest|breaking|news|top stories|headlines?|any updates?|updates?|today's|today|right now|at the moment|recently|recent|current events?|events?|in the last \d+ minutes?|last \d+ minutes?|past \d+ minutes?|in the last \d+ hours?|last \d+ hours?)\b/gi,
       ' '
     )
     .replace(
-      /(?:গত\s*[০-৯0-9]+\s*(?:মিনিট|মিনিটের|ঘণ্টা|ঘণ্টার)|সর্বশেষ|তাজা|ব্রেকিং|খবর|সংবাদ|নিউজ|হেডলাইন|আপডেট|আজকের|আজকে|এখনকার|এখন|বলো|দাও|দেখাও|কী|কি)/g,
+      /(?:গত\s*[০-৯0-9]+\s*(?:মিনিট|মিনিটের|ঘণ্টা|ঘণ্টার|ঘন্টা|ঘণ্টার)|সর্বশেষ|সবশেষ|তাজা|ব্রেকিং|খবর|সংবাদ|নিউজ|হেডলাইন|শিরোনাম|আপডেট|আজকের|আজকে|এখনকার|সাম্প্রতিক|সম্পর্কে|নিয়ে|নিয়ে|বিষয়ে|বিষয়ে|বলো|বলেন|দাও|দিন|দেখাও|জানাও|ঘটেছে|হয়েছে|হয়েছে|কী|কি|আরও)/g,
       ' '
     )
-    .replace(/[?!।,.;:]+/g, ' ')
+    .replace(/[?!।,.;:"'()[\]{}]+/g, ' ')
+    .replace(/\b(?:on|about|from|regarding|in|of|for|the|a|an)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-  if (cleaned.length >= 2) {
-    return cleaned;
+  const rawTokens = cleaned
+    .split(/\s+/)
+    .map(t => t.trim())
+    .filter(t => t.length >= 2);
+
+  const keywords: string[] = [];
+  for (const token of rawTokens) {
+    const lower = token.toLowerCase();
+    const isBn = /[\u0980-\u09FF]/.test(token);
+    if (isBn) {
+      if (BN_STOP_WORDS.has(token)) continue;
+      keywords.push(token);
+      const stem = stripBengaliSuffix(token);
+      if (stem !== token && stem.length >= 2 && !BN_STOP_WORDS.has(stem)) {
+        keywords.push(stem);
+      }
+    } else {
+      if (EN_STOP_WORDS.has(lower)) continue;
+      keywords.push(lower);
+    }
   }
-  return regionHint === 'BD' ? 'Bangladesh' : 'world news';
+
+  const dedupedKeywords = Array.from(new Set(keywords));
+  const hasSpecificTopic = cleaned.length >= 2 && dedupedKeywords.length > 0;
+
+  return {
+    query: hasSpecificTopic ? cleaned : regionHint === 'BD' ? 'Bangladesh' : 'world news',
+    hasSpecificTopic,
+    keywords: dedupedKeywords
+  };
+}
+
+export function cleanTopicForRssQuery(rawQuery: string, regionHint: 'BD' | 'GLOBAL'): string {
+  return extractNewsSearchTopic(rawQuery, regionHint).query;
 }
 
 export function buildGoogleNewsRssUrl(
@@ -73,12 +149,101 @@ export function buildGoogleNewsRssUrl(
   return `https://news.google.com/rss/search?q=${encodeURIComponent(cleanQ)}&hl=en-US&gl=US&ceid=US:en`;
 }
 
-export function parseGoogleNewsRssXml(xml: string, nowMs = Date.now()): ParsedNewsRssItem[] {
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function keywordMatchesText(keyword: string, lowerTitle: string, rawTitle: string): boolean {
+  if (/[\u0980-\u09FF]/.test(keyword)) {
+    const stem = stripBengaliSuffix(keyword);
+    return rawTitle.includes(keyword) || (stem.length >= 2 && rawTitle.includes(stem));
+  }
+  const kw = keyword.toLowerCase();
+  if (kw.length <= 2) {
+    return new RegExp(`\\b${escapeRegExp(kw)}\\b`, 'i').test(lowerTitle);
+  }
+  if (kw.length <= 4) {
+    return new RegExp(`\\b${escapeRegExp(kw)}`, 'i').test(lowerTitle);
+  }
+  // Allow morphological variants (e.g., economy / economic / economies, iran / iranian, elect / election)
+  const prefix = kw.slice(0, Math.max(4, Math.min(kw.length - 1, 6)));
+  return lowerTitle.includes(kw) || new RegExp(`\\b${escapeRegExp(prefix)}`, 'i').test(lowerTitle);
+}
+
+export function filterAndScoreNewsRssItems<T extends SearchSourceItem>(
+  items: T[],
+  options: {
+    keywords: string[];
+    hasSpecificTopic: boolean;
+    asksAboutSports: boolean;
+  }
+): { items: T[]; noMatchingNews: boolean } {
+  const withoutUnwantedSports = options.asksAboutSports
+    ? items
+    : items.filter(
+        item =>
+          !SPORTS_CONTENT_REGEX.test(item.title || '') &&
+          !SPORTS_CONTENT_REGEX.test(item.sourceName || '')
+      );
+
+  if (!options.hasSpecificTopic || options.keywords.length === 0) {
+    return {
+      items: withoutUnwantedSports.slice(0, MAX_NEWS_RSS_RESULTS),
+      noMatchingNews: withoutUnwantedSports.length === 0
+    };
+  }
+
+  const scored: Array<{ item: T; score: number }> = [];
+  for (const item of withoutUnwantedSports) {
+    const rawTitle = item.title || '';
+    const lowerTitle = rawTitle.toLowerCase();
+    let score = 0;
+    for (const kw of options.keywords) {
+      if (keywordMatchesText(kw, lowerTitle, rawTitle)) {
+        score += 1;
+      }
+    }
+    if (score > 0) {
+      scored.push({ item, score });
+    }
+  }
+
+  if (scored.length === 0) {
+    return { items: [], noMatchingNews: true };
+  }
+
+  // Sort primarily by keyword match score while preserving newest-first tie-breaking
+  scored.sort((a, b) => b.score - a.score);
+  return {
+    items: scored.slice(0, MAX_NEWS_RSS_RESULTS).map(s => s.item),
+    noMatchingNews: false
+  };
+}
+
+export function parseGoogleNewsRssXml(
+  xml: string,
+  nowMs = Date.now(),
+  optionsOrSource?:
+    | string
+    | {
+        defaultSourceName?: string;
+        maxResults?: number;
+        preserveFeedOrder?: boolean;
+      }
+): ParsedNewsRssItem[] {
   if (!xml || typeof xml !== 'string') return [];
+  const opts =
+    typeof optionsOrSource === 'string'
+      ? { defaultSourceName: optionsOrSource }
+      : optionsOrSource || {};
+  const defaultSourceName = opts.defaultSourceName;
+  const maxResults = typeof opts.maxResults === 'number' && opts.maxResults > 0 ? opts.maxResults : MAX_NEWS_RSS_RESULTS;
+  const preserveFeedOrder = Boolean(opts.preserveFeedOrder);
+
   const items: ParsedNewsRssItem[] = [];
   const itemMatches = xml.match(/<item\b[^>]*>[\s\S]*?<\/item>/gi) || [];
 
-  for (const block of itemMatches.slice(0, 24)) {
+  for (const block of itemMatches.slice(0, 36)) {
     const titleMatch = block.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
     const linkMatch = block.match(/<link\b[^>]*>([\s\S]*?)<\/link>/i);
     const pubDateMatch = block.match(/<pubDate\b[^>]*>([\s\S]*?)<\/pubDate>/i);
@@ -102,7 +267,7 @@ export function parseGoogleNewsRssXml(xml: string, nowMs = Date.now()): ParsedNe
     }
 
     if (!sourceName) {
-      sourceName = getHostnameLabel(url);
+      sourceName = defaultSourceName || getHostnameLabel(url);
     }
 
     const parsedDate = pubStr ? Date.parse(pubStr) : NaN;
@@ -120,10 +285,12 @@ export function parseGoogleNewsRssXml(xml: string, nowMs = Date.now()): ParsedNe
     });
   }
 
-  // Deduplicate and sort newest-first, capped at top 8
+  // Deduplicate and cap results (preserving feed top-story order when requested, otherwise newest-first)
   const seen = new Set<string>();
   const deduped: ParsedNewsRssItem[] = [];
-  items.sort((a, b) => (b.publishedMs || 0) - (a.publishedMs || 0));
+  if (!preserveFeedOrder) {
+    items.sort((a, b) => (b.publishedMs || 0) - (a.publishedMs || 0));
+  }
 
   for (const item of items) {
     const key = `${item.sourceName.toLowerCase()}::${item.title.toLowerCase().slice(0, 60)}`;
@@ -131,7 +298,7 @@ export function parseGoogleNewsRssXml(xml: string, nowMs = Date.now()): ParsedNe
     seen.add(item.url);
     seen.add(key);
     deduped.push(item);
-    if (deduped.length >= MAX_NEWS_RSS_RESULTS) break;
+    if (deduped.length >= maxResults) break;
   }
 
   return deduped;
@@ -139,7 +306,8 @@ export function parseGoogleNewsRssXml(xml: string, nowMs = Date.now()): ParsedNe
 
 export function buildStrictNewsRssSystemInstruction(
   items: SearchSourceItem[],
-  isBengali: boolean
+  isBengali: boolean,
+  asksAboutSports = false
 ): string {
   const now = new Date();
   const formattedList = items
@@ -148,11 +316,11 @@ export function buildStrictNewsRssSystemInstruction(
       const timeInfo = item.publishedAt
         ? `${new Date(item.publishedAt).toUTCString()} (${item.ageLabel || 'recent'})`
         : item.ageLabel || 'Publish time not specified';
-      return `[${idx + 1}] Title: ${item.title} | Source: ${item.sourceName} | Published: ${timeInfo} | Link: ${item.url}`;
+      return `[${idx + 1}] Title: ${item.title} | Source: ${item.sourceName} | Published: ${timeInfo}`;
     })
     .join('\n');
 
-  return `\n\nGOOGLE NEWS RSS CONTEXT (TOP ${Math.min(items.length, MAX_NEWS_RSS_RESULTS)} LATEST HEADLINES):
+  return `\n\nGOOGLE NEWS RSS CONTEXT (TOP ${Math.min(items.length, MAX_NEWS_RSS_RESULTS)} MATCHING HEADLINES):
 Current Date & Time: ${now.toLocaleString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -164,13 +332,28 @@ Current Date & Time: ${now.toLocaleString('en-US', {
   })} (UTC: ${now.toISOString()})
 
 STRICT NEWS GROUNDING RULES:
-- Write your answer using ONLY the ${Math.min(items.length, MAX_NEWS_RSS_RESULTS)} Google News RSS headlines provided below.
-- Do NOT add facts, claims, dates, names, or headlines from outside these ${Math.min(items.length, MAX_NEWS_RSS_RESULTS)} results.
+- Write your answer using ONLY the ${Math.min(items.length, MAX_NEWS_RSS_RESULTS)} retrieved Google News RSS headlines below that directly match the user's requested topic.
+- Do NOT add facts, claims, dates, names, or headlines from outside these retrieved results.
 - ${isBengali ? 'Answer clearly in natural Bengali (বাংলা).' : 'Answer clearly in the user’s language.'}
-- Include a concise Markdown heading, clean bullet points or a Markdown comparison/summary table where helpful, and mention the source name & publish time naturally.
+- Mention the news channel or source name naturally inside the answer text (for example, "according to BBC Bangla" or "প্রথম আলো অনুযায়ী").
+- Do NOT include URLs, hyperlinks, or a link list at the end of your reply.
+${!asksAboutSports ? '- Do NOT mention or add any sports news.' : ''}
+- If none of these headlines actually answer the user's specific topic, say honestly that no matching news was found.
 
 RSS HEADLINES:
 ${formattedList}`;
+}
+
+export function buildNoMatchingNewsMessage(isBengali: boolean, topicQuery?: string): string {
+  const cleanTopic = (topicQuery || '').trim();
+  if (isBengali) {
+    return cleanTopic
+      ? `"${cleanTopic}" বিষয়ে সাম্প্রতিক কোনো মিল থাকা খবর পাওয়া যায়নি।`
+      : 'আপনার উল্লেখিত বিষয়ে সাম্প্রতিক কোনো মিল থাকা খবর পাওয়া যায়নি।';
+  }
+  return cleanTopic
+    ? `No matching recent news was found for "${cleanTopic}".`
+    : 'No matching recent news was found for that topic.';
 }
 
 export function buildNewsFeedErrorMessage(isBengali: boolean, detail?: string): string {

@@ -5,6 +5,7 @@ import { getAppSettings } from './storage';
 import {
   MAX_NEWS_RSS_RESULTS,
   buildNewsFeedErrorMessage,
+  buildNoMatchingNewsMessage,
   buildStrictNewsRssSystemInstruction
 } from './newsRss';
 import { fetchGoogleNewsRssClient } from './newsRssClient';
@@ -20,6 +21,13 @@ export const APP_VERSION = '3.8.0';
 export const APP_VERSION_CODE = 380;
 
 // Centralized free Gemini Model Configuration (never hardcoded in UI components; zero paid or deprecated models)
+const GEMINI_CHAT_CANDIDATES = [
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-4-hydrogen'
+] as const;
 const GEMINI_TEXT_CANDIDATES = [
   'gemini-3.5-flash-lite',
   'gemini-3.8-flash',
@@ -37,8 +45,9 @@ function isRetryableHighDemand(rawMsg: string, status?: number): boolean {
 }
 
 function isModelMissingError(rawMsg: string, status?: number): boolean {
+  if (/API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(rawMsg)) return false;
   if (status === 404) return true;
-  return /404|NOT_FOUND|not found|not supported|unknown model|thinking/i.test(rawMsg);
+  return /404|NOT_FOUND|not found|not supported|unknown model|invalid model|model.*not available|thinking/i.test(rawMsg);
 }
 
 function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
@@ -355,7 +364,9 @@ CONVERSATION PRINCIPLES:
   if (isVoiceMode) {
     sys += `\nVoice Mode: Keep spoken responses crisp, natural dialog, and free of markdown asterisks, raw tables, or code fences.`;
   } else {
-    sys += `\nText Formatting: Use clean Markdown headings, bullet lists, numbered steps, and fenced code blocks where helpful. Use Markdown tables for comparisons, calculations, and plans.`;
+    sys += `\n\nCHAT FOCUS & ACCURACY RULES:
+- Answer the user's actual question first and directly. Stay on the topic of the user's last message and the earlier conversation. Never switch to an unrelated topic, and never bring up news or sports unless asked. If the question is unclear, ask one short clarifying question. Use the previous messages for context. Be accurate. If you do not know, say so.
+- Text Formatting: Use clean Markdown headings, bullet lists, numbered steps, and fenced code blocks where helpful. Use Markdown tables for comparisons, calculations, and plans. Do NOT include URLs or a list of source links unless the user explicitly asks for links.`;
   }
 
   if (settings.memoryEnabled && memories.length > 0) {
@@ -452,6 +463,8 @@ async function directGeminiStreamContent(params: {
   enableGoogleSearch?: boolean;
   strictNewsItems?: SearchSourceItem[];
   isBengali?: boolean;
+  isVoiceMode?: boolean;
+  asksAboutSports?: boolean;
   signal?: AbortSignal;
   onDelta?: (accumulatedText: string, delta: string) => void;
 }): Promise<{ text: string; isCloudAI: boolean; sources?: SearchSourceItem[] }> {
@@ -465,14 +478,20 @@ async function directGeminiStreamContent(params: {
 
   let sysInst = params.systemInstruction;
   if (hasStrictNews) {
-    sysInst += buildStrictNewsRssSystemInstruction(strictTop8, Boolean(params.isBengali));
+    sysInst += buildStrictNewsRssSystemInstruction(
+      strictTop8,
+      Boolean(params.isBengali),
+      Boolean(params.asksAboutSports)
+    );
   } else if (enableSearchTool) {
-    sysInst += `\n\nREAL-TIME GOOGLE SEARCH GROUNDING ENABLED:\n- Use verified live Google Search results (supporting both English and Bengali queries) for current events, breaking news, prices, weather, and recent updates.\n- Include publisher/source names and publication times when confirmed by retrieved articles.\n- Never fabricate publication timestamps, headlines, or URLs.`;
+    sysInst += `\n\nREAL-TIME GOOGLE SEARCH GROUNDING ENABLED:\n- Use verified live Google Search results (supporting both English and Bengali queries) to answer the user's exact question accurately.\n- Mention source names naturally in the text when relevant, without outputting URLs or link lists.\n- Never fabricate publication timestamps, headlines, or URLs.`;
   }
 
-  for (let i = 0; i < GEMINI_TEXT_CANDIDATES.length; i++) {
-    const modelId = GEMINI_TEXT_CANDIDATES[i];
-    const hasMore = i < GEMINI_TEXT_CANDIDATES.length - 1;
+  const modelCandidates = params.isVoiceMode ? GEMINI_TEXT_CANDIDATES : GEMINI_CHAT_CANDIDATES;
+
+  for (let i = 0; i < modelCandidates.length; i++) {
+    const modelId = modelCandidates[i];
+    const hasMore = i < modelCandidates.length - 1;
     const maxRetriesForModel = i === 0 ? HIGH_DEMAND_RETRY_DELAYS_MS.length : 0;
 
     for (let attempt = 0; attempt <= maxRetriesForModel; attempt++) {
@@ -881,10 +900,10 @@ export async function streamUnifiedAiChat(params: {
   // Inside Android APK: fetch Google News RSS directly via Capacitor native HttpURLConnection (CORS-free, zero server)
   if (searchClassification.isNewsQuery && hasNativeHttpPlugin) {
     const rssRes = await fetchGoogleNewsRssClient(searchClassification);
-    if (!rssRes.ok || rssRes.items.length === 0) {
+    if (!rssRes.ok) {
       const failText = buildNewsFeedErrorMessage(
         searchClassification.isBengali,
-        rssRes.error || 'No headlines returned'
+        rssRes.error || 'Could not load feed'
       );
       params.onDelta?.(failText, failText);
       return {
@@ -894,9 +913,22 @@ export async function streamUnifiedAiChat(params: {
         sources: []
       };
     }
+    if (rssRes.noMatchingNews || rssRes.items.length === 0) {
+      const noMatchText = buildNoMatchingNewsMessage(
+        searchClassification.isBengali,
+        rssRes.topicQuery || searchClassification.searchQuery
+      );
+      params.onDelta?.(noMatchText, noMatchText);
+      return {
+        reply: noMatchText,
+        isCloudAI: false,
+        usedRealtimeSearch: false,
+        sources: []
+      };
+    }
     prefetchedRssItems = rssRes.items.slice(0, MAX_NEWS_RSS_RESULTS);
 
-    // Standalone APK with local Gemini key: stream directly to Gemini with top 8 native RSS results (zero server needed!)
+    // Standalone APK with local Gemini key: stream directly to Gemini with matching native RSS results (zero server needed!)
     if (hasUserGeminiKey) {
       const sysPrompt = buildSystemInstruction(settings, params.memories, params.isVoiceMode);
       try {
@@ -906,6 +938,8 @@ export async function streamUnifiedAiChat(params: {
           systemInstruction: sysPrompt,
           strictNewsItems: prefetchedRssItems,
           isBengali: searchClassification.isBengali,
+          isVoiceMode: params.isVoiceMode,
+          asksAboutSports: searchClassification.asksAboutSports,
           signal: params.signal,
           onDelta: params.onDelta
         });
@@ -913,7 +947,7 @@ export async function streamUnifiedAiChat(params: {
           reply: directRes.text,
           isCloudAI: true,
           usedRealtimeSearch: true,
-          sources: prefetchedRssItems
+          sources: []
         };
       } catch (directErr: any) {
         if (directErr?.name === 'AbortError' && params.signal?.aborted) {
@@ -1007,7 +1041,7 @@ export async function streamUnifiedAiChat(params: {
             isCloudAI: Boolean(doneMeta.isCloudAI),
             requiresKey: Boolean(doneMeta.requiresKey),
             usedRealtimeSearch: Boolean(doneMeta.usedRealtimeSearch),
-            sources: Array.isArray(doneMeta.sources) ? doneMeta.sources : []
+            sources: params.isVoiceMode && Array.isArray(doneMeta.sources) ? doneMeta.sources : []
           };
         }
       }
@@ -1038,14 +1072,27 @@ export async function streamUnifiedAiChat(params: {
     let strictNewsItems: SearchSourceItem[] | undefined = prefetchedRssItems;
     if (searchClassification.isNewsQuery && !strictNewsItems) {
       const rssFallback = await fetchGoogleNewsRssClient(searchClassification);
-      if (!rssFallback.ok || rssFallback.items.length === 0) {
+      if (!rssFallback.ok) {
         const failText = buildNewsFeedErrorMessage(
           searchClassification.isBengali,
-          rssFallback.error || 'No headlines returned'
+          rssFallback.error || 'Could not load feed'
         );
         params.onDelta?.(failText, failText);
         return {
           reply: failText,
+          isCloudAI: false,
+          usedRealtimeSearch: false,
+          sources: []
+        };
+      }
+      if (rssFallback.noMatchingNews || rssFallback.items.length === 0) {
+        const noMatchText = buildNoMatchingNewsMessage(
+          searchClassification.isBengali,
+          rssFallback.topicQuery || searchClassification.searchQuery
+        );
+        params.onDelta?.(noMatchText, noMatchText);
+        return {
+          reply: noMatchText,
           isCloudAI: false,
           usedRealtimeSearch: false,
           sources: []
@@ -1063,6 +1110,8 @@ export async function streamUnifiedAiChat(params: {
         enableGoogleSearch: searchClassification.needsSearch && !searchClassification.isNewsQuery,
         strictNewsItems,
         isBengali: searchClassification.isBengali,
+        isVoiceMode: params.isVoiceMode,
+        asksAboutSports: searchClassification.asksAboutSports,
         signal: params.signal,
         onDelta: params.onDelta
       });
@@ -1070,7 +1119,7 @@ export async function streamUnifiedAiChat(params: {
         reply: directRes.text,
         isCloudAI: true,
         usedRealtimeSearch: searchClassification.needsSearch,
-        sources: strictNewsItems || directRes.sources || []
+        sources: []
       };
     } catch (directErr: any) {
       if (directErr?.name === 'AbortError' && params.signal?.aborted) {

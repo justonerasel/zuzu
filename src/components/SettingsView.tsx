@@ -312,38 +312,97 @@ const ORB_STYLES: Array<{
   id: OrbStyleId;
   name: string;
   desc: string;
-  icon: string;
   badge: string;
 }> = [
-  { 
-    id: 'purple_spiral_globe', 
-    name: 'Purple Spiral Dot Globe (Signature)', 
-    desc: 'Signature 3D dot-matrix sphere with concentric purple & white glowing dots, fluid rotation & subtle orbiting rings', 
-    icon: '🪐',
-    badge: 'Signature Style'
+  {
+    id: 'purple_spiral_globe',
+    name: 'Purple Spiral Dot Globe',
+    desc: 'Dense spiral dot rows with bright white highlights, soft halo, thin orbit ring & floating side particles',
+    badge: 'Signature'
   },
-  { 
-    id: 'glass_iridescent_wave', 
-    name: 'Orb 2 — Glass Iridescent Wave', 
-    desc: 'Multi-layered glowing translucent orb with fluid internal light waves & iridescent core', 
-    icon: '🔮',
-    badge: 'Iridescent Glass'
+  {
+    id: 'glass_iridescent_wave',
+    name: 'Glass Iridescent Orb',
+    desc: 'Smooth translucent glass sphere with layered iridescent light waves flowing around a bright soft core',
+    badge: 'Liquid Glass'
   },
-  { 
-    id: 'blue_violet_matrix', 
-    name: 'Orb 3 — Blue-Violet Particle Matrix', 
-    desc: 'Dynamic 3D sphere formed by dense glowing blue-to-violet matrix dots with fluid wave motion', 
-    icon: '🌊',
-    badge: 'Fluid Wave'
+  {
+    id: 'blue_violet_matrix',
+    name: 'Blue-Violet Particle Matrix',
+    desc: 'Structured latitude & longitude dot lines in a deep blue-to-violet gradient with animated data flow',
+    badge: 'Lat/Long Matrix'
   },
-  { 
-    id: 'magenta_cyan_mesh', 
-    name: 'Orb 4 — Magenta-Cyan Glowing Mesh', 
-    desc: 'Intricate particle mesh sphere featuring vibrant magenta, cyan, and blue neon glowing dot gradients', 
-    icon: '✨',
-    badge: 'High-Density Mesh'
+  {
+    id: 'magenta_cyan_mesh',
+    name: 'Magenta-Cyan Glowing Mesh',
+    desc: 'Glowing wireframe geodesic mesh with luminous crossing nodes & travelling pulse waves',
+    badge: 'Wireframe Mesh'
   }
 ];
+
+function renderOrbStyleGlyph(styleId: OrbStyleId, isSelected: boolean) {
+  const strokeMain = isSelected ? '#4f46e5' : '#475569';
+  switch (styleId) {
+    case 'purple_spiral_globe':
+      return (
+        <svg viewBox="0 0 36 36" className="w-8 h-8" fill="none" aria-hidden="true">
+          <circle cx="18" cy="18" r="11" fill={isSelected ? '#311068' : '#1e1b4b'} />
+          <ellipse cx="18" cy="18" rx="15.5" ry="5.5" transform="rotate(-18 18 18)" stroke="#a855f7" strokeWidth="1.3" strokeOpacity="0.85" />
+          <circle cx="14" cy="13" r="1.4" fill="#ffffff" />
+          <circle cx="19" cy="11.5" r="1.5" fill="#d8b4fe" />
+          <circle cx="23.5" cy="15" r="1.3" fill="#ffffff" />
+          <circle cx="12" cy="18" r="1.3" fill="#c084fc" />
+          <circle cx="17.5" cy="18" r="1.7" fill="#ffffff" />
+          <circle cx="22.5" cy="20.5" r="1.4" fill="#c084fc" />
+          <circle cx="15" cy="23.5" r="1.3" fill="#ffffff" />
+          <circle cx="20" cy="24.5" r="1.2" fill="#a855f7" />
+        </svg>
+      );
+    case 'glass_iridescent_wave':
+      return (
+        <svg viewBox="0 0 36 36" className="w-8 h-8" fill="none" aria-hidden="true">
+          <defs>
+            <radialGradient id="glassThumbGrad" cx="35%" cy="30%" r="70%">
+              <stop offset="0%" stopColor="#ffffff" stopOpacity="0.95" />
+              <stop offset="45%" stopColor="#a78bfa" stopOpacity="0.7" />
+              <stop offset="100%" stopColor="#311068" stopOpacity="0.95" />
+            </radialGradient>
+          </defs>
+          <circle cx="18" cy="18" r="12" fill="url(#glassThumbGrad)" stroke="#c4b5fd" strokeWidth="1.2" />
+          <path d="M8 19 C13 13, 21 24, 28 16" stroke="#67e8f9" strokeWidth="1.8" strokeLinecap="round" strokeOpacity="0.9" />
+          <path d="M9 22 C15 17, 22 14, 27 21" stroke="#f472b6" strokeWidth="1.6" strokeLinecap="round" strokeOpacity="0.85" />
+          <ellipse cx="14" cy="12.5" rx="3.5" ry="1.8" transform="rotate(-25 14 12.5)" fill="#ffffff" fillOpacity="0.6" />
+        </svg>
+      );
+    case 'blue_violet_matrix':
+      return (
+        <svg viewBox="0 0 36 36" className="w-8 h-8" fill="none" aria-hidden="true">
+          <circle cx="18" cy="18" r="12" fill="#0f172a" stroke="#6366f1" strokeWidth="1.1" />
+          <ellipse cx="18" cy="18" rx="5.5" ry="12" stroke="#38bdf8" strokeWidth="1" strokeDasharray="1.5 2" />
+          <ellipse cx="18" cy="18" rx="9.5" ry="12" stroke="#818cf8" strokeWidth="0.9" strokeDasharray="1.5 2" />
+          <path d="M7.5 14 H28.5 M6.5 18 H29.5 M7.5 22 H28.5" stroke="#a78bfa" strokeWidth="1" strokeDasharray="1.5 2" />
+          <circle cx="22" cy="14" r="1.6" fill="#67e8f9" />
+          <circle cx="14" cy="22" r="1.6" fill="#ffffff" />
+        </svg>
+      );
+    case 'magenta_cyan_mesh':
+      return (
+        <svg viewBox="0 0 36 36" className="w-8 h-8" fill="none" aria-hidden="true">
+          <circle cx="18" cy="18" r="12" fill="#13092b" />
+          <polygon points="18,6 28,13 24,26 12,26 8,13" stroke="#e879f9" strokeWidth="1.1" fill="none" />
+          <polygon points="18,6 24,26 8,13 28,13 12,26" stroke="#22d3ee" strokeWidth="0.95" fill="none" strokeOpacity="0.85" />
+          <circle cx="18" cy="6" r="1.5" fill="#22d3ee" />
+          <circle cx="28" cy="13" r="1.5" fill="#f472b6" />
+          <circle cx="8" cy="13" r="1.5" fill="#60a5fa" />
+          <circle cx="24" cy="26" r="1.5" fill="#22d3ee" />
+          <circle cx="12" cy="26" r="1.5" fill="#f472b6" />
+          <circle cx="18" cy="17.5" r="1.8" fill="#ffffff" />
+        </svg>
+      );
+    default:
+      return <Disc className="w-7 h-7" style={{ color: strokeMain }} />;
+  }
+}
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
@@ -2149,199 +2208,206 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div className="space-y-3.5 animate-fade-in text-slate-800">
                 {/* Live Orb Canvas Preview */}
                 <div className="p-4 bg-white/95 border border-indigo-100 rounded-2xl shadow-xs flex flex-col items-center justify-center relative overflow-hidden">
-                  <div className="text-[10px] font-mono uppercase font-bold text-indigo-600 tracking-wider mb-1 flex items-center gap-1.5">
-                    <Activity className="w-3.5 h-3.5" />
-                    <span>3D Holographic Orb Live Preview</span>
+                  <div className="w-full flex items-center justify-between mb-2">
+                    <div className="text-[10px] font-mono uppercase font-bold text-indigo-600 tracking-wider flex items-center gap-1.5">
+                      <Activity className="w-3.5 h-3.5" />
+                      <span>Live Orb Preview</span>
+                    </div>
+                    <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+                      {ORB_STYLES.find(s => s.id === settings.orbStyle)?.name || settings.orbStyle}
+                    </span>
                   </div>
-                      <div className="text-[10px] font-mono uppercase font-bold text-indigo-600 tracking-wider mb-1 flex items-center gap-1.5">
-                        <Activity className="w-3.5 h-3.5" />
-                        <span>Live Orb Canvas Preview</span>
-                      </div>
 
-                      <div className="my-2">
-                        <ParticleOrb
-                          state={previewOrbState}
-                          style={settings.orbStyle}
-                          colorScheme={settings.orbColor}
-                          rotationSpeed={settings.orbRotationSpeed}
-                          glowIntensity={settings.orbGlowIntensity}
-                          particleDensity={settings.orbParticleDensity}
-                          size={200}
-                        />
-                      </div>
+                  <div className="w-full flex items-center justify-center py-2 rounded-2xl bg-gradient-to-b from-slate-950 via-[#140b2e] to-slate-900 border border-indigo-950/60 shadow-inner">
+                    <ParticleOrb
+                      state={previewOrbState}
+                      style={settings.orbStyle}
+                      colorScheme={settings.orbColor}
+                      rotationSpeed={settings.orbRotationSpeed}
+                      glowIntensity={settings.orbGlowIntensity}
+                      particleDensity={settings.orbParticleDensity}
+                      size={224}
+                    />
+                  </div>
 
-                      {/* Animation State Test Pills */}
-                      <div className="flex flex-wrap items-center justify-center gap-1 mt-2 bg-indigo-50/70 p-1 rounded-xl border border-indigo-100">
-                        {(['idle', 'listening', 'thinking', 'speaking', 'error'] as OrbState[]).map(st => (
-                          <button
-                            key={st}
-                            onClick={() => setPreviewOrbState(st)}
-                            className={`px-2.5 py-1 text-[10px] font-bold rounded-lg uppercase tracking-wider transition-all ${
-                              previewOrbState === st
-                                ? st === 'error'
-                                  ? 'bg-rose-600 text-white shadow-xs'
-                                  : 'bg-indigo-600 text-white shadow-xs'
-                                : 'text-indigo-700 hover:bg-indigo-100/60'
-                            }`}
-                          >
-                            {st}
-                          </button>
-                        ))}
-                      </div>
+                  {/* Animation State Switch */}
+                  <div className="flex flex-wrap items-center justify-center gap-1 mt-3 bg-indigo-50/70 p-1 rounded-xl border border-indigo-100 w-full">
+                    {(['idle', 'listening', 'thinking', 'speaking', 'error'] as OrbState[]).map(st => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => setPreviewOrbState(st)}
+                        className={`flex-1 min-w-[54px] px-2 py-1.5 text-[10px] font-bold rounded-lg uppercase tracking-wider transition-all ${
+                          previewOrbState === st
+                            ? st === 'error'
+                              ? 'bg-rose-600 text-white shadow-xs'
+                              : 'bg-indigo-600 text-white shadow-xs'
+                            : 'text-indigo-700 hover:bg-indigo-100/60'
+                        }`}
+                      >
+                        {st}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 4 Orb Styles Selection Grid */}
+                <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Disc className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Orb Visual Style (4 Styles)</span>
                     </div>
+                    <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200 font-bold">
+                      {ORB_STYLES.find(s => s.id === settings.orbStyle)?.badge}
+                    </span>
+                  </div>
 
-                    {/* 6 Orb Styles Selection Grid */}
-                    <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <Disc className="w-3.5 h-3.5 text-indigo-600" />
-                          <span>Select Orb Visual Style (4 Advanced Styles)</span>
-                        </div>
-                        <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200 font-bold uppercase">
-                          {settings.orbStyle}
-                        </span>
-                      </div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {ORB_STYLES.map(style => {
+                      const isSelected = settings.orbStyle === style.id;
+                      return (
+                        <button
+                          key={style.id}
+                          type="button"
+                          onClick={() => {
+                            playHapticSound('switch');
+                            onUpdateSettings({ orbStyle: style.id });
+                          }}
+                          className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                            isSelected
+                              ? 'bg-indigo-100/90 border-indigo-500 text-indigo-950 ring-2 ring-indigo-400/30 shadow-xs'
+                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            {renderOrbStyleGlyph(style.id, isSelected)}
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                              isSelected ? 'bg-indigo-200 text-indigo-900' : 'bg-slate-200 text-slate-600'
+                            }`}>
+                              {style.badge}
+                            </span>
+                          </div>
+                          <div className="mt-2">
+                            <div className="text-xs font-bold flex items-center justify-between gap-1">
+                              <span className="leading-tight">{style.name}</span>
+                              {isSelected && <Check className="w-3.5 h-3.5 shrink-0 text-indigo-600 stroke-[3]" />}
+                            </div>
+                            <div className="text-[10px] opacity-80 leading-snug mt-1">{style.desc}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
 
-                      <div className="grid grid-cols-2 gap-2.5">
-                        {ORB_STYLES.map(style => {
-                          const isSelected = settings.orbStyle === style.id;
-                          return (
-                            <button
-                              key={style.id}
-                              onClick={() => {
-                                playHapticSound('switch');
-                                onUpdateSettings({ orbStyle: style.id });
-                              }}
-                              className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                                isSelected
-                                  ? 'bg-indigo-100/90 border-indigo-500 text-indigo-900 ring-2 ring-indigo-400/30 shadow-xs'
-                                  : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="text-xl">{style.icon}</span>
-                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
-                                  isSelected ? 'bg-indigo-200 text-indigo-800' : 'bg-slate-200 text-slate-600'
-                                }`}>
-                                  {style.badge}
-                                </span>
-                              </div>
-                              <div className="mt-2">
-                                <div className="text-xs font-bold flex items-center justify-between">
-                                  <span>{style.name}</span>
-                                  {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 stroke-[3]" />}
-                                </div>
-                                <div className="text-[10px] opacity-75 leading-snug mt-1">{style.desc}</div>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
+                {/* Orb Color Scheme */}
+                <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-2.5">
+                  <div className="text-xs font-bold text-slate-800">Orb Color Scheme</div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {[
+                      { id: 'purple', name: 'Purple', bg: 'bg-purple-500' },
+                      { id: 'cyan', name: 'Cyan', bg: 'bg-cyan-500' },
+                      { id: 'rose', name: 'Rose', bg: 'bg-rose-500' },
+                      { id: 'mint', name: 'Mint', bg: 'bg-emerald-500' },
+                      { id: 'amber', name: 'Amber', bg: 'bg-amber-500' }
+                    ].map(c => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          playHapticSound('switch');
+                          onUpdateSettings({ orbColor: c.id as any });
+                        }}
+                        className={`p-2 rounded-xl border text-center flex flex-col items-center gap-1 transition-all ${
+                          settings.orbColor === c.id
+                            ? 'bg-indigo-100 border-indigo-400 shadow-xs'
+                            : 'bg-slate-50 border-slate-200'
+                        }`}
+                      >
+                        <div className={`w-4 h-4 rounded-full ${c.bg} shadow-xs`} />
+                        <span className="text-[9px] font-bold text-slate-700 capitalize">{c.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Dynamics: Speed, Glow & Density */}
+                <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-3">
+                  <div className="text-xs font-bold text-slate-800">Rotation Speed &amp; Dynamics</div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold text-slate-500">Rotation Speed:</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'slow', label: 'Slow (0.5x)' },
+                        { id: 'normal', label: 'Normal (1.0x)' },
+                        { id: 'fast', label: 'Fast (1.8x)' }
+                      ].map(s => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => onUpdateSettings({ orbRotationSpeed: s.id as any })}
+                          className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
+                            settings.orbRotationSpeed === s.id
+                              ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
+                              : 'bg-slate-50 text-slate-600 border-slate-200'
+                          }`}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
                     </div>
+                  </div>
 
-                    {/* Orb Color Scheme */}
-                    <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-2.5">
-                      <div className="text-xs font-bold text-slate-800">Orb Color Scheme</div>
-                      <div className="grid grid-cols-5 gap-1.5">
-                        {[
-                          { id: 'purple', name: 'Purple', bg: 'bg-purple-500' },
-                          { id: 'cyan', name: 'Cyan', bg: 'bg-cyan-500' },
-                          { id: 'rose', name: 'Rose', bg: 'bg-rose-500' },
-                          { id: 'mint', name: 'Mint', bg: 'bg-emerald-500' },
-                          { id: 'amber', name: 'Amber', bg: 'bg-amber-500' }
-                        ].map(c => (
-                          <button
-                            key={c.id}
-                            onClick={() => {
-                              playHapticSound('switch');
-                              onUpdateSettings({ orbColor: c.id as any });
-                            }}
-                            className={`p-2 rounded-xl border text-center flex flex-col items-center gap-1 transition-all ${
-                              settings.orbColor === c.id
-                                ? 'bg-indigo-100 border-indigo-400 shadow-xs'
-                                : 'bg-slate-50 border-slate-200'
-                            }`}
-                          >
-                            <div className={`w-4 h-4 rounded-full ${c.bg} shadow-xs`} />
-                            <span className="text-[9px] font-bold text-slate-700 capitalize">{c.name}</span>
-                          </button>
-                        ))}
-                      </div>
+                  <div className="space-y-1 pt-2 border-t border-slate-100">
+                    <label className="text-[10px] font-semibold text-slate-500">Glow Intensity:</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'soft', label: 'Soft' },
+                        { id: 'medium', label: 'Medium' },
+                        { id: 'intense', label: 'Intense' }
+                      ].map(g => (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() => onUpdateSettings({ orbGlowIntensity: g.id as any })}
+                          className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
+                            settings.orbGlowIntensity === g.id
+                              ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
+                              : 'bg-slate-50 text-slate-600 border-slate-200'
+                          }`}
+                        >
+                          {g.label}
+                        </button>
+                      ))}
                     </div>
+                  </div>
 
-                    {/* Dynamics: Speed, Glow & Density */}
-                    <div className="p-4 bg-white/90 border border-indigo-100 rounded-2xl shadow-xs space-y-3">
-                      <div className="text-xs font-bold text-slate-800">Rotation Speed &amp; Dynamics</div>
-
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-semibold text-slate-500">Rotation Speed:</label>
-                        <div className="grid grid-cols-3 gap-2">
-                          {[
-                            { id: 'slow', label: 'Slow (0.5x)' },
-                            { id: 'normal', label: 'Normal (1.0x)' },
-                            { id: 'fast', label: 'Fast (1.8x)' }
-                          ].map(s => (
-                            <button
-                              key={s.id}
-                              onClick={() => onUpdateSettings({ orbRotationSpeed: s.id as any })}
-                              className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
-                                settings.orbRotationSpeed === s.id
-                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
-                                  : 'bg-slate-50 text-slate-600 border-slate-200'
-                              }`}
-                            >
-                              {s.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="space-y-1 pt-2 border-t border-slate-100">
-                        <label className="text-[10px] font-semibold text-slate-500">Glow Intensity:</label>
-                        <div className="grid grid-cols-3 gap-2">
-                          {[
-                            { id: 'soft', label: 'Soft' },
-                            { id: 'medium', label: 'Medium' },
-                            { id: 'intense', label: 'Intense' }
-                          ].map(g => (
-                            <button
-                              key={g.id}
-                              onClick={() => onUpdateSettings({ orbGlowIntensity: g.id as any })}
-                              className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
-                                settings.orbGlowIntensity === g.id
-                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
-                                  : 'bg-slate-50 text-slate-600 border-slate-200'
-                              }`}
-                            >
-                              {g.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="space-y-1 pt-2 border-t border-slate-100">
-                        <label className="text-[10px] font-semibold text-slate-500">Particle Density:</label>
-                        <div className="grid grid-cols-3 gap-2">
-                          {[
-                            { id: 'eco', label: 'Eco (750)' },
-                            { id: 'standard', label: 'Standard (1400)' },
-                            { id: 'ultra', label: 'Ultra (2200)' }
-                          ].map(d => (
-                            <button
-                              key={d.id}
-                              onClick={() => onUpdateSettings({ orbParticleDensity: d.id as any })}
-                              className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
-                                settings.orbParticleDensity === d.id
-                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
-                                  : 'bg-slate-50 text-slate-600 border-slate-200'
-                              }`}
-                            >
-                              {d.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                  <div className="space-y-1 pt-2 border-t border-slate-100">
+                    <label className="text-[10px] font-semibold text-slate-500">Particle Density:</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'eco', label: 'Eco (1500)' },
+                        { id: 'standard', label: 'Standard (1850)' },
+                        { id: 'ultra', label: 'Ultra (2200)' }
+                      ].map(d => (
+                        <button
+                          key={d.id}
+                          type="button"
+                          onClick={() => onUpdateSettings({ orbParticleDensity: d.id as any })}
+                          className={`py-1.5 text-[10px] rounded-lg border font-semibold ${
+                            settings.orbParticleDensity === d.id
+                              ? 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold'
+                              : 'bg-slate-50 text-slate-600 border-slate-200'
+                          }`}
+                        >
+                          {d.label}
+                        </button>
+                      ))}
                     </div>
+                  </div>
+                </div>
               </div>
             )}
 

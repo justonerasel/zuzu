@@ -14,6 +14,7 @@ import {
 import {
   MAX_NEWS_RSS_RESULTS,
   buildNewsFeedErrorMessage,
+  buildNoMatchingNewsMessage,
   buildStrictNewsRssSystemInstruction
 } from './src/utils/newsRss.ts';
 import type { SearchSourceItem } from './src/types/index.ts';
@@ -47,6 +48,8 @@ const MIN_SUPPORTED_VERSION = process.env.ZUZU_MIN_SUPPORTED_VERSION || '3.7.0';
 
 // Centralized free Gemini model configuration (never exposed to users; zero paid or deprecated models)
 const GEMINI_MODELS = {
+  chatPrimary: 'gemini-3.8-flash',
+  chatFallbacks: ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
   textPrimary: 'gemini-3.5-flash-lite',
   textFallbacks: ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-4-hydrogen'],
   ttsPrimary: 'gemini-3.8-flash-lite-tts',
@@ -63,14 +66,15 @@ function isTransientHighDemandError(rawMessage: string, status?: number): boolea
   return /503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|high demand|overloaded|Service Unavailable|quota|rate limit/i.test(rawMessage);
 }
 
-function isModelUnavailableError(rawMessage: string, status?: number): boolean {
-  if (status === 404) return true;
-  return /404|NOT_FOUND|not found for API version|is not found|not supported for generateContent|unknown model|thinking/i.test(rawMessage);
-}
-
 function isFatalAuthError(rawMessage: string, status?: number): boolean {
   if (status === 401 || status === 403) return true;
   return /API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(rawMessage);
+}
+
+function isModelUnavailableError(rawMessage: string, status?: number): boolean {
+  if (isFatalAuthError(rawMessage, status)) return false;
+  if (status === 404) return true;
+  return /404|NOT_FOUND|not found for API version|is not found|not supported for generateContent|unknown model|invalid model|model.*not available|thinking/i.test(rawMessage);
 }
 
 function sleepWithCancel(ms: number, shouldStop: () => boolean): Promise<boolean> {
@@ -273,9 +277,13 @@ HOW TO CONVERSE NATURALLY:
 - This reply will be spoken aloud. Keep it crisp, natural, conversational, and concise.
 - Avoid markdown asterisks (**), bullet symbols, code blocks, or awkward symbols that sound unnatural when read aloud.`;
   } else {
-    sys += `\n\nTEXT FORMATTING STYLE:
+    sys += `\n\nCHAT FOCUS & ACCURACY RULES:
+- Answer the user's actual question first and directly. Stay on the topic of the user's last message and the earlier conversation. Never switch to an unrelated topic, and never bring up news or sports unless asked. If the question is unclear, ask one short clarifying question. Use the previous messages for context. Be accurate. If you do not know, say so.
+
+TEXT FORMATTING STYLE:
 - Format structured replies cleanly with Markdown headings, bullet points, numbered steps, and fenced code blocks where helpful.
-- Use Markdown tables for comparisons, calculations, and plans.`;
+- Use Markdown tables for comparisons, calculations, and plans.
+- Do NOT include URLs or a separate list of source links unless the user explicitly asks for links.`;
   }
 
   const gfIntensityGuide: Record<string, string> = {
@@ -321,13 +329,17 @@ async function generateWithGeminiResilience(
     systemInstruction?: string;
     timeoutMs?: number;
     enableGoogleSearch?: boolean;
+    modelCandidates?: readonly string[];
   }
 ): Promise<{ response: any; usedModel: string }> {
   let lastErr: any = null;
+  const candidates = params.modelCandidates && params.modelCandidates.length > 0
+    ? params.modelCandidates
+    : GEMINI_MODELS.textFallbacks;
 
-  for (let i = 0; i < GEMINI_MODELS.textFallbacks.length; i++) {
-    const modelId = GEMINI_MODELS.textFallbacks[i];
-    const hasMore = i < GEMINI_MODELS.textFallbacks.length - 1;
+  for (let i = 0; i < candidates.length; i++) {
+    const modelId = candidates[i];
+    const hasMore = i < candidates.length - 1;
     const maxRetriesForModel = i === 0 ? HIGH_DEMAND_RETRY_DELAYS_MS.length : 0;
 
     for (let attempt = 0; attempt <= maxRetriesForModel; attempt++) {
@@ -421,10 +433,13 @@ app.get('/api/news-rss', async (req, res) => {
   const query = typeof req.query.q === 'string' ? req.query.q : 'world news';
   const isBengali = req.query.bn === '1' || req.query.bn === 'true' || /[\u0980-\u09FF]/.test(query);
   const regionHint = req.query.region === 'BD' || isBengali ? 'BD' : 'GLOBAL';
-  const rssRes = await fetchNewsRssServer({ query, isBengali, regionHint });
+  const asksAboutSports = req.query.sports === '1' || req.query.sports === 'true';
+  const rssRes = await fetchNewsRssServer({ query, isBengali, regionHint, asksAboutSports });
   return res.status(rssRes.ok ? 200 : 502).json({
     ok: rssRes.ok,
     feedUrl: rssRes.feedUrl,
+    noMatchingNews: Boolean(rssRes.noMatchingNews),
+    topicQuery: rssRes.topicQuery,
     items: rssRes.items.slice(0, MAX_NEWS_RSS_RESULTS).map(({ publishedMs: _ms, ...rest }) => rest),
     error: rssRes.error
   });
@@ -656,13 +671,26 @@ app.post('/api/chat/stream', async (req, res) => {
     if (searchClass.needsSearch) {
       if (Array.isArray(prefetchedRssItems) && prefetchedRssItems.length > 0 && searchClass.isNewsQuery) {
         feedSources = prefetchedRssItems.slice(0, MAX_NEWS_RSS_RESULTS);
-        systemInstruction += buildStrictNewsRssSystemInstruction(feedSources, searchClass.isBengali);
+        systemInstruction += buildStrictNewsRssSystemInstruction(
+          feedSources,
+          searchClass.isBengali,
+          searchClass.asksAboutSports
+        );
         enableGoogleSearchTool = false;
       } else {
         const intel = await gatherRealtimeIntelligence(searchClass);
         if (intel.feedLoadFailed) {
           const feedFailMsg = buildNewsFeedErrorMessage(searchClass.isBengali, intel.feedError);
           sendEvent({ delta: feedFailMsg });
+          sendEvent({ done: true, isCloudAI: false, usedRealtimeSearch: false, sources: [] });
+          return res.end();
+        }
+        if (intel.noMatchingNews) {
+          const noMatchMsg = buildNoMatchingNewsMessage(
+            searchClass.isBengali,
+            intel.matchedTopic || searchClass.searchQuery
+          );
+          sendEvent({ delta: noMatchMsg });
           sendEvent({ done: true, isCloudAI: false, usedRealtimeSearch: false, sources: [] });
           return res.end();
         }
@@ -674,11 +702,12 @@ app.post('/api/chat/stream', async (req, res) => {
 
     const clientAi = createGeminiClient(effectiveGeminiKey);
     const contents = formatGeminiHistory(messages, latestUserMsg || 'Hello');
+    const modelCandidates = isVoiceMode ? GEMINI_MODELS.textFallbacks : GEMINI_MODELS.chatFallbacks;
 
     let lastErr: any = null;
-    for (let i = 0; i < GEMINI_MODELS.textFallbacks.length; i++) {
-      const modelId = GEMINI_MODELS.textFallbacks[i];
-      const hasMore = i < GEMINI_MODELS.textFallbacks.length - 1;
+    for (let i = 0; i < modelCandidates.length; i++) {
+      const modelId = modelCandidates[i];
+      const hasMore = i < modelCandidates.length - 1;
       const maxRetriesForModel = i === 0 ? HIGH_DEMAND_RETRY_DELAYS_MS.length : 0;
 
       for (let attempt = 0; attempt <= maxRetriesForModel; attempt++) {
@@ -728,7 +757,7 @@ app.post('/api/chat/stream', async (req, res) => {
           if (clientClosed) return res.end();
 
           if (streamedAny) {
-            const sources = searchClass.needsSearch
+            const sources = isVoiceMode && searchClass.needsSearch
               ? enableGoogleSearchTool
                 ? mergeSearchSources(groundingSources, feedSources)
                 : feedSources.slice(0, MAX_NEWS_RSS_RESULTS)
@@ -874,6 +903,17 @@ app.post('/api/chat', async (req, res) => {
           sources: []
         });
       }
+      if (intel.noMatchingNews) {
+        return res.json({
+          reply: buildNoMatchingNewsMessage(
+            searchClass.isBengali,
+            intel.matchedTopic || searchClass.searchQuery
+          ),
+          isCloudAI: false,
+          usedRealtimeSearch: false,
+          sources: []
+        });
+      }
       feedSources = intel.feedSources;
       systemInstruction += intel.systemAugmentation;
       enableGoogleSearchTool = !intel.strictRssOnly;
@@ -881,21 +921,23 @@ app.post('/api/chat', async (req, res) => {
 
     const clientAi = createGeminiClient(effectiveGeminiKey);
     const contents = formatGeminiHistory(messages, latestUserMsg || 'Hello');
+    const modelCandidates = isVoiceMode ? GEMINI_MODELS.textFallbacks : GEMINI_MODELS.chatFallbacks;
 
     try {
       const { response } = await generateWithGeminiResilience(clientAi, {
         contents,
         systemInstruction,
         enableGoogleSearch: enableGoogleSearchTool,
+        modelCandidates,
         timeoutMs: searchClass.needsSearch ? 22000 : 16000
       });
 
       const replyText = response?.text?.trim();
       const groundingSources =
-        searchClass.needsSearch && enableGoogleSearchTool
+        isVoiceMode && searchClass.needsSearch && enableGoogleSearchTool
           ? extractGroundingSourcesFromResponse(response)
           : [];
-      const sources = searchClass.needsSearch
+      const sources = isVoiceMode && searchClass.needsSearch
         ? enableGoogleSearchTool
           ? mergeSearchSources(groundingSources, feedSources)
           : feedSources.slice(0, MAX_NEWS_RSS_RESULTS)

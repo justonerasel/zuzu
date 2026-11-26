@@ -10,11 +10,10 @@ import {
   ShieldCheck,
   AlertCircle,
   Square,
-  ExternalLink,
   Newspaper,
   ListChecks
 } from 'lucide-react';
-import { AppSettings, ChatMessage, SearchSourceItem } from '../types';
+import { AppSettings, ChatMessage } from '../types';
 import { PERSONALITIES, VOICE_IDENTITIES } from '../constants/personalities';
 import { getChatMessages, saveChatMessage, clearChatHistory, getMemories, saveMemory } from '../utils/storage';
 import { playHapticSound } from '../utils/audio';
@@ -24,8 +23,6 @@ import {
   PendingReminderClarification,
   resolvePendingReminderClarification
 } from '../utils/intentDetector';
-import { getNativeZuzuPlugin } from '../utils/permission';
-import { formatSourcePublicationTime } from '../utils/sourceFormat';
 import { MarkdownMessage } from './MarkdownMessage';
 
 function classifyAssistantCard(msg: ChatMessage): {
@@ -33,7 +30,7 @@ function classifyAssistantCard(msg: ChatMessage): {
   badge?: string;
   heading?: string;
 } {
-  const hasNews = Boolean(msg.usedRealtimeSearch || (msg.sources && msg.sources.length > 0));
+  const hasNews = Boolean(msg.usedRealtimeSearch);
   if (hasNews) {
     const isBn = /[\u0980-\u09FF]/.test(msg.text || '');
     return {
@@ -127,16 +124,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
     setStreamingText(null);
     setIsLoading(false);
     playHapticSound('listen_stop');
-  };
-
-  const handleOpenSourceLink = (e: React.MouseEvent, url: string) => {
-    const nativePlugin = getNativeZuzuPlugin();
-    if (nativePlugin?.openExternalUrl) {
-      e.preventDefault();
-      nativePlugin.openExternalUrl({ url }).catch(() => {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      });
-    }
   };
 
   const handleSendMessage = async (e?: React.FormEvent) => {
@@ -286,8 +273,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
         timestamp: Date.now(),
         voiceIdentity: settings.activeIdentity,
         personality: settings.activePersonality,
-        usedRealtimeSearch: Boolean(aiResult.usedRealtimeSearch),
-        sources: Array.isArray(aiResult.sources) && aiResult.sources.length > 0 ? aiResult.sources : undefined
+        usedRealtimeSearch: Boolean(aiResult.usedRealtimeSearch)
       };
 
       saveChatMessage(assistantMsg);
@@ -318,39 +304,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
-  };
-
-  const renderSourcesBlock = (sources?: SearchSourceItem[]) => {
-    if (!sources || sources.length === 0) return null;
-    return (
-      <div className="mt-3 pt-2.5 border-t border-purple-500/20">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-purple-300 mb-1.5">
-          Sources
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {sources.slice(0, 8).map((src, idx) => (
-            <a
-              key={`${src.url}-${idx}`}
-              href={src.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => handleOpenSourceLink(e, src.url)}
-              className="inline-flex items-center gap-1.5 max-w-full px-2.5 py-1 rounded-full bg-purple-950/50 hover:bg-purple-900/60 border border-purple-500/30 text-[10px] transition-colors"
-              title={`${src.title}${src.publishedAt ? ` • ${src.publishedAt}` : ''}`}
-            >
-              <span className="font-semibold text-purple-200 truncate max-w-[120px]">
-                {src.sourceName || 'Source'}
-              </span>
-              <span className="text-purple-400/70">•</span>
-              <span className="text-slate-300 whitespace-nowrap">
-                {formatSourcePublicationTime(src)}
-              </span>
-              <ExternalLink className="w-2.5 h-2.5 text-purple-300 flex-shrink-0" />
-            </a>
-          ))}
-        </div>
-      </div>
-    );
   };
 
   return (
@@ -478,8 +431,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ settings, onRequestApiKeyMod
                   ) : (
                     <MarkdownMessage text={msg.text} />
                   )}
-
-                  {!isUser && renderSourcesBlock(msg.sources)}
 
                   <div
                     className={`text-[9px] mt-1.5 font-mono flex items-center justify-end gap-1 ${

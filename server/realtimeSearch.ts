@@ -4,7 +4,8 @@ import {
   MAX_NEWS_RSS_RESULTS,
   buildGoogleNewsRssUrl,
   buildStrictNewsRssSystemInstruction,
-  cleanTopicForRssQuery,
+  extractNewsSearchTopic,
+  filterAndScoreNewsRssItems,
   parseGoogleNewsRssXml,
   type ParsedNewsRssItem
 } from '../src/utils/newsRss.ts';
@@ -39,15 +40,16 @@ function resolveGroundingSourceName(uri: string, title?: string): string {
   return host;
 }
 
-async function fetchWithAbort(url: string, timeoutMs = 6000): Promise<Response> {
+async function fetchWithAbort(url: string, timeoutMs = 7000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; ZuzuAI/3.8; +https://news.google.com)',
-        Accept: 'application/rss+xml, application/xml, text/xml, */*'
+        'User-Agent':
+          'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36',
+        Accept: 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
       }
     });
   } finally {
@@ -59,15 +61,18 @@ export async function fetchNewsRssServer(params: {
   query: string;
   isBengali: boolean;
   regionHint?: 'BD' | 'GLOBAL';
+  asksAboutSports?: boolean;
 }): Promise<{
   ok: boolean;
   items: ParsedNewsRssItem[];
   feedUrl: string;
+  noMatchingNews?: boolean;
+  topicQuery: string;
   error?: string;
 }> {
   const regionHint = params.regionHint || (params.isBengali ? 'BD' : 'GLOBAL');
-  const topic = cleanTopicForRssQuery(params.query, regionHint);
-  const feedUrl = buildGoogleNewsRssUrl(topic, params.isBengali, regionHint);
+  const extracted = extractNewsSearchTopic(params.query, regionHint);
+  const feedUrl = buildGoogleNewsRssUrl(extracted.query, params.isBengali, regionHint);
 
   try {
     const res = await fetchWithAbort(feedUrl, 6000);
@@ -76,41 +81,32 @@ export async function fetchNewsRssServer(params: {
         ok: false,
         items: [],
         feedUrl,
+        topicQuery: extracted.query,
         error: `Google News RSS returned HTTP ${res.status}`
       };
     }
 
     const xml = await res.text();
-    let parsed = parseGoogleNewsRssXml(xml);
-    let usedUrl = feedUrl;
-
-    // If overly specific topic returned 0 <item>s, run one clean regional/world fallback query
-    if (parsed.length === 0 && topic !== 'Bangladesh' && topic !== 'world news') {
-      const fallbackTopic = regionHint === 'BD' ? 'Bangladesh' : 'world news';
-      const fallbackUrl = buildGoogleNewsRssUrl(fallbackTopic, params.isBengali, regionHint);
-      try {
-        const retryRes = await fetchWithAbort(fallbackUrl, 5500);
-        if (retryRes.ok) {
-          const retryXml = await retryRes.text();
-          const retryItems = parseGoogleNewsRssXml(retryXml);
-          if (retryItems.length > 0) {
-            parsed = retryItems;
-            usedUrl = fallbackUrl;
-          }
-        }
-      } catch {}
-    }
+    const parsed = parseGoogleNewsRssXml(xml, Date.now(), { maxResults: 24 });
+    const filtered = filterAndScoreNewsRssItems(parsed, {
+      keywords: extracted.keywords,
+      hasSpecificTopic: extracted.hasSpecificTopic,
+      asksAboutSports: Boolean(params.asksAboutSports)
+    });
 
     return {
       ok: true,
-      items: parsed.slice(0, MAX_NEWS_RSS_RESULTS),
-      feedUrl: usedUrl
+      items: filtered.items.slice(0, MAX_NEWS_RSS_RESULTS),
+      feedUrl,
+      noMatchingNews: filtered.noMatchingNews,
+      topicQuery: extracted.query
     };
   } catch (err: any) {
     return {
       ok: false,
       items: [],
       feedUrl,
+      topicQuery: extracted.query,
       error: err?.name === 'AbortError' ? 'RSS request timed out' : err?.message || 'RSS fetch failed'
     };
   }
@@ -122,6 +118,8 @@ export interface RealtimeRetrievalBundle {
   hasRecentMatchInWindow: boolean;
   recent20MinCount: number;
   feedLoadFailed: boolean;
+  noMatchingNews?: boolean;
+  matchedTopic?: string;
   feedError?: string;
   strictRssOnly: boolean;
 }
@@ -143,15 +141,12 @@ export async function gatherRealtimeIntelligence(
     hour12: true
   });
 
-  const shouldUseRss =
-    classification.isNewsQuery ||
-    (classification.timeWindowMinutes !== null && classification.timeWindowMinutes <= 1440);
-
-  if (shouldUseRss) {
+  if (classification.isNewsQuery) {
     const rssRes = await fetchNewsRssServer({
       query: classification.searchQuery,
       isBengali: classification.isBengali,
-      regionHint: classification.regionHint
+      regionHint: classification.regionHint,
+      asksAboutSports: classification.asksAboutSports
     });
 
     if (!rssRes.ok) {
@@ -174,21 +169,26 @@ export async function gatherRealtimeIntelligence(
     const recent20MinCount = items.filter(r => r.isWithin20Min).length;
     const cleanFeedSources: SearchSourceItem[] = items.map(({ publishedMs: _p, ...rest }) => rest);
 
-    if (cleanFeedSources.length === 0) {
+    if (rssRes.noMatchingNews || cleanFeedSources.length === 0) {
       return {
         feedSources: [],
         systemAugmentation: '',
         hasRecentMatchInWindow: false,
         recent20MinCount: 0,
-        feedLoadFailed: true,
-        feedError: 'No headlines returned by Google News RSS for this topic.',
+        feedLoadFailed: false,
+        noMatchingNews: true,
+        matchedTopic: rssRes.topicQuery,
         strictRssOnly: true
       };
     }
 
-    let aug = buildStrictNewsRssSystemInstruction(cleanFeedSources, classification.isBengali);
+    let aug = buildStrictNewsRssSystemInstruction(
+      cleanFeedSources,
+      classification.isBengali,
+      classification.asksAboutSports
+    );
     if (windowMin && inWindowItems.length === 0) {
-      aug += `\n- Note: None of the ${cleanFeedSources.length} retrieved RSS items fall within the exact last ${windowMin} minutes. Mention that honestly and summarize the newest headlines from the RSS list above with their real publish times.`;
+      aug += `\n- Note: None of the ${cleanFeedSources.length} retrieved RSS items fall within the exact last ${windowMin} minutes. Mention that honestly and summarize the newest matching headlines from the RSS list above with their real publish times.`;
     }
 
     return {
@@ -197,14 +197,17 @@ export async function gatherRealtimeIntelligence(
       hasRecentMatchInWindow: inWindowItems.length > 0,
       recent20MinCount,
       feedLoadFailed: false,
+      noMatchingNews: false,
+      matchedTopic: rssRes.topicQuery,
       strictRssOnly: true
     };
   }
 
-  // Non-news general web search fallback
+  // Non-news real-time Google Search grounding context (weather, prices, current officeholders)
   const aug = `\n\nREAL-TIME GOOGLE SEARCH GROUNDING CONTEXT:
 - Current Date & Time: ${dhakaNow} (UTC: ${utcNow})
-- Use Google Search grounding to answer accurately in the user's language without fabricating dates or URLs.`;
+- Use Google Search grounding to answer the user's exact question accurately in their language without fabricating dates or URLs.
+${!classification.asksAboutSports ? '- Do NOT bring up sports news or unrelated topics.' : ''}`;
 
   return {
     feedSources: [],
